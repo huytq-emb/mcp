@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "profile": "dmaengine",
+  "title": "Linux dmaengine driver completeness checklist",
+  "subsystem": "dmaengine",
+  "driver_family": "generic-dmaengine",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "dma_device / channel model",
+      "items": [
+        "dma_device capabilities are correct",
+        "channel count/stride matches manual",
+        "slave config fields are mapped",
+        "descriptor allocation/lifetime is correct",
+        "cookie completion is correct"
+      ],
+      "required_manual_checks": [
+        "channel register stride",
+        "transfer configuration registers",
+        "status/end/error registers"
+      ]
+    },
+    {
+      "area": "Transfer programming",
+      "items": [
+        "source/destination/count registers programmed in order",
+        "size/alignment limits enforced",
+        "request IDs/directions mapped",
+        "start/enable bit sequence verified"
+      ],
+      "required_manual_checks": [
+        "start sequence",
+        "channel config bitfields",
+        "address/count registers"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect prep/issue_pending/IRQ/terminate/synchronize paths.",
+    "Call verify_register_usage for channel control/status operations."
+  ],
+  "required_manual_checks": [
+    "channel start/stop sequence",
+    "status clear semantics",
+    "reserved-bit handling",
+    "error recovery"
+  ],
+  "recommended_tools": [
+    "prepare_driver_task",
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register"
+  ]
+}

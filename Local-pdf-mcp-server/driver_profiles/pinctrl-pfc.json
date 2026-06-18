@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "profile": "pinctrl-pfc",
+  "title": "Linux pinctrl/PFC driver completeness checklist",
+  "subsystem": "pinctrl",
+  "driver_family": "generic-pfc",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "Pin/function tables",
+      "items": [
+        "pin numbers/names match manual",
+        "function groups map to correct mux alternatives",
+        "drive/pull/input-enable capabilities match hardware",
+        "GPIO fallback ownership is clear"
+      ],
+      "required_manual_checks": [
+        "pin function table",
+        "mux selector table",
+        "electrical config table"
+      ]
+    },
+    {
+      "area": "Register programming",
+      "items": [
+        "mux/config register offsets and bit positions are correct",
+        "read-modify-write preserves reserved bits",
+        "write-protect/unlock sequence is implemented if required",
+        "no unsafe raw writes to shared registers"
+      ],
+      "required_manual_checks": [
+        "PFC register layout",
+        "write protection sequence",
+        "reserved-bit rules"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Prioritize layout/visual table extraction; text-only pinmux evidence is not sufficient for final conclusions.",
+    "Call verify_register_usage for mux/config/write-protect registers."
+  ],
+  "required_manual_checks": [
+    "pinmux table visual verification",
+    "register offset/bit mapping",
+    "write-protect sequence",
+    "reserved-bit handling"
+  ],
+  "recommended_tools": [
+    "extract_pinmux_table",
+    "extract_layout_tables_from_pages",
+    "visual_review_handoff_pack",
+    "verify_visual_evidence",
+    "verify_register_usage"
+  ]
+}

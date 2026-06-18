@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "i2c",
+  "description": "i2c eval cases for hardware-manual driver workflow smoke tests.",
+  "when": {
+    "module_type": "i2c"
+  },
+  "cases": [
+    {
+      "id": "profile-i2c-workflow",
+      "tool": "plan_manual_workflow",
+      "args": {
+        "task": "i2c driver completeness review",
+        "module_type": "i2c",
+        "source_files": [
+          "<driver>.c"
+        ]
+      },
+      "assertions": {
+        "mustContain": [
+          "Manual Workflow Plan",
+          "Recommended MCP call sequence",
+          "verify_register_usage"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "profile-i2c-search",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "I2C start stop NACK arbitration timing prescaler",
+        "intent": "driver evidence",
+        "top_k": 6
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results"
+        ],
+        "mustContainAny": [
+          "I2C",
+          "start",
+          "stop",
+          "NACK",
+          "Result 1"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      },
+      "allowFail": true
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "type": "golden-profile",
+  "profile": "rzg3e-core",
+  "filename": "r01uh1069ej0115-rzg3e.pdf",
+  "description": "RZ/G3E core register/bitfield golden facts. Candidate facts are generated from index artifacts and must be manually verified before they gate tests.",
+  "strictVerifiedOnly": true,
+  "registers": [],
+  "bitfields": []
+}

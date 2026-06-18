@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "profile": "pwm",
+  "title": "Linux PWM/timer driver completeness checklist",
+  "subsystem": "pwm",
+  "driver_family": "generic-pwm",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "PWM apply/config",
+      "items": [
+        "period/duty conversion uses correct clock/prescaler",
+        "polarity/output mode is correct",
+        "enable/disable sequence is safe",
+        "shared channel constraints are handled"
+      ],
+      "required_manual_checks": [
+        "counter mode",
+        "output control",
+        "prescaler",
+        "start/stop sequence"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect pwm_ops apply/get_state and interrupt/capture paths if present.",
+    "Verify timer/PWM register operations."
+  ],
+  "required_manual_checks": [
+    "period/duty formula",
+    "start/stop sequence",
+    "output polarity",
+    "status clear semantics"
+  ],
+  "recommended_tools": [
+    "verify_register_usage",
+    "extract_bitfield_table",
+    "get_sequence"
+  ]
+}

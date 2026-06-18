@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "profile": "generic",
+  "title": "Generic Linux MMIO/platform driver completeness checklist",
+  "subsystem": "generic",
+  "driver_family": "generic",
+  "description": "Fallback checklist for Linux platform/MMIO drivers.",
+  "checklist": [
+    {
+      "area": "Probe / platform integration",
+      "items": [
+        "compatible/of_device_id or platform_device_id match",
+        "MMIO resource mapping",
+        "IRQ request if used",
+        "clock enable/rate assumptions",
+        "reset deassert/assert ordering",
+        "runtime PM",
+        "pinctrl if required"
+      ],
+      "required_manual_checks": [
+        "base address/register map",
+        "clock/reset requirements",
+        "interrupt sources",
+        "initialization sequence"
+      ]
+    },
+    {
+      "area": "Register access correctness",
+      "items": [
+        "register offsets match manual",
+        "bit masks/shifts match manual",
+        "reserved bits are preserved",
+        "access size/type constraints are respected",
+        "status clear semantics are verified"
+      ],
+      "required_manual_checks": [
+        "register offsets",
+        "bitfield positions",
+        "access type",
+        "reserved-bit handling",
+        "clear semantics"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Read source files in VS Code workspace; MCP does not read source code.",
+    "Extract register macros and bit macros.",
+    "Classify each hardware operation and call verify_register_usage."
+  ],
+  "required_manual_checks": [
+    "register offsets",
+    "bitfield positions",
+    "access type and access size",
+    "reserved-bit handling",
+    "init/start/stop/reset sequence",
+    "interrupt/status clear semantics",
+    "cautions/restrictions"
+  ],
+  "recommended_tools": [
+    "doctor",
+    "prepare_driver_task",
+    "build_driver_evidence_pack",
+    "verify_register_usage",
+    "extract_register_table",
+    "extract_bitfield_table",
+    "get_sequence",
+    "get_cautions_for_register"
+  ]
+}

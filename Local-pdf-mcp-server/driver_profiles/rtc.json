@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "profile": "rtc",
+  "title": "Linux RTC driver completeness checklist",
+  "subsystem": "rtc",
+  "driver_family": "generic-rtc",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "Time/alarm operations",
+      "items": [
+        "read_time obtains a coherent timestamp",
+        "set_time follows stop/write/start or latch rules",
+        "alarm enable/status/clear semantics are correct",
+        "12/24h, BCD/binary, epoch/year range are handled"
+      ],
+      "required_manual_checks": [
+        "counter latch/read sequence",
+        "time write sequence",
+        "alarm status clear semantics"
+      ]
+    },
+    {
+      "area": "Clock/reset/power",
+      "items": [
+        "clock source and prescaler are configured correctly",
+        "wakeup capability is reviewed",
+        "reset/oscillator stabilization restrictions are handled"
+      ],
+      "required_manual_checks": [
+        "clock source restrictions",
+        "oscillator/startup sequence",
+        "wakeup interrupt rules"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect read_time/set_time/read_alarm/set_alarm/irq_set_state paths.",
+    "Verify counter/alarm/status operations."
+  ],
+  "required_manual_checks": [
+    "coherent time read sequence",
+    "time write sequence",
+    "alarm clear semantics",
+    "clock/oscillator restrictions"
+  ],
+  "recommended_tools": [
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register",
+    "find_bitfield"
+  ]
+}

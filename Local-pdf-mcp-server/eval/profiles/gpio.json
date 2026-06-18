@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "gpio",
+  "description": "gpio eval cases for hardware-manual driver workflow smoke tests.",
+  "when": {
+    "module_type": "gpio"
+  },
+  "cases": [
+    {
+      "id": "profile-gpio-workflow",
+      "tool": "plan_manual_workflow",
+      "args": {
+        "task": "gpio driver completeness review",
+        "module_type": "gpio",
+        "source_files": [
+          "<driver>.c"
+        ]
+      },
+      "assertions": {
+        "mustContain": [
+          "Manual Workflow Plan",
+          "Recommended MCP call sequence",
+          "verify_register_usage"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "profile-gpio-search",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "GPIO interrupt edge level status clear pin function",
+        "intent": "driver evidence",
+        "top_k": 6
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results"
+        ],
+        "mustContainAny": [
+          "GPIO",
+          "interrupt",
+          "edge",
+          "level",
+          "Result 1"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      },
+      "allowFail": true
+    }
+  ]
+}

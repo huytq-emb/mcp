@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "watchdog",
+  "module_type": "watchdog",
+  "description": "Generic watchdog/WDT eval profile.",
+  "cases": [
+    {
+      "id": "profile-watchdog-checklist",
+      "when": {
+        "module_type": "watchdog"
+      },
+      "tool": "driver_completeness_checklist",
+      "args": {
+        "subsystem": "watchdog",
+        "task": "watchdog driver completeness review"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Completeness Checklist",
+          "Completeness matrix"
+        ],
+        "mustContainAny": [
+          "watchdog",
+          "timeout",
+          "reset",
+          "clock",
+          "restart"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

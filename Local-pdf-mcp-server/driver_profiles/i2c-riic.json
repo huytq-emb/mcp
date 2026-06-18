@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "profile": "i2c-riic",
+  "title": "Linux I2C/RIIC driver completeness checklist",
+  "subsystem": "i2c",
+  "driver_family": "riic",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "Adapter/xfer state machine",
+      "items": [
+        "START/RESTART/STOP generation follows manual sequence",
+        "TX/RX FIFO or data register handling is ordered correctly",
+        "NACK/arbitration/lost/bus busy errors are handled",
+        "timeout/recovery path is safe"
+      ],
+      "required_manual_checks": [
+        "start/stop sequence",
+        "status flags",
+        "error clear semantics"
+      ]
+    },
+    {
+      "area": "Clocking and bus timing",
+      "items": [
+        "SCL timing formula uses correct input clock and prescaler",
+        "standard/fast/fast-plus constraints are enforced",
+        "runtime PM and clock enable ordering are correct"
+      ],
+      "required_manual_checks": [
+        "bitrate formula",
+        "prescaler limits",
+        "clock dependency"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect master_xfer/IRQ/error/recovery paths.",
+    "Verify start/stop/status-clear register operations."
+  ],
+  "required_manual_checks": [
+    "start/stop/restart sequence",
+    "SCL timing formula",
+    "NACK/arbitration clear semantics",
+    "bus recovery restrictions"
+  ],
+  "recommended_tools": [
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register",
+    "find_bitfield"
+  ]
+}

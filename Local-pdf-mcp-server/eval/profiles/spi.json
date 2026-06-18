@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "spi",
+  "description": "spi eval cases for hardware-manual driver workflow smoke tests.",
+  "when": {
+    "module_type": "spi"
+  },
+  "cases": [
+    {
+      "id": "profile-spi-workflow",
+      "tool": "plan_manual_workflow",
+      "args": {
+        "task": "spi driver completeness review",
+        "module_type": "spi",
+        "source_files": [
+          "<driver>.c"
+        ]
+      },
+      "assertions": {
+        "mustContain": [
+          "Manual Workflow Plan",
+          "Recommended MCP call sequence",
+          "verify_register_usage"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "profile-spi-search",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "SPI transfer mode FIFO status error clear",
+        "intent": "driver evidence",
+        "top_k": 6
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results"
+        ],
+        "mustContainAny": [
+          "SPI",
+          "transfer",
+          "mode",
+          "FIFO",
+          "Result 1"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      },
+      "allowFail": true
+    }
+  ]
+}

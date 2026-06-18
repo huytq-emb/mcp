@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "generic",
+  "description": "Generic eval cases for most hardware-manual modules.",
+  "cases": [
+    {
+      "id": "profile-generic-checklist",
+      "tool": "driver_completeness_checklist",
+      "args": {
+        "subsystem": "${module_type}",
+        "task": "generic driver completeness review"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Completeness Checklist",
+          "Completeness matrix"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "local-renesas-manual-mcp-server",
+  "version": "1.0.0",
+  "description": "Local MCP server for extracting Linux-driver evidence from Renesas hardware manuals.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "health": "npm run check && npm run static-health && npm run startup-smoke",
+    "smoke": "npm run startup-smoke && npm run test:eval",
+    "test": "npm run health && npm run test:unit && npm run test:eval && npm run test:golden",
+    "check": "node --check index.js",
+    "static-health": "node scripts/static-health.js",
+    "startup-smoke": "node scripts/startup-smoke.js",
+    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:eval": "node scripts/eval-smoke.js",
+    "golden:bootstrap": "node scripts/golden-bootstrap.js",
+    "golden:eval": "node scripts/golden-eval.js",
+    "test:golden": "node scripts/golden-eval.js --no-write"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.7.284"
+  }
+}

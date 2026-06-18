@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "profile": "gpio-irq",
+  "title": "Linux GPIO/IRQ driver completeness checklist",
+  "subsystem": "gpio",
+  "driver_family": "generic-gpio-irq",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "GPIO line model",
+      "items": [
+        "GPIO direction/input/output paths match manual",
+        "read/write data register semantics are correct",
+        "set/clear/toggle registers are used safely when available",
+        "line count and bank/port stride match hardware"
+      ],
+      "required_manual_checks": [
+        "port/bank register layout",
+        "direction/data register bit mapping",
+        "reserved-bit handling"
+      ]
+    },
+    {
+      "area": "IRQ integration",
+      "items": [
+        "interrupt parent mapping is correct",
+        "edge/level trigger programming matches manual",
+        "status is acknowledged with documented clear semantics",
+        "mask/unmask ordering avoids lost interrupts"
+      ],
+      "required_manual_checks": [
+        "IRQ type fields",
+        "status clear semantics",
+        "mask/enable sequence"
+      ]
+    },
+    {
+      "area": "pinctrl dependency",
+      "items": [
+        "pinmux/function selection is documented",
+        "pull/drive/input-enable settings are handled when required",
+        "wake/runtime PM behavior is reviewed"
+      ],
+      "required_manual_checks": [
+        "pin function table",
+        "pin config restrictions",
+        "wakeup restrictions"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect gpio_chip callbacks, irq_chip callbacks, request path, and remove/shutdown ordering.",
+    "Call verify_register_usage for direction/data/status/mask/clear operations.",
+    "Use visual evidence for pin function or wide pinmux tables."
+  ],
+  "required_manual_checks": [
+    "direction/data register mapping",
+    "IRQ trigger and status clear semantics",
+    "pinmux dependency",
+    "reserved-bit handling"
+  ],
+  "recommended_tools": [
+    "plan_manual_workflow",
+    "extract_pinmux_table",
+    "verify_register_usage",
+    "get_cautions_for_register",
+    "visual_review_handoff_pack"
+  ]
+}

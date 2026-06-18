@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "profile": "watchdog",
+  "title": "Linux watchdog driver completeness checklist",
+  "subsystem": "watchdog",
+  "driver_family": "generic-watchdog",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "watchdog core ops",
+      "items": [
+        "start/stop/ping/set_timeout/restart implemented as supported",
+        "nowayout behavior correct",
+        "timeout min/max uses real clock/prescaler limits",
+        "restart priority/path is safe"
+      ],
+      "required_manual_checks": [
+        "timeout calculation",
+        "refresh sequence",
+        "start/stop sequence",
+        "reset behavior"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect watchdog ops and restart/panic path.",
+    "Verify WDTRR/WDTCR/WDTSR/WDTRCR operations with verify_register_usage."
+  ],
+  "required_manual_checks": [
+    "refresh sequence",
+    "timeout formula",
+    "reset output behavior",
+    "reserved-bit handling"
+  ],
+  "recommended_tools": [
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register"
+  ]
+}

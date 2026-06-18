@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "profile": "ethernet-stmmac",
+  "title": "Linux Ethernet STMMAC/DWMAC glue driver completeness checklist",
+  "subsystem": "ethernet",
+  "driver_family": "stmmac",
+  "extends": "ethernet",
+  "description": "Checklist for SoC-specific Ethernet MAC glue using stmmac_platform/stmmac_main.",
+  "checklist": [
+    {
+      "area": "STMMAC platform/glue integration",
+      "items": [
+        "stmmac_platform/glue probe passes correct plat_stmmacenet_data",
+        "compatible selects correct SoC data",
+        "DMA bus/axi/config quirks are mapped correctly",
+        "MAC version/capability assumptions match manual",
+        "remove/error unwind is correct"
+      ],
+      "required_manual_checks": [
+        "SoC glue registers",
+        "DMA capability registers",
+        "reset sequence"
+      ]
+    },
+    {
+      "area": "Device Tree integration for stmmac",
+      "items": [
+        "compatible/reg/interrupts are correct",
+        "clocks and clock-names match driver",
+        "resets/reset-names match hardware sequence",
+        "phy-mode/phy-handle/fixed-link/mdio node are correct",
+        "RGMII delay properties and pinctrl match board wiring"
+      ],
+      "required_manual_checks": [
+        "clock tree",
+        "reset line",
+        "interrupt lines",
+        "PHY interface mode",
+        "MDIO"
+      ]
+    },
+    {
+      "area": "STMMAC callbacks and hardware operations",
+      "items": [
+        "init callback programs glue before stmmac starts MAC/DMA",
+        "fix_mac_speed programs speed/duplex registers",
+        "clock rate changes are safe",
+        "suspend/resume restores glue state",
+        "reset path waits/polls documented ready bits"
+      ],
+      "required_manual_checks": [
+        "speed selection register",
+        "clock/reset sequence",
+        "start/stop sequence",
+        "caution restrictions"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect dwmac-renesas-gbeth.c, stmmac_platform.c, stmmac_main.c and related DTS files.",
+    "List SoC glue register macros and call verify_register_usage for each register operation.",
+    "Check DTS clocks/resets/interrupts/phy-mode/mdio/fixed-link."
+  ],
+  "required_manual_checks": [
+    "SoC glue register offsets and bitfields",
+    "MAC/DMA reset and start sequence",
+    "MDIO/PHY interface configuration",
+    "interrupt mapping and clear semantics",
+    "clock/reset/runtime PM restrictions"
+  ],
+  "recommended_tools": [
+    "prepare_driver_task",
+    "build_driver_evidence_pack",
+    "verify_register_usage",
+    "hybrid_search_pdf",
+    "get_sequence",
+    "get_cautions_for_register"
+  ]
+}

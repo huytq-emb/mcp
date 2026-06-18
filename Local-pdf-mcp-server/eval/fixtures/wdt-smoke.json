@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-fixture",
+  "enabled": false,
+  "fixture": "wdt-smoke",
+  "description": "Optional WDT manual smoke fixture; disabled by default.",
+  "when": {
+    "module_type": "watchdog"
+  },
+  "cases": [
+    {
+      "id": "fixture-wdt-smoke-smoke",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "driver relevant register sequence interrupt reset status",
+        "intent": "auto",
+        "top_k": 5
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      },
+      "allowFail": true
+    }
+  ]
+}

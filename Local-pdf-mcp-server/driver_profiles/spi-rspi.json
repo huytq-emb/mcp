@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "profile": "spi-rspi",
+  "title": "Linux SPI/RSPI driver completeness checklist",
+  "subsystem": "spi",
+  "driver_family": "rspi",
+  "extends": "generic",
+  "checklist": [
+    {
+      "area": "SPI controller model",
+      "items": [
+        "mode bits CPOL/CPHA/bit order/chip-select polarity are mapped",
+        "word size and FIFO/data register width are correct",
+        "TX/RX/duplex transfer sequencing follows manual",
+        "DMA path uses correct request IDs and thresholds"
+      ],
+      "required_manual_checks": [
+        "mode/config bitfields",
+        "transfer start sequence",
+        "FIFO/status flags"
+      ]
+    },
+    {
+      "area": "Error/IRQ/PM",
+      "items": [
+        "overrun/underrun/mode fault errors are cleared correctly",
+        "interrupt mask/status handling is safe",
+        "clock/reset/runtime PM ordering is correct"
+      ],
+      "required_manual_checks": [
+        "error status clear semantics",
+        "IRQ mask sequence",
+        "clock/reset restrictions"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect transfer_one/setup/prepare_message/IRQ/DMA paths.",
+    "Verify control/status/error-clear operations."
+  ],
+  "required_manual_checks": [
+    "mode bit mapping",
+    "transfer start/stop sequence",
+    "FIFO/status clear semantics",
+    "DMA request mapping"
+  ],
+  "recommended_tools": [
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register",
+    "extract_bitfield_table"
+  ]
+}

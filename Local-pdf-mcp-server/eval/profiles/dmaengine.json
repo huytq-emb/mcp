@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "dmaengine",
+  "module_type": "dmaengine",
+  "description": "Generic DMAEngine eval profile.",
+  "cases": [
+    {
+      "id": "profile-dmaengine-checklist",
+      "when": {
+        "module_type": "dmaengine"
+      },
+      "tool": "driver_completeness_checklist",
+      "args": {
+        "subsystem": "dmaengine",
+        "task": "DMAEngine driver completeness review"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Completeness Checklist",
+          "Completeness matrix"
+        ],
+        "mustContainAny": [
+          "DMA",
+          "channel",
+          "transfer",
+          "interrupt",
+          "descriptor"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

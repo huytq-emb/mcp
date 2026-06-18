@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "profile": "ethernet",
+  "title": "Linux Ethernet MAC driver completeness checklist",
+  "subsystem": "ethernet",
+  "driver_family": "generic-ethernet",
+  "extends": "generic",
+  "description": "Generic Ethernet MAC checklist.",
+  "checklist": [
+    {
+      "area": "Netdev / MAC integration",
+      "items": [
+        "net_device allocation/registration",
+        "MAC address setup",
+        "TX/RX enable/disable sequence",
+        "speed/duplex/flow-control configuration",
+        "multicast/promiscuous filters",
+        "offload capability flags match hardware"
+      ],
+      "required_manual_checks": [
+        "MAC control registers",
+        "TX/RX enable bits",
+        "filter registers",
+        "flow-control registers"
+      ]
+    },
+    {
+      "area": "PHY / MDIO / link mode",
+      "items": [
+        "phy-mode parsing",
+        "phy-handle/fixed-link",
+        "MDIO bus registration",
+        "RGMII/RMII/GMII restrictions",
+        "link callbacks program MAC state safely"
+      ],
+      "required_manual_checks": [
+        "MDIO registers",
+        "PHY interface mode",
+        "RGMII delay control",
+        "link speed setting"
+      ]
+    },
+    {
+      "area": "DMA / descriptor / rings",
+      "items": [
+        "descriptor format matches hardware",
+        "RX/TX rings and DMA mapping",
+        "descriptor ownership/barriers",
+        "TX completion and RX refill",
+        "DMA reset/start/stop sequence"
+      ],
+      "required_manual_checks": [
+        "DMA registers",
+        "descriptor format",
+        "DMA start/stop sequence",
+        "status/error flags"
+      ]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect ndo_open/ndo_stop, IRQ handler, TX/RX path, MDIO/PHY setup, and suspend/resume.",
+    "Extract every MAC/DMA/MDIO register operation and call verify_register_usage."
+  ],
+  "required_manual_checks": [
+    "MAC TX/RX enable sequence",
+    "DMA descriptor/ring start-stop sequence",
+    "interrupt clear semantics",
+    "MDIO clock/divider and PHY interface restrictions",
+    "reset/runtime PM restrictions"
+  ],
+  "recommended_tools": [
+    "driver_completeness_checklist",
+    "build_driver_evidence_pack",
+    "verify_register_usage",
+    "get_sequence",
+    "get_cautions_for_register"
+  ]
+}

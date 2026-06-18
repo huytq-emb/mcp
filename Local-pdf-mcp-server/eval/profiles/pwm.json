@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "pwm",
+  "module_type": "pwm",
+  "description": "Generic PWM/timer eval profile.",
+  "cases": [
+    {
+      "id": "profile-pwm-checklist",
+      "when": {
+        "module_type": "pwm"
+      },
+      "tool": "driver_completeness_checklist",
+      "args": {
+        "subsystem": "pwm",
+        "task": "PWM driver completeness review"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Completeness Checklist",
+          "Completeness matrix"
+        ],
+        "mustContainAny": [
+          "PWM",
+          "period",
+          "duty",
+          "polarity",
+          "capture",
+          "timer"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

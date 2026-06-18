@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-fixture",
+  "enabled": false,
+  "fixture": "dma-smoke",
+  "description": "Optional DMA manual smoke fixture; disabled by default.",
+  "when": {
+    "module_type": "dmaengine"
+  },
+  "cases": [
+    {
+      "id": "fixture-dma-smoke-smoke",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "driver relevant register sequence interrupt reset status",
+        "intent": "auto",
+        "top_k": 5
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      },
+      "allowFail": true
+    }
+  ]
+}

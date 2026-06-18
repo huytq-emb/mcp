@@ -1,0 +1,11 @@
+name: Local PDF MCP Server
+version: 1.0.0
+schema: v1
+mcpServers:
+  - name: Local Renesas Manual MCP Server
+    command: C:\Program Files\nodejs\node.exe
+    args:
+      - "C:/Users/DELL/Desktop/linux-driver-developer-ai-agent/Local-pdf-mcp-server/index.js"
+    env:
+      PDF_MANUAL_MCP_ROOT: "C:/Users/DELL/Desktop/linux-driver-developer-ai-agent/Local-pdf-mcp-server"
+    connectionTimeout: 120000

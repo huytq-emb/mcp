@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "description": "Internal regression cases for the hardware-manual MCP server. Cases use assertions instead of exact golden output.",
+  "cases": [
+    {
+      "id": "doctor-basic",
+      "description": "Doctor must report server/index health for the target PDF.",
+      "tool": "doctor",
+      "args": {},
+      "assertions": {
+        "mustContain": [
+          "MCP Manual Server Doctor",
+          "Overall health",
+          "Machine summary JSON"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "module-profile-basic",
+      "description": "Module profile should orient the agent before driver work.",
+      "tool": "get_module_profile",
+      "args": {},
+      "assertions": {
+        "mustContain": [
+          "Module Profile",
+          "Module identity",
+          "Likely Linux subsystem",
+          "Suggested MCP calls"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "driver-pack-basic",
+      "description": "Driver evidence pack should include register groups, sequences, cautions, and checklist sections.",
+      "tool": "build_driver_evidence_pack",
+      "args": {
+        "module_type": "${module_type}"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Evidence Pack",
+          "Register groups",
+          "Operation sequence candidates",
+          "Caution / restriction candidates",
+          "Driver implementation checklist"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "prepare-driver-task-debug-start",
+      "description": "Driver-task workflow should force evidence collection before source edits.",
+      "tool": "prepare_driver_task",
+      "args": {
+        "task": "debug transfer does not start",
+        "module_type": "${module_type}"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Task Preparation Plan",
+          "Mandatory MCP call sequence",
+          "Task-related registers",
+          "Required source-code checks",
+          "Approval rule"
+        ],
+        "mustContainAny": [
+          "extract_bitfield_table",
+          "get_cautions_for_register",
+          "get_sequence"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "hybrid-search-start",
+      "description": "Hybrid search should accept natural language without embeddings.",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "how to start transfer operation",
+        "intent": "start",
+        "top_k": 5
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results",
+          "Intent"
+        ],
+        "mustContainAny": [
+          "Result 1",
+          "No hybrid results found"
+        ],
+        "mustNotContain": [
+          "Ollama",
+          "embedding",
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "hybrid-search-clear-caution",
+      "description": "Hybrid search should rank natural-language clear/caution queries without embeddings using BM25/proximity/synonym expansion.",
+      "tool": "hybrid_search_pdf",
+      "args": {
+        "query": "how to clear interrupt status and avoid reserved bit writes",
+        "intent": "caution",
+        "top_k": 5
+      },
+      "assertions": {
+        "mustContain": [
+          "Hybrid search results",
+          "Intent"
+        ],
+        "mustContainAny": [
+          "bm25",
+          "proximity",
+          "symbol aliases",
+          "No hybrid results found"
+        ],
+        "mustNotContain": [
+          "Ollama",
+          "embedding",
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "chunk-type-stats-basic",
+      "description": "Step 23 chunkType/noise classification should be present after rebuilding the index.",
+      "tool": "chunk_type_stats",
+      "args": {
+        "include_examples": false
+      },
+      "assertions": {
+        "mustContain": [
+          "Chunk type statistics",
+          "Types:",
+          "Machine summary JSON"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "register-table-basic",
+      "description": "Register table extraction should return a structured result or an actionable fallback.",
+      "tool": "extract_register_table",
+      "args": {
+        "top_k": 20
+      },
+      "assertions": {
+        "mustContainAny": [
+          "Coordinate register table extraction",
+          "No coordinate register table rows found"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    },
+    {
+      "id": "index-validation-basic",
+      "description": "validate_index should run without rebuilding and produce machine summary.",
+      "tool": "validate_index",
+      "args": {},
+      "assertions": {
+        "mustContain": [
+          "MCP Manual Server Doctor",
+          "Machine summary JSON"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

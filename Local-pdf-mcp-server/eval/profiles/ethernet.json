@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "ethernet",
+  "module_type": "ethernet",
+  "description": "Generic Ethernet/netdev eval profile; not tied to GBETH.",
+  "cases": [
+    {
+      "id": "profile-ethernet-checklist",
+      "when": {
+        "module_type": "ethernet"
+      },
+      "tool": "driver_completeness_checklist",
+      "args": {
+        "subsystem": "ethernet",
+        "task": "ethernet MAC driver completeness review"
+      },
+      "assertions": {
+        "mustContain": [
+          "Driver Completeness Checklist",
+          "Completeness matrix"
+        ],
+        "mustContainAny": [
+          "MAC",
+          "PHY",
+          "MDIO",
+          "interrupt",
+          "reset"
+        ],
+        "mustNotContain": [
+          "Unhandled",
+          "TypeError",
+          "ReferenceError"
+        ]
+      }
+    }
+  ]
+}

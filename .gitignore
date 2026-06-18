@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Local manuals and generated artifacts
+Local-pdf-mcp-server/documents/*.pdf
+Local-pdf-mcp-server/indexes/
+Local-pdf-mcp-server/renders/
+
+# Logs and reports
+*.log
+*.tmp
+*.temp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
