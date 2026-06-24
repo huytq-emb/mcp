@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "pcie-host",
+  "title": "Linux PCIe host bridge/root complex driver completeness checklist",
+  "subsystem": "pcie",
+  "driver_family": "pcie-host",
+  "extends": "pcie",
+  "fragments": ["pcie-link-training", "pcie-address-window", "msi", "reset-refclk"],
+  "description": "PCIe root complex checklist for host bridge drivers.",
+  "checklist": [
+    {
+      "area": "PCIe root complex bring-up",
+      "items": [
+        "host bridge resources/ranges are mapped to outbound windows",
+        "link-up polling and failure handling are bounded",
+        "MSI/legacy interrupt domains are wired correctly",
+        "config space access is gated by link/window readiness"
+      ],
+      "required_manual_checks": ["root complex mode bits", "outbound/inbound window registers", "link status bits", "MSI controller registers", "config access restrictions"]
+    }
+  ],
+  "source_review_steps": ["Inspect pci_host_bridge setup, ranges parsing, link polling, config access, MSI domain setup, and error paths."],
+  "required_manual_checks": ["root complex mode sequence", "address translation windows", "link-up timeout behavior", "MSI domain setup", "config access restrictions"],
+  "recommended_tools": ["verify_register_usage", "extract_register_table", "extract_bitfield_table", "get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["PCIe root complex initialization", "PCIe link training sequence", "MSI setup sequence"],
+  "caution_topics": ["config access restriction", "address window restriction", "MSI restriction"],
+  "evidence_topics": ["PCIe root complex"]
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "reset-refclk",
+  "title": "Reset/refclk/PERST",
+  "checklist": [
+    {
+      "area": "Reset and reference clock",
+      "items": [
+        "reference clock is stable before link training",
+        "PERST#/controller resets satisfy timing",
+        "endpoint reset/wakeup behavior is reviewed"
+      ],
+      "required_manual_checks": ["refclk requirement", "PERST timing", "reset status bits"]
+    }
+  ],
+  "source_review_steps": ["Inspect refclk, PERST#, controller reset, endpoint reset, and wake paths."],
+  "required_manual_checks": ["PCIe reset/refclk timing"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register", "visual_review_handoff_pack"],
+  "sequence_topics": ["PERST reset sequence", "reference clock enable sequence"],
+  "caution_topics": ["PERST timing restriction", "reference clock restriction"],
+  "evidence_topics": ["PCIe reset refclk"]
+}

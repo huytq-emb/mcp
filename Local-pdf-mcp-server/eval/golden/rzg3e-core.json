@@ -3,8 +3,579 @@
   "type": "golden-profile",
   "profile": "rzg3e-core",
   "filename": "r01uh1069ej0115-rzg3e.pdf",
-  "description": "RZ/G3E core register/bitfield golden facts. Candidate facts are generated from index artifacts and must be manually verified before they gate tests.",
+  "description": "RZ/G3E core register/bitfield golden facts. Verified facts gate tests; candidate facts remain report-only until manually verified against manual pages.",
   "strictVerifiedOnly": true,
-  "registers": [],
-  "bitfields": []
+  "registers": [
+    {
+      "status": "verified",
+      "register": "WDTm_WDTRR",
+      "aliases": [
+        "WDTRR"
+      ],
+      "offsetAddress": "00h",
+      "initialValue": "FFh",
+      "accessSize": "8",
+      "page": 1006,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual page table lists WDTRR address, access size, and initial value.",
+      "evidence": {
+        "page": 1006,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1006:c0",
+        "quote": "Access Size 8 bits; Address <WDTm_base> + 00h; Initial Value FFh",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "WDTm_WDTCR",
+      "aliases": [
+        "WDTCR"
+      ],
+      "offsetAddress": "02h",
+      "initialValue": "33F3h",
+      "accessSize": "16",
+      "page": 1007,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual page table lists WDTCR address, access size, and initial value.",
+      "evidence": {
+        "page": 1007,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1007:c0",
+        "quote": "Access Size 16 bits; Address <WDTm_base> + 02h; Initial Value 33F3h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "WDTm_WDTSR",
+      "aliases": [
+        "WDTSR"
+      ],
+      "offsetAddress": "04h",
+      "initialValue": "0000h",
+      "accessSize": "16",
+      "page": 1010,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual page table lists WDTSR address, access size, and initial value.",
+      "evidence": {
+        "page": 1010,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1010:c0",
+        "quote": "Access Size 16 bits; Address <WDTm_base> + 04h; Initial Value 0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "WDTm_WDTRCR",
+      "aliases": [
+        "WDTRCR"
+      ],
+      "offsetAddress": "06h",
+      "initialValue": "80h",
+      "accessSize": "8",
+      "page": 1012,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual page table lists WDTRCR address, access size, and initial value.",
+      "evidence": {
+        "page": 1012,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1012:c0",
+        "quote": "Access Size 8 bits; Address <WDTm_base> + 06h; Initial Value 80h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DCTRL",
+      "aliases": [
+        "DCTRL"
+      ],
+      "offsetAddress": "0300h",
+      "initialValue": "0000_0000h",
+      "accessSize": "32",
+      "page": 843,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for DMACm_DCTRL confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 843,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0",
+        "quote": "Access Size 32 bits; Address <DMACm_base> + 0300h; Initial Value 0000_0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DST_EN",
+      "aliases": [
+        "DST_EN"
+      ],
+      "offsetAddress": "0310h",
+      "initialValue": "0000_0000h",
+      "accessSize": "32",
+      "page": 844,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for DMACm_DST_EN confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 844,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p844:c0",
+        "quote": "Access Size 32 bits; Address <DMACm_base> + 0310h; Initial Value 0000_0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DST_ER",
+      "aliases": [
+        "DST_ER"
+      ],
+      "offsetAddress": "0314h",
+      "initialValue": "0000_0000h",
+      "accessSize": "32",
+      "page": 845,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for DMACm_DST_ER confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 845,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p845:c0",
+        "quote": "Access Size 32 bits; Address <DMACm_base> + 0314h; Initial Value 0000_0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADCSR",
+      "aliases": [
+        "ADCSR"
+      ],
+      "offsetAddress": "0000h",
+      "initialValue": "0000h",
+      "accessSize": "16",
+      "page": 3461,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for ADCm_ADCSR confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 3461,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3461:c0",
+        "quote": "Access Size 16 bits; Address <ADCm_base> + 0000h; Initial Value 0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADCER",
+      "aliases": [
+        "ADCER"
+      ],
+      "offsetAddress": "000Eh",
+      "initialValue": "0000h",
+      "accessSize": "16",
+      "page": 3466,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for ADCm_ADCER confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 3466,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3466:c0",
+        "quote": "Access Size 16 bits; Address <ADCm_base> + 000Eh; Initial Value 0000h",
+        "sourceArtifact": "registers-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "RSPIm_SPCKD",
+      "aliases": [
+        "SPCKD"
+      ],
+      "offsetAddress": "0004h",
+      "initialValue": "00h",
+      "accessSize": "8",
+      "page": 2616,
+      "sourceArtifact": "registers-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual register table for RSPIm_SPCKD confirms offset, reset, and access size.",
+      "evidence": {
+        "page": 2616,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2616:c0",
+        "quote": "Access Size 8 bits; Address <RSPIm_base> + 0004h; Initial Value 00h",
+        "sourceArtifact": "registers-index"
+      }
+    }
+  ],
+  "bitfields": [
+    {
+      "status": "verified",
+      "register": "RSPIm_SPCKD",
+      "bitfield": "SCKDL",
+      "aliases": [
+        "SCKDL"
+      ],
+      "bitRange": "2:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 2616,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "2:0",
+      "verificationNotes": "Manual bitfield table for RSPIm_SPCKD lists physical bits 2 to 0 and field-local SCKDL[2:0].",
+      "evidence": {
+        "page": 2616,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2616:c0",
+        "quote": "2 to 0 SCKDL[2:0] 0h RW RSPCK Delay Setting",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "RSPIm_SPCR2",
+      "bitfield": "SPSCKDL",
+      "aliases": [
+        "SPSCKDL"
+      ],
+      "bitRange": "2:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 2630,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "2:0",
+      "verificationNotes": "Manual bitfield table for RSPIm_SPCR2 lists physical bits 2 to 0 and field-local SPSCKDL[2:0].",
+      "evidence": {
+        "page": 2630,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2630:c0",
+        "quote": "2 to 0 SPSCKDL[2:0] 0h RW SPI Master Receive Clock Analog Delay",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "RSPIm_SPND",
+      "bitfield": "SPNDL",
+      "aliases": [
+        "SPNDL"
+      ],
+      "bitRange": "2:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 2619,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "2:0",
+      "verificationNotes": "Manual bitfield table for RSPIm_SPND lists physical bits 2 to 0 and field-local SPNDL[2:0].",
+      "evidence": {
+        "page": 2619,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2619:c0",
+        "quote": "2 to 0 SPNDL[2:0] 0h RW SPI Next-Access Delay Bits",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "RSPIm_SSLND",
+      "bitfield": "SLNDL",
+      "aliases": [
+        "SLNDL"
+      ],
+      "bitRange": "2:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 2617,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "2:0",
+      "verificationNotes": "Manual bitfield table for RSPIm_SSLND lists physical bits 2 to 0 and field-local SLNDL[2:0].",
+      "evidence": {
+        "page": 2617,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2617:c0",
+        "quote": "2 to 0 SLNDL[2:0] 0h RW SSL Negation Delay Bits",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DCTRL",
+      "bitfield": "LWCA",
+      "aliases": [
+        "LWCA"
+      ],
+      "bitRange": "31:28",
+      "fieldBitRange": "3:0",
+      "bitPositionRange": "31:28",
+      "access": "R/W",
+      "reset": "0",
+      "page": 843,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual DCTRL bitfield table lists physical bits 31 to 28 and field-local LWCA[3:0].",
+      "evidence": {
+        "page": 843,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0",
+        "quote": "31 to 28 LWCA[3:0] 0h RW Link Writeback CACHE",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DCTRL",
+      "bitfield": "LWPR",
+      "aliases": [
+        "LWPR"
+      ],
+      "bitRange": "26:24",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "26:24",
+      "access": "R/W",
+      "reset": "0",
+      "page": 843,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual DCTRL bitfield table lists physical bits 26 to 24 and field-local LWPR[2:0].",
+      "evidence": {
+        "page": 843,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0",
+        "quote": "26 to 24 LWPR[2:0] 0h RW Link Writeback PROT",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DCTRL",
+      "bitfield": "LDCA",
+      "aliases": [
+        "LDCA"
+      ],
+      "bitRange": "23:20",
+      "fieldBitRange": "3:0",
+      "bitPositionRange": "23:20",
+      "access": "R/W",
+      "reset": "0",
+      "page": 843,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual DCTRL bitfield table lists physical bits 23 to 20 and field-local LDCA[3:0].",
+      "evidence": {
+        "page": 843,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0",
+        "quote": "23 to 20 LDCA[3:0] 0h RW Link Descriptor CACHE",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "DMACm_DCTRL",
+      "bitfield": "LDPR",
+      "aliases": [
+        "LDPR"
+      ],
+      "bitRange": "18:16",
+      "fieldBitRange": "2:0",
+      "bitPositionRange": "18:16",
+      "access": "R/W",
+      "reset": "0",
+      "page": 843,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual DCTRL bitfield table lists physical bits 18 to 16 and field-local LDPR[2:0].",
+      "evidence": {
+        "page": 843,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0",
+        "quote": "18 to 16 LDPR[2:0] 0h RW Link Descriptor PROT",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADANSA0",
+      "bitfield": "ANSA0",
+      "aliases": [
+        "ANSA0"
+      ],
+      "bitRange": "7:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 3463,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "7:0",
+      "bitPositionRange": "7:0",
+      "verificationNotes": "Manual bitfield table for ADCm_ADANSA0 lists physical bits 7 to 0 and field-local ANSA0[7:0].",
+      "evidence": {
+        "page": 3463,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3463:c0",
+        "quote": "- - - - - - - - ANSA0[7:0]",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADADS0",
+      "bitfield": "ADS0",
+      "aliases": [
+        "ADS0"
+      ],
+      "bitRange": "7:0",
+      "access": "R/W",
+      "reset": "0",
+      "page": 3464,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "fieldBitRange": "7:0",
+      "bitPositionRange": "7:0",
+      "verificationNotes": "Manual bitfield table for ADCm_ADADS0 lists physical bits 7 to 0 and field-local ADS0[7:0].",
+      "evidence": {
+        "page": 3464,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3464:c0",
+        "quote": "- - - - - - - - ADS0[7:0]",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADADC",
+      "bitfield": "AVEE",
+      "aliases": [
+        "AVEE"
+      ],
+      "bitRange": "7",
+      "bitPositionRange": "7",
+      "fieldBitRange": "unknown",
+      "access": "R/W",
+      "reset": "0",
+      "page": 3465,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual bitfield table for ADCm_ADADC lists AVEE at physical bit 7.",
+      "evidence": {
+        "page": 3465,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3465:c0",
+        "quote": "7 AVEE 0h RW Average Mode Enable",
+        "sourceArtifact": "bitfields-index"
+      }
+    },
+    {
+      "status": "verified",
+      "register": "ADCm_ADSTRGR",
+      "bitfield": "TRSA",
+      "aliases": [
+        "TRSA"
+      ],
+      "bitRange": "13:8",
+      "fieldBitRange": "5:0",
+      "bitPositionRange": "13:8",
+      "access": "R/W",
+      "reset": "0",
+      "page": 3467,
+      "sourceArtifact": "bitfields-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-19",
+      "verificationNotes": "Manual bitfield table for ADCm_ADSTRGR lists physical bits 13 to 8 and field-local TRSA[5:0].",
+      "evidence": {
+        "page": 3467,
+        "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3467:c0",
+        "quote": "13 to 8 TRSA[5:0] 0h RW A/D Conversion Start Trigger Select",
+        "sourceArtifact": "bitfields-index"
+      }
+    }
+  ],
+  "tables": [
+    {
+      "status": "verified",
+      "kind": "bitfield-table",
+      "pageStart": 1006,
+      "pageEnd": 1006,
+      "minRows": 5,
+      "requiredRoles": ["bit", "bitfield", "access", "reset"],
+      "sourceArtifact": "tables-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-21",
+      "verificationNotes": "WDTm_WDTRR bitfield table preserves bit, name, access, reset, description, and page provenance.",
+      "evidence": { "page": 1006, "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1006:c0", "quote": "7 to 0 REFRESH[7:0] FFh RW", "sourceArtifact": "tables-index" }
+    },
+    {
+      "status": "verified",
+      "kind": "bitfield-table",
+      "pageStart": 843,
+      "pageEnd": 844,
+      "minRows": 20,
+      "requiredRoles": ["bit", "access"],
+      "sourceArtifact": "tables-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-21",
+      "verificationNotes": "DMAC DCTRL/DST register table extraction spans only the adjacent pages and is no longer merged across the full register chapter.",
+      "evidence": { "page": 843, "chunkId": "r01uh1069ej0115-rzg3e.pdf:p843:c0", "quote": "31 to 28 LWCA[3:0] 0h RW Link Writeback CACHE", "sourceArtifact": "tables-index" }
+    },
+    {
+      "status": "verified",
+      "kind": "bitfield-table",
+      "pageStart": 2616,
+      "pageEnd": 2617,
+      "minRows": 10,
+      "requiredRoles": ["bit", "access"],
+      "sourceArtifact": "tables-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-21",
+      "verificationNotes": "RSPI delay register table continues from SPCKD to SSLND on the adjacent page.",
+      "evidence": { "page": 2616, "chunkId": "r01uh1069ej0115-rzg3e.pdf:p2616:c0", "quote": "2 to 0 SCKDL[2:0] 0h RW RSPCK Delay Setting", "sourceArtifact": "tables-index" }
+    },
+    {
+      "status": "verified",
+      "kind": "bitfield-table",
+      "pageStart": 3466,
+      "pageEnd": 3467,
+      "minRows": 10,
+      "requiredRoles": ["bit", "bitfield", "access", "reset"],
+      "sourceArtifact": "tables-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-21",
+      "verificationNotes": "ADC trigger register bitfield table preserves TRSA physical and field-local ranges across adjacent pages.",
+      "evidence": { "page": 3467, "chunkId": "r01uh1069ej0115-rzg3e.pdf:p3467:c0", "quote": "13 to 8 TRSA[5:0] 0h RW", "sourceArtifact": "tables-index" }
+    }
+  ],
+  "sequences": [
+    {
+      "status": "verified",
+      "topic": "watchdog refresh",
+      "structureStatus": "complete",
+      "steps": [
+        { "operation": "write", "register": "WDTm_WDTRR", "value": "00h", "page": 1016 },
+        { "operation": "write", "register": "WDTm_WDTRR", "value": "FFh", "page": 1016 }
+      ],
+      "sourceArtifact": "sequences-index+manual-page",
+      "verifiedBy": "codex",
+      "verifiedAt": "2026-06-21",
+      "verificationNotes": "The manual explicitly requires the WDTRR write order 00h then FFh to refresh and start counting.",
+      "evidence": { "page": 1016, "chunkId": "r01uh1069ej0115-rzg3e.pdf:p1016:c0", "quote": "write to the WDT Refresh Register (WDTRR) in the order of values from 00h to FFh", "sourceArtifact": "sequences-index" }
+    }
+  ],
+  "updatedAt": "2026-06-21T23:45:00.000Z"
 }

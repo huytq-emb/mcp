@@ -22,6 +22,12 @@ try {
   console.log(`File: ${result.filename}`);
   console.log(`Added registers: ${result.added.registers}`);
   console.log(`Added bitfields: ${result.added.bitfields}`);
+  if (result.candidateQuality) {
+    const registerQuality = result.candidateQuality.registers || {};
+    const bitfieldQuality = result.candidateQuality.bitfields || {};
+    console.log(`Register candidate quality: high_quality=${registerQuality.high_quality || 0}, needs_manual_review=${registerQuality.needs_manual_review || 0}, rejected_noise=${registerQuality.rejected_noise || 0}`);
+    console.log(`Bitfield candidate quality: high_quality=${bitfieldQuality.high_quality || 0}, needs_manual_review=${bitfieldQuality.needs_manual_review || 0}, rejected_noise=${bitfieldQuality.rejected_noise || 0}`);
+  }
   console.log("Review candidate facts against the original manual, then set status=verified for facts that should gate tests.");
 } catch (error) {
   console.error("Golden bootstrap: FAIL");

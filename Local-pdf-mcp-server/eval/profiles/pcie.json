@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "pcie",
+  "module_type": "pcie",
+  "description": "PCIe host/root-complex workflow eval cases.",
+  "cases": [
+    {
+      "id": "profile-pcie-checklist",
+      "when": { "module_type": "pcie" },
+      "tool": "driver_completeness_checklist",
+      "args": { "subsystem": "pcie", "driver_family": "host", "task": "PCIe host bridge driver completeness review" },
+      "assertions": {
+        "mustContain": ["Driver Completeness Checklist", "Selected profile: pcie-host", "Profile fragments"],
+        "mustContainAny": ["PCIe", "link training", "MSI", "address window", "PERST"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-pcie-source-prompt",
+      "when": { "module_type": "pcie" },
+      "tool": "source_review_prompt_pack",
+      "args": { "subsystem": "pcie", "driver_family": "host", "task": "review PCIe host bridge driver", "source_files": ["drivers/pci/controller/<driver>.c"] },
+      "assertions": {
+        "mustContain": ["Source Review Prompt Pack", "Selected profile: pcie-host", "Mandatory MCP workflow"],
+        "mustContainAny": ["link training", "MSI", "address window", "PERST"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-pcie-search",
+      "when": { "module_type": "pcie" },
+      "tool": "hybrid_search_pdf",
+      "args": { "query": "PCIe link training address window MSI PERST refclk", "intent": "driver evidence", "top_k": 5 },
+      "assertions": {
+        "mustContain": ["Hybrid search results"],
+        "mustContainAny": ["Result 1", "No hybrid results found", "PCIe", "MSI"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      },
+      "allowFail": true
+    }
+  ]
+}

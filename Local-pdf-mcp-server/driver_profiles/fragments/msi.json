@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "msi",
+  "title": "MSI/interrupt domains",
+  "checklist": [
+    {
+      "area": "MSI and interrupt routing",
+      "items": [
+        "MSI domain/allocation is wired to hardware",
+        "MSI address/data registers are programmed correctly",
+        "legacy INTx/error IRQ routing is handled"
+      ],
+      "required_manual_checks": ["MSI registers", "interrupt routing", "error/status flags"]
+    }
+  ],
+  "source_review_steps": ["Inspect MSI domain setup, interrupt routing, and error/status IRQs."],
+  "required_manual_checks": ["MSI/IRQ mapping"],
+  "recommended_tools": ["extract_register_table", "extract_bitfield_table", "verify_register_usage"],
+  "sequence_topics": ["MSI setup sequence"],
+  "caution_topics": ["MSI restriction", "interrupt routing restriction"],
+  "evidence_topics": ["MSI interrupt"]
+}

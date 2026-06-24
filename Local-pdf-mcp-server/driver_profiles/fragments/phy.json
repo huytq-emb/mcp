@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "phy",
+  "title": "PHY integration",
+  "checklist": [
+    {
+      "area": "PHY bring-up",
+      "items": [
+        "PHY lookup/handle is correct",
+        "PHY reset/init/calibration follows manual order",
+        "link/ready polling has timeout and error handling"
+      ],
+      "required_manual_checks": ["PHY control registers", "PHY reset/init sequence", "ready/status bits"]
+    }
+  ],
+  "source_review_steps": ["Inspect PHY init/reset/ready polling and error unwind."],
+  "required_manual_checks": ["PHY sequence"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register", "visual_review_handoff_pack"],
+  "sequence_topics": ["PHY initialization sequence", "PHY reset sequence"],
+  "caution_topics": ["PHY ready timeout", "PHY reset restriction"],
+  "evidence_topics": ["PHY control"]
+}

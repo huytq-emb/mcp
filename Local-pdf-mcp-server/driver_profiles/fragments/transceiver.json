@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "transceiver",
+  "title": "External transceiver",
+  "checklist": [
+    {
+      "area": "Transceiver and wake",
+      "items": [
+        "transceiver/regulator/GPIO dependencies are handled",
+        "standby/wakeup mode matches board design",
+        "termination/IO voltage assumptions are not hardcoded"
+      ],
+      "required_manual_checks": ["transceiver enable signal", "wakeup restrictions", "external pin requirements"]
+    }
+  ],
+  "source_review_steps": ["Inspect transceiver, standby, wakeup, regulator, and GPIO handling."],
+  "required_manual_checks": ["external transceiver wiring"],
+  "recommended_tools": ["visual_review_handoff_pack", "get_cautions_for_register"],
+  "sequence_topics": ["transceiver enable sequence"],
+  "caution_topics": ["wakeup restriction"],
+  "evidence_topics": ["transceiver"]
+}

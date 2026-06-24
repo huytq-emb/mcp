@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "dma",
+  "title": "DMA integration",
+  "checklist": [
+    {
+      "area": "DMA/coherency",
+      "items": [
+        "DMA addressing and burst/alignment limits are enforced",
+        "descriptor/ring ownership and barriers are correct when present",
+        "cache coherency attributes match hardware"
+      ],
+      "required_manual_checks": ["DMA address width", "burst/alignment limits", "descriptor ownership", "coherency restrictions"]
+    }
+  ],
+  "source_review_steps": ["Inspect DMA mapping, descriptor ownership, and memory barrier usage."],
+  "required_manual_checks": ["DMA/coherency constraints"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["DMA start sequence", "DMA stop sequence"],
+  "caution_topics": ["DMA alignment restriction", "cache coherency restriction"],
+  "evidence_topics": ["DMA coherency"]
+}

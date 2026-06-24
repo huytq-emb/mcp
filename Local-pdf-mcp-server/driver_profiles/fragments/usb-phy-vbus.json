@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "usb-phy-vbus",
+  "title": "USB PHY/VBUS",
+  "checklist": [
+    {
+      "area": "USB PHY and VBUS",
+      "items": [
+        "USB2/USB3 PHY clocks/resets are sequenced",
+        "VBUS regulator/valid detection is handled",
+        "PHY ready/link status polling has timeout"
+      ],
+      "required_manual_checks": ["USB PHY control", "VBUS valid/status", "PHY ready bits"]
+    }
+  ],
+  "source_review_steps": ["Inspect USB PHY, VBUS, regulator, and ready/link polling paths."],
+  "required_manual_checks": ["USB PHY/VBUS sequence"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register", "visual_review_handoff_pack"],
+  "sequence_topics": ["USB PHY initialization", "VBUS enable sequence"],
+  "caution_topics": ["VBUS restriction", "PHY ready timeout"],
+  "evidence_topics": ["USB PHY VBUS"]
+}

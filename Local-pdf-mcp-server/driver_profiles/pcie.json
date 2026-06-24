@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "pcie",
+  "title": "Linux PCIe controller driver completeness checklist",
+  "subsystem": "pcie",
+  "driver_family": "generic-pcie",
+  "extends": "generic",
+  "fragments": ["clock-reset", "irq-status", "runtime-pm", "phy", "regulator", "pinctrl", "pcie-link-training", "pcie-address-window", "msi", "reset-refclk"],
+  "description": "Generic PCIe controller checklist for host, endpoint, glue, and PHY-oriented drivers.",
+  "checklist": [
+    {
+      "area": "PCIe controller integration",
+      "items": [
+        "host/endpoint role is identified and source path matches it",
+        "PHY/refclk/reset and PERST# sequencing are verified",
+        "link training state and timeout handling are implemented",
+        "address window and interrupt/MSI programming match hardware"
+      ],
+      "required_manual_checks": ["PCIe role/control registers", "PHY/refclk/reset sequence", "link status registers", "address translation windows", "MSI/interrupt registers"]
+    }
+  ],
+  "source_review_steps": ["Inspect probe, host bridge setup, PHY/reset/refclk sequence, address window programming, MSI/IRQ handling, and suspend/resume."],
+  "required_manual_checks": ["link training sequence", "PERST/refclk/reset timing", "ATU/address window programming", "MSI/INTx mapping", "error/status clear semantics"],
+  "recommended_tools": ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "visual_review_handoff_pack"],
+  "sequence_topics": ["PCIe link training sequence", "PERST reset sequence", "address translation window setting"],
+  "caution_topics": ["PCIe config access restriction", "link training timeout", "PERST timing restriction"],
+  "evidence_topics": ["PCIe controller"]
+}

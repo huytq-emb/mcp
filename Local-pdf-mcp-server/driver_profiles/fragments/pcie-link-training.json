@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "pcie-link-training",
+  "title": "PCIe link training",
+  "checklist": [
+    {
+      "area": "PCIe link training",
+      "items": [
+        "LTSSM/link-up sequence is started in documented order",
+        "link polling has timeout and recovery",
+        "speed/width configuration matches hardware and board"
+      ],
+      "required_manual_checks": ["LTSSM control/status", "link-up bits", "speed/width restrictions"]
+    }
+  ],
+  "source_review_steps": ["Inspect link training start, polling, timeout, speed, and width setup."],
+  "required_manual_checks": ["PCIe link training"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["PCIe link training sequence", "LTSSM enable sequence"],
+  "caution_topics": ["link training timeout", "link speed restriction"],
+  "evidence_topics": ["PCIe link training"]
+}

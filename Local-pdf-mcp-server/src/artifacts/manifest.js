@@ -4,11 +4,13 @@ export const ARTIFACT_DEPENDENCIES = {
   pages: [],
   "chunk-index": ["pages"],
   sections: ["pages"],
-  registers: ["chunk-index", "sections"],
-  bitfields: ["registers"],
-  sequences: ["chunk-index", "sections", "registers"],
+  tables: ["pages", "chunk-index", "sections"],
+  registers: ["chunk-index", "sections", "tables"],
+  bitfields: ["registers", "tables"],
+  sequences: ["chunk-index", "sections", "tables", "registers", "bitfields", "cautions"],
   cautions: ["chunk-index", "sections", "registers"],
   figures: ["pages"],
+  figure_ocr: ["figures"],
   "visual-evidence": ["figures"],
   "module-profile": ["registers", "sections"],
   "driver-pack": ["registers", "bitfields", "sequences", "cautions"],
@@ -19,11 +21,29 @@ export const CORE_ARTIFACT_KEYS = [
   "pages",
   "chunk-index",
   "sections",
+  "tables",
   "registers",
   "bitfields",
   "sequences",
   "cautions",
 ];
+
+export function artifactDescendants(keys) {
+  const seeds = new Set(Array.isArray(keys) ? keys : [keys]);
+  const descendants = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [artifact, dependencies] of Object.entries(ARTIFACT_DEPENDENCIES)) {
+      if (seeds.has(artifact) || descendants.has(artifact)) continue;
+      if (dependencies.some((dependency) => seeds.has(dependency) || descendants.has(dependency))) {
+        descendants.add(artifact);
+        changed = true;
+      }
+    }
+  }
+  return [...descendants];
+}
 
 export function sourceFingerprint(source = {}) {
   const size = Number(source.size || source.sourceSize || 0);
@@ -45,6 +65,7 @@ function normalizeArtifact(entry = {}) {
     count: entry.count ?? null,
     countKey: entry.countKey || "",
     error: entry.error || "",
+    staleReason: entry.staleReason || "",
     dependencies: ARTIFACT_DEPENDENCIES[key] || [],
   };
 }
@@ -66,8 +87,13 @@ export function createArtifactManifest({
   buildStatus = "ready",
   generatedAt = new Date().toISOString(),
   notes = [],
+  staleArtifacts = [],
+  producer = null,
 } = {}) {
-  const normalizedArtifacts = artifacts.map(normalizeArtifact);
+  const stale = new Set(staleArtifacts || []);
+  const normalizedArtifacts = artifacts.map((entry) => normalizeArtifact(stale.has(entry.key) && entry.exists
+    ? { ...entry, ok: false, status: "stale", error: entry.error || "dependency rebuilt after this artifact", staleReason: "dependency rebuild" }
+    : entry));
   const byKey = Object.fromEntries(normalizedArtifacts.map((artifact) => [artifact.key, artifact]));
   const missingRequired = normalizedArtifacts
     .filter((artifact) => !artifact.optional && !artifact.ok)
@@ -85,9 +111,11 @@ export function createArtifactManifest({
       fingerprint: sourceFingerprint(source),
     },
     buildStatus,
+    producer: producer || null,
     health: summarizeArtifactHealth(normalizedArtifacts),
     counts: Object.fromEntries(normalizedArtifacts.filter((artifact) => artifact.count !== null).map((artifact) => [artifact.key, artifact.count])),
     missingRequired,
+    staleArtifacts: normalizedArtifacts.filter((artifact) => artifact.status === "stale").map((artifact) => artifact.key),
     dependencyGraph: ARTIFACT_DEPENDENCIES,
     artifacts: byKey,
     nextActions: missingRequired.length
@@ -104,6 +132,7 @@ export function formatManifestSummary(manifest) {
     `- Health: ${manifest.health}`,
     `- Build status: ${manifest.buildStatus}`,
     `- Source fingerprint: ${manifest.source?.fingerprint || "unknown"}`,
+    `- Producer: ${manifest.producer?.engine || "unknown"}${manifest.producer?.operation ? ` (${manifest.producer.operation})` : ""}`,
     `- Missing required: ${(manifest.missingRequired || []).join(", ") || "none"}`,
   ];
 

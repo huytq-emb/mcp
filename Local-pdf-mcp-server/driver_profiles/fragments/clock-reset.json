@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "clock-reset",
+  "title": "Clock/reset integration",
+  "checklist": [
+    {
+      "area": "Clock/reset resources",
+      "items": [
+        "required clocks are requested and enabled in documented order",
+        "reset controls are asserted/deasserted with documented timing",
+        "probe error paths restore clocks/resets safely"
+      ],
+      "required_manual_checks": ["clock tree requirements", "reset sequence", "enable/disable restrictions"]
+    }
+  ],
+  "source_review_steps": ["Check probe/remove/suspend paths for clock and reset ordering."],
+  "required_manual_checks": ["clock/reset sequence"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["clock enable sequence", "reset deassert sequence"],
+  "caution_topics": ["clock gating restriction", "reset timing restriction"],
+  "evidence_topics": ["clock reset requirements"]
+}

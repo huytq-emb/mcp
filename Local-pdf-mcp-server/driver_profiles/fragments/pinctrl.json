@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "pinctrl",
+  "title": "Pinctrl integration",
+  "checklist": [
+    {
+      "area": "Pins and alternate functions",
+      "items": [
+        "default/sleep pinctrl states are selected when required",
+        "drive/bias/IO voltage constraints are reviewed",
+        "external reset/enable/interrupt pins match board wiring"
+      ],
+      "required_manual_checks": ["pin function table", "drive/bias restrictions", "external signal mapping"]
+    }
+  ],
+  "source_review_steps": ["Inspect pinctrl state selection and board-specific signal wiring."],
+  "required_manual_checks": ["pinmux/IO constraints"],
+  "recommended_tools": ["extract_pinmux_table", "visual_review_handoff_pack"],
+  "sequence_topics": ["pin function setting"],
+  "caution_topics": ["pinmux restriction"],
+  "evidence_topics": ["pin function table"]
+}

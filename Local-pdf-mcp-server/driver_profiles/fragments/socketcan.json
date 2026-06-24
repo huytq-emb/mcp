@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "socketcan",
+  "title": "SocketCAN integration",
+  "checklist": [
+    {
+      "area": "SocketCAN core",
+      "items": [
+        "can_priv/net_device setup follows SocketCAN conventions",
+        "open/close/start_xmit paths map to controller state",
+        "echo skb, tx queue stop/wake, and bus-off recovery are correct"
+      ],
+      "required_manual_checks": ["controller mode bits", "TX/RX status flags", "bus-off recovery"]
+    }
+  ],
+  "source_review_steps": ["Inspect open/stop/start_xmit/error/bus-off paths."],
+  "required_manual_checks": ["SocketCAN state transitions"],
+  "recommended_tools": ["verify_register_usage", "get_sequence"],
+  "sequence_topics": ["CAN start operation", "CAN stop operation", "bus off recovery"],
+  "caution_topics": ["CAN error status clear"],
+  "evidence_topics": ["CAN controller mode"]
+}

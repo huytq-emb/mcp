@@ -1,0 +1,7 @@
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+indexes/.workers/
+indexes/*.partial.json
+indexes/*.tmp-*

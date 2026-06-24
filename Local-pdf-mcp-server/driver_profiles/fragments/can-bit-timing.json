@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "can-bit-timing",
+  "title": "CAN bit timing",
+  "checklist": [
+    {
+      "area": "CAN bit timing",
+      "items": [
+        "nominal/data bit timing formulas use actual clock",
+        "prescaler/segment/SJW limits are enforced",
+        "sample point and FD data phase are validated when supported"
+      ],
+      "required_manual_checks": ["bit timing registers", "clock divisor formula", "segment limits"]
+    }
+  ],
+  "source_review_steps": ["Inspect bittiming_const and data_bittiming_const setup."],
+  "required_manual_checks": ["CAN bit timing formula"],
+  "recommended_tools": ["extract_register_table", "extract_bitfield_table"],
+  "sequence_topics": ["CAN bit timing setting"],
+  "caution_topics": ["bit timing restriction"],
+  "evidence_topics": ["CAN bit timing"]
+}

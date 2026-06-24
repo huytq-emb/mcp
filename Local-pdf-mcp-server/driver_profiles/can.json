@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "can",
+  "title": "Linux SocketCAN controller driver completeness checklist",
+  "subsystem": "can",
+  "driver_family": "generic-can",
+  "extends": "generic",
+  "fragments": ["clock-reset", "irq-status", "runtime-pm", "pinctrl", "socketcan", "can-bit-timing", "fifo-mailbox", "transceiver"],
+  "description": "Generic CAN controller checklist for SocketCAN drivers.",
+  "checklist": [
+    {
+      "area": "CAN controller integration",
+      "items": [
+        "net_device/can_priv allocation and registration are correct",
+        "CAN mode/start/stop paths follow manual order",
+        "TX/RX object/FIFO/mailbox programming matches hardware",
+        "error state and bus-off recovery are handled"
+      ],
+      "required_manual_checks": ["CAN mode control registers", "TX/RX FIFO or mailbox registers", "error/status registers", "bus-off recovery sequence"]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect ndo_open/ndo_stop, xmit path, IRQ handler, error/bus-off handling, and bittiming setup.",
+    "Verify controller mode, bit timing, TX/RX, error/status clear, and transceiver/pinctrl operations."
+  ],
+  "required_manual_checks": ["bit timing formula", "TX/RX mailbox or FIFO sequence", "interrupt clear semantics", "error state flags", "clock/reset/runtime PM restrictions"],
+  "recommended_tools": ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["CAN controller initialization", "CAN start operation", "CAN stop operation", "bus off recovery"],
+  "caution_topics": ["CAN error status clear", "CAN mailbox update restriction"],
+  "evidence_topics": ["CAN controller"]
+}

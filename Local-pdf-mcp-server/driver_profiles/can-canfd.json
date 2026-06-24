@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "can-canfd",
+  "title": "Linux CAN FD controller driver completeness checklist",
+  "subsystem": "can",
+  "driver_family": "canfd",
+  "extends": "can",
+  "fragments": ["can-bit-timing", "fifo-mailbox"],
+  "description": "CAN FD extension checklist for controllers supporting data phase and larger payloads.",
+  "checklist": [
+    {
+      "area": "CAN FD data phase",
+      "items": [
+        "nominal and data bit timing paths are both implemented",
+        "FD enable/BRS/ESI feature flags match hardware",
+        "payload length/DLC mapping handles classic and FD frames",
+        "TX/RX FIFO sizing and timestamp behavior are reviewed"
+      ],
+      "required_manual_checks": ["CAN FD mode bits", "data phase timing registers", "DLC/payload handling", "FD error/status flags"]
+    }
+  ],
+  "source_review_steps": ["Inspect CAN FD feature enable, data bitrate setup, DLC mapping, and RX/TX buffer sizing."],
+  "required_manual_checks": ["CAN FD enable sequence", "data bit timing formula", "payload/DLC limits", "FD-specific error flags"],
+  "recommended_tools": ["verify_register_usage", "extract_bitfield_table", "get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["CAN FD mode enable", "CAN FD data bit timing setting"],
+  "caution_topics": ["CAN FD payload restriction", "CAN FD error status clear"],
+  "evidence_topics": ["CAN FD"]
+}

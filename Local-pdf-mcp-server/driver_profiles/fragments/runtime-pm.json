@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "runtime-pm",
+  "title": "Runtime PM",
+  "checklist": [
+    {
+      "area": "Runtime/system PM",
+      "items": [
+        "runtime PM usage matches clock/reset dependencies",
+        "suspend/resume saves state lost by reset or clock gating",
+        "wakeup is enabled only when documented"
+      ],
+      "required_manual_checks": ["standby restrictions", "wakeup support", "state retention after reset"]
+    }
+  ],
+  "source_review_steps": ["Inspect runtime PM and system suspend/resume state restore."],
+  "required_manual_checks": ["runtime PM restrictions"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["runtime suspend resume sequence"],
+  "caution_topics": ["standby restriction", "wakeup restriction"],
+  "evidence_topics": ["power management restriction"]
+}

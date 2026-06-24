@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "regulator",
+  "title": "Regulator/power rail integration",
+  "checklist": [
+    {
+      "area": "Power rails",
+      "items": [
+        "required supplies are enabled before controller or PHY use",
+        "voltage/current assumptions match board binding",
+        "disable/unwind order is safe"
+      ],
+      "required_manual_checks": ["power supply requirements", "enable/disable ordering"]
+    }
+  ],
+  "source_review_steps": ["Inspect regulator enable/disable and probe unwind ordering."],
+  "required_manual_checks": ["power rail requirements"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["power enable sequence"],
+  "caution_topics": ["power supply restriction"],
+  "evidence_topics": ["power rail requirement"]
+}

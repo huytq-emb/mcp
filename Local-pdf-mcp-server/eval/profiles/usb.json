@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "usb",
+  "module_type": "usb",
+  "description": "USB/xHCI workflow eval cases.",
+  "cases": [
+    {
+      "id": "profile-usb-checklist",
+      "when": { "module_type": "usb" },
+      "tool": "driver_completeness_checklist",
+      "args": { "subsystem": "usb", "driver_family": "xhci", "task": "USB xHCI host driver completeness review" },
+      "assertions": {
+        "mustContain": ["Driver Completeness Checklist", "Selected profile: usb-xhci", "Profile fragments"],
+        "mustContainAny": ["xHCI", "USB PHY", "VBUS", "role", "endpoint"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-usb-evidence-pack-adaptive",
+      "when": { "module_type": "usb" },
+      "tool": "build_driver_evidence_pack",
+      "args": { "module_type": "usb-xhci", "focus": "USB xHCI host PHY VBUS reset interrupt review", "mode": "adaptive", "budget_ms": 20000, "top_registers": 12, "top_summaries": 4 },
+      "assertions": {
+        "mustContain": ["Driver Evidence Pack", "Selected driver workflow profile: usb-xhci", "Build mode"],
+        "mustNotContain": ["Request timed out", "Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-usb-search",
+      "when": { "module_type": "usb" },
+      "tool": "hybrid_search_pdf",
+      "args": { "query": "USB PHY VBUS xHCI host controller reset interrupt", "intent": "driver evidence", "top_k": 5 },
+      "assertions": {
+        "mustContain": ["Hybrid search results"],
+        "mustContainAny": ["Result 1", "No hybrid results found", "USB", "PHY"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      },
+      "allowFail": true
+    }
+  ]
+}

@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createArtifactManifest, formatManifestSummary, sourceFingerprint } from "../../src/artifacts/manifest.js";
+import { artifactDescendants, createArtifactManifest, formatManifestSummary, sourceFingerprint } from "../../src/artifacts/manifest.js";
 
 test("sourceFingerprint uses size and mtime", () => {
   assert.equal(sourceFingerprint({ size: 10, mtimeMs: 20.2 }), "size=10;mtimeMs=20");
+});
+
+test("manifest marks rebuilt dependency descendants stale", () => {
+  assert.deepEqual(new Set(artifactDescendants("tables")), new Set(["registers", "bitfields", "sequences", "cautions", "module-profile", "driver-pack", "driver-task-plan"]));
+  const manifest = createArtifactManifest({
+    filename: "manual.pdf",
+    artifacts: [
+      { key: "tables", exists: true, status: "ok", ok: true },
+      { key: "registers", exists: true, status: "ok", ok: true },
+    ],
+    staleArtifacts: ["registers"],
+  });
+  assert.equal(manifest.artifacts.registers.status, "stale");
+  assert.equal(manifest.health, "fail");
 });
 
 test("createArtifactManifest reports missing required artifacts", () => {

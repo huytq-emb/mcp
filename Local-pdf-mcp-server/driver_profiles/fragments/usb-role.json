@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "usb-role",
+  "title": "USB role handling",
+  "checklist": [
+    {
+      "area": "USB role/OTG",
+      "items": [
+        "host/device/OTG role is selected from DT or role switch",
+        "ID/VBUS/session status is handled when present",
+        "role changes are synchronized with PHY/controller state"
+      ],
+      "required_manual_checks": ["role control registers", "ID/VBUS status", "role switch sequence"]
+    }
+  ],
+  "source_review_steps": ["Inspect role switch, dr_mode, ID/VBUS, and host/device mode setup."],
+  "required_manual_checks": ["USB role mode"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["USB role switch sequence", "host device mode setting"],
+  "caution_topics": ["role switch restriction"],
+  "evidence_topics": ["USB role"]
+}

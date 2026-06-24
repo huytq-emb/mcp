@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "irq-status",
+  "title": "IRQ/status handling",
+  "checklist": [
+    {
+      "area": "Interrupt and status clear",
+      "items": [
+        "IRQ sources are enabled after stale status is cleared",
+        "status flags use documented W1C/W0C/read-clear semantics",
+        "IRQ mask/unmask avoids stop/suspend/remove races"
+      ],
+      "required_manual_checks": ["interrupt source table", "status clear semantics", "IRQ mask registers"]
+    }
+  ],
+  "source_review_steps": ["Inspect IRQ handler, mask/unmask paths, and status clear writes."],
+  "required_manual_checks": ["interrupt/status clear semantics"],
+  "recommended_tools": ["verify_register_usage", "get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["interrupt handling", "clear interrupt status"],
+  "caution_topics": ["write 1 to clear", "write 0 to clear", "interrupt clear restriction"],
+  "evidence_topics": ["interrupt status clear"]
+}

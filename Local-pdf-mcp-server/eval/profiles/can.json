@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "type": "eval-profile",
+  "profile": "can",
+  "module_type": "can",
+  "description": "CAN/SocketCAN workflow eval cases.",
+  "cases": [
+    {
+      "id": "profile-can-checklist",
+      "when": { "module_type": "can" },
+      "tool": "driver_completeness_checklist",
+      "args": { "subsystem": "can", "driver_family": "canfd", "task": "CAN FD driver completeness review" },
+      "assertions": {
+        "mustContain": ["Driver Completeness Checklist", "Selected profile: can-canfd", "Profile fragments"],
+        "mustContainAny": ["SocketCAN", "CAN FD", "bit timing", "mailbox", "bus-off"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-can-source-prompt",
+      "when": { "module_type": "can" },
+      "tool": "source_review_prompt_pack",
+      "args": { "subsystem": "can", "driver_family": "canfd", "task": "review CAN FD driver", "source_files": ["drivers/net/can/<driver>.c"] },
+      "assertions": {
+        "mustContain": ["Source Review Prompt Pack", "Selected profile: can-canfd", "Mandatory MCP workflow"],
+        "mustContainAny": ["SocketCAN", "bit timing", "bus-off", "mailbox"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      }
+    },
+    {
+      "id": "profile-can-search",
+      "when": { "module_type": "can" },
+      "tool": "hybrid_search_pdf",
+      "args": { "query": "CAN FD bit timing mailbox bus off interrupt clear", "intent": "driver evidence", "top_k": 5 },
+      "assertions": {
+        "mustContain": ["Hybrid search results"],
+        "mustContainAny": ["Result 1", "No hybrid results found", "CAN", "interrupt"],
+        "mustNotContain": ["Unhandled", "TypeError", "ReferenceError"]
+      },
+      "allowFail": true
+    }
+  ]
+}

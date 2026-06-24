@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "usb-xhci",
+  "title": "Linux xHCI host controller glue driver completeness checklist",
+  "subsystem": "usb",
+  "driver_family": "xhci",
+  "extends": "usb",
+  "fragments": ["usb-role", "usb-phy-vbus"],
+  "description": "Checklist for SoC-specific xHCI host controller glue.",
+  "checklist": [
+    {
+      "area": "xHCI host glue",
+      "items": [
+        "xhci platform glue passes correct resources and quirks",
+        "host reset/PHY initialization happens before xHCI core start",
+        "USB2/USB3 PHY clocks and lanes are configured",
+        "wakeup/suspend/resume restore host state safely"
+      ],
+      "required_manual_checks": ["xHCI host reset sequence", "USB2/USB3 PHY control", "host interrupt mapping", "wakeup restrictions"]
+    }
+  ],
+  "source_review_steps": ["Inspect xhci-plat/glue probe, hcd creation, PHY init, suspend/resume, and SoC quirks."],
+  "required_manual_checks": ["host controller reset/start order", "PHY lane setup", "interrupt/wakeup mapping", "runtime PM constraints"],
+  "recommended_tools": ["verify_register_usage", "get_sequence", "get_cautions_for_register", "visual_review_handoff_pack"],
+  "sequence_topics": ["xHCI host reset sequence", "USB3 PHY initialization", "host controller start"],
+  "caution_topics": ["xHCI reset restriction", "USB host wakeup restriction"],
+  "evidence_topics": ["xHCI host"]
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "pcie-address-window",
+  "title": "PCIe address windows",
+  "checklist": [
+    {
+      "area": "PCIe address translation",
+      "items": [
+        "outbound/inbound windows match DT ranges",
+        "config/I/O/memory windows are non-overlapping",
+        "window programming is complete before config access"
+      ],
+      "required_manual_checks": ["ATU/address window registers", "ranges mapping", "config access restrictions"]
+    }
+  ],
+  "source_review_steps": ["Inspect ranges parsing and inbound/outbound window programming."],
+  "required_manual_checks": ["PCIe address windows"],
+  "recommended_tools": ["extract_register_table", "extract_bitfield_table", "get_cautions_for_register"],
+  "sequence_topics": ["address translation window setting"],
+  "caution_topics": ["address window restriction", "config access restriction"],
+  "evidence_topics": ["PCIe address window"]
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile",
+  "profile": "usb",
+  "title": "Linux USB controller/PHY driver completeness checklist",
+  "subsystem": "usb",
+  "driver_family": "generic-usb",
+  "extends": "generic",
+  "fragments": ["clock-reset", "irq-status", "runtime-pm", "dma", "phy", "regulator", "pinctrl", "usb-role", "usb-endpoint", "usb-phy-vbus"],
+  "description": "Generic USB controller, glue, role-switch, and PHY checklist.",
+  "checklist": [
+    {
+      "area": "USB controller integration",
+      "items": [
+        "host/device/OTG role is identified from source and Device Tree",
+        "PHY, VBUS, clocks, resets, and regulators are sequenced correctly",
+        "controller interrupts and status clear paths are verified",
+        "DMA/cache coherency assumptions are reviewed"
+      ],
+      "required_manual_checks": ["USB role/host/device registers", "PHY/VBUS sequence", "interrupt/status registers", "DMA/coherency restrictions"]
+    }
+  ],
+  "source_review_steps": [
+    "Inspect probe/remove, role/PHY setup, IRQ handling, runtime PM, and controller core handoff.",
+    "Verify USB clock/reset/PHY/VBUS/status operations with manual evidence."
+  ],
+  "required_manual_checks": ["PHY/VBUS enable sequence", "controller reset/start sequence", "endpoint/FIFO behavior", "interrupt clear semantics", "runtime PM restrictions"],
+  "recommended_tools": ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "visual_review_handoff_pack"],
+  "sequence_topics": ["USB controller initialization", "USB PHY initialization", "VBUS enable sequence", "USB role switch sequence"],
+  "caution_topics": ["USB PHY ready timeout", "VBUS restriction", "USB interrupt clear"],
+  "evidence_topics": ["USB controller"]
+}

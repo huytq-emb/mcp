@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "fifo-mailbox",
+  "title": "FIFO/mailbox model",
+  "checklist": [
+    {
+      "area": "FIFO/mailbox programming",
+      "items": [
+        "TX/RX FIFO or mailbox ownership is handled",
+        "message RAM/object layout matches hardware",
+        "overflow/underrun/error flags are handled"
+      ],
+      "required_manual_checks": ["FIFO/mailbox registers", "message object layout", "overflow/error flags"]
+    }
+  ],
+  "source_review_steps": ["Inspect TX/RX mailbox or FIFO ownership and overflow handling."],
+  "required_manual_checks": ["FIFO/mailbox sequence"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["FIFO transmit receive sequence", "mailbox transmit receive sequence"],
+  "caution_topics": ["FIFO overflow restriction", "mailbox update restriction"],
+  "evidence_topics": ["FIFO mailbox"]
+}

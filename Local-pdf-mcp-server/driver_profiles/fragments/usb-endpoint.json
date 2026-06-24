@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "type": "driver-profile-fragment",
+  "fragment": "usb-endpoint",
+  "title": "USB endpoint/FIFO",
+  "checklist": [
+    {
+      "area": "Endpoint/FIFO model",
+      "items": [
+        "endpoint/FIFO allocation matches hardware limits",
+        "stall/reset/flush paths follow manual order",
+        "transfer complete/error IRQs are acknowledged correctly"
+      ],
+      "required_manual_checks": ["endpoint/FIFO registers", "endpoint reset/flush sequence", "transfer status flags"]
+    }
+  ],
+  "source_review_steps": ["Inspect endpoint/FIFO reset, stall, transfer completion, and error handling."],
+  "required_manual_checks": ["USB endpoint/FIFO behavior"],
+  "recommended_tools": ["get_sequence", "get_cautions_for_register"],
+  "sequence_topics": ["USB endpoint reset sequence", "FIFO flush sequence"],
+  "caution_topics": ["endpoint reset restriction", "FIFO flush restriction"],
+  "evidence_topics": ["USB endpoint FIFO"]
+}
