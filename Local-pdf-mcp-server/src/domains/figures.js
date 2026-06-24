@@ -1,7 +1,7 @@
 import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
-import { buildFiguresWithPython } from "../services/ocr.js";
+import { buildFiguresWithPython, ensureFigureLookupIndex } from "../services/ocr.js";
 
 
 const detectHeadings = createRuntimePort("detectHeadings");
@@ -172,6 +172,7 @@ export async function buildFiguresIndex(filename, pageCache = null, options = {}
   };
 
   await atomicWriteJson(safeFiguresIndexPath(filename), result);
+  await ensureFigureLookupIndex(filename, result, { force: true }).catch(() => {});
   return result;
 }
 

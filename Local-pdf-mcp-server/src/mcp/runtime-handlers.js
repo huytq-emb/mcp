@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_DRIVER_PACK_MODE, DEFAULT_INDEX_JOB_MODE, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, MAX_PAGE_RANGE, SERVER_VERSION } from "../core/runtime-constants.js";
 import { formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.js";
-import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
+import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
 import { buildFiguresIndex, findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures } from "../domains/figures.js";
@@ -16,7 +16,7 @@ import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalC
 import { doctorPdfs, formatDoctorReport, maybeWriteDoctorReports } from "../services/doctor.js";
 import { buildPdfIndex, formatChunkTypeStats, formatRegisterIndexResults, formatRegisterListResults, getChunkTypeStats, isIndexUsable, listRegistersFromIndex, loadPdfIndex, loadRegistersIndex, loadSectionsIndex, looksLikeRegisterSymbol, searchRegistersIndex } from "../services/indexing.js";
 import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob, writeArtifactManifest } from "../services/jobs.js";
-import { cleanupFigureCache, formatOcrHealthReport, getFigureCacheStatus, getOcrHealth, inspectFigureOnDemand, ocrFigureOnDemand, renderFigureOnDemand } from "../services/ocr.js";
+import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth, inspectFigureOnDemand, ocrFigureOnDemand, renderFigureOnDemand } from "../services/ocr.js";
 import { getHybridRuntimeStatus } from "../services/python-worker.js";
 import { getPagesCache, loadPagesCache } from "../services/pdf.js";
 import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, loadBitfieldsIndex, searchPdfIndex, searchSectionsIndex } from "../services/search.js";
@@ -137,13 +137,21 @@ async function handle_eval_health_check(args = {}, meta = {}) {
           `Persistent job state: ${safeJobsStatePath()}`,
         ].join("\n"));
       }
+      if (step40Action === "cache_status") {
+        const status = await getCacheStatus(args);
+        return jsonResult(status);
+      }
+      if (step40Action === "cleanup_cache") {
+        const status = await cleanupCache(args);
+        return jsonResult(status);
+      }
       if (step40Action === "figure_cache_status") {
         const status = await getFigureCacheStatus(args);
-        return textResult(JSON.stringify(status, null, 2));
+        return jsonResult(status);
       }
       if (step40Action === "cleanup_figure_cache") {
         const status = await cleanupFigureCache(args);
-        return textResult(JSON.stringify(status, null, 2));
+        return jsonResult(status);
       }
       throw new Error(`Unknown eval_health_check step40_action: ${args.step40_action}`);
     }
@@ -1138,7 +1146,7 @@ async function handle_render_figure(args = {}, meta = {}) {
       scale: args.scale,
       force: Boolean(args.force),
     });
-    return textResult(JSON.stringify(result, null, 2));
+    return jsonResult(result);
 }
 
 async function handle_ocr_figure(args = {}, meta = {}) {
@@ -1151,7 +1159,7 @@ async function handle_ocr_figure(args = {}, meta = {}) {
       engine: String(args.engine || "auto").trim(),
       force: Boolean(args.force),
     });
-    return textResult(JSON.stringify(result, null, 2));
+    return jsonResult(result);
 }
 
 async function handle_inspect_figure(args = {}, meta = {}) {
@@ -1166,7 +1174,7 @@ async function handle_inspect_figure(args = {}, meta = {}) {
       context_pages: args.context_pages,
       force: Boolean(args.force),
     });
-    return textResult(JSON.stringify(result, null, 2));
+    return jsonResult(result);
 }
 
 async function handle_extract_layout_tables_from_pages(args = {}, meta = {}) {

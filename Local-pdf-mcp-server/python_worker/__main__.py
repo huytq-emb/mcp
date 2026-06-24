@@ -121,7 +121,9 @@ def main() -> int:
             figures_path = ensure_inside(inputs["figuresPath"], roots, "figures artifact path")
             output_path = ensure_inside(outputs["artifactPath"], roots, "figure OCR artifact path")
             renders_root = ensure_inside(outputs["rendersRoot"], roots, "renders root")
-            artifact = build_figure_ocr(pdf_path, inputs["filename"], figures_path, output_path, renders_root, options, lambda c, t: progress(c, t, "ocr-figures"), cancel_path)
+            checkpoint_path = ensure_inside(outputs["checkpointPath"], roots, "figure OCR checkpoint path") if outputs.get("checkpointPath") else None
+            existing_path = ensure_inside(inputs["existingArtifactPath"], roots, "existing figure OCR artifact path") if inputs.get("existingArtifactPath") else None
+            artifact = build_figure_ocr(pdf_path, inputs["filename"], figures_path, output_path, renders_root, options, lambda c, t: progress(c, t, "ocr-figures"), cancel_path, checkpoint_path, existing_path)
             if artifact.get("ok") is False:
                 result = artifact
             else:

@@ -9,7 +9,7 @@ import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 
 const execFileAsync = promisify(execFile);
-const TOOL_CATALOG_SHA256 = "32449e1e193f7f1a8375d81fcb879274d739f9ead75c7571a25c0ae6c603ae6a";
+const TOOL_CATALOG_SHA256 = "ec3a6ba8fba9d8552d836fe3da74496101fe5ecfdbf78fea80e6f22a14dc21ec";
 
 test("public MCP catalog preserves all 63 names and schemas", () => {
   assert.equal(PUBLIC_TOOL_DEFINITIONS.length, 63);
@@ -18,6 +18,8 @@ test("public MCP catalog preserves all 63 names and schemas", () => {
   assert.equal(digest, TOOL_CATALOG_SHA256);
   const healthTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "eval_health_check");
   assert.equal(healthTool.inputSchema.properties.cascade_dependents.type, "boolean");
+  assert.equal(healthTool.inputSchema.properties.kind.type, "string");
+  assert.equal(healthTool.inputSchema.properties.stale_by_source.type, "boolean");
   for (const name of ["render_figure", "ocr_figure", "inspect_figure"]) assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
 });
 

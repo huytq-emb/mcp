@@ -30,6 +30,8 @@ export const STEP40_CONTROL_ACTIONS = [
   "list_jobs",
   "cancel_job",
   "cleanup_jobs",
+  "cache_status",
+  "cleanup_cache",
   "figure_cache_status",
   "cleanup_figure_cache"
 ];

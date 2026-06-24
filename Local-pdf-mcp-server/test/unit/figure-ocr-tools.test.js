@@ -9,7 +9,7 @@ import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { clearOcrHealthCache, getOcrHealth } from "../../src/services/ocr.js";
 import { resolvePythonInterpreter } from "../../src/services/python-worker.js";
-import { atomicWriteJson, clearJsonFileCache, getJsonFileCacheStats, getPdfSourceInfo, readJsonCached, safeFigureLookupIndexPath, safeFiguresIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
+import { atomicWriteJson, clearJsonFileCache, getJsonFileCacheStats, getPdfSourceInfo, readJsonCached, safeFigureLookupIndexPath, safeFiguresIndexPath, safePagesCachePath, safePdfPath } from "../../src/core/runtime-helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +46,7 @@ async function removeCacheFor(filename) {
       .filter((entry) => entry.startsWith(`${filename}-`))
       .map((entry) => fs.rm(path.join(dir, entry), { force: true }).catch(() => {})));
   }
+  await fs.rm(safePagesCachePath(filename), { force: true }).catch(() => {});
   await fs.rm(safeFiguresIndexPath(filename), { force: true }).catch(() => {});
   await fs.rm(safeFigureLookupIndexPath(filename), { force: true }).catch(() => {});
 }
@@ -95,10 +96,12 @@ test("figure OCR tools are advertised and handled", () => {
 
 test("render_figure invalid input returns stable JSON instead of throwing", async () => {
   const registry = createRuntimeToolRegistry();
-  const payload = parseJsonResult(await registry.dispatchTool("render_figure", { filename: "unit-invalid.pdf" }));
+  const result = await registry.dispatchTool("render_figure", { filename: "unit-invalid.pdf" });
+  const payload = parseJsonResult(result);
   assert.equal(payload.ok, false);
   assert.equal(payload.error_code, "INVALID_INPUT");
   assert.match(payload.message, /figure_id|page and bbox/i);
+  assert.deepEqual(result.structuredContent, payload);
 });
 
 test("render_figure caches a PyMuPDF crop by filename page bbox and scale", async (t) => {
@@ -169,6 +172,36 @@ test("render_figure resolves figure_id through a lazy lookup sidecar", async (t)
     }));
     assert.equal(second.ok, true);
     assert.equal(second.lookup_cache_hit, true);
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+  }
+});
+
+test("build_figures_index writes a lookup sidecar eagerly", async (t) => {
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-build-lookup-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  try {
+    const source = await getPdfSourceInfo(filename);
+    await atomicWriteJson(safePagesCachePath(filename), {
+      schemaVersion: 1,
+      filename,
+      source,
+      pageCount: 1,
+      pages: [{ page: 1, text: "Figure 1. Synthetic block diagram" }],
+    });
+    await fs.rm(safeFigureLookupIndexPath(filename), { force: true }).catch(() => {});
+    const result = await registry.dispatchTool("build_figures_index", { filename });
+    assert.match(result.content[0].text, /Built figures\/captions index/);
+    const lookup = JSON.parse(await fs.readFile(safeFigureLookupIndexPath(filename), "utf-8"));
+    assert.equal(lookup.filename, filename);
+    assert.equal(lookup.schemaVersion, 1);
+    assert.equal(typeof lookup.byId, "object");
   } finally {
     await fs.rm(pdfPath, { force: true }).catch(() => {});
     await removeCacheFor(filename);
@@ -315,21 +348,69 @@ test("eval_health_check reports and dry-runs figure cache cleanup", async (t) =>
     assert.equal(render.ok, true);
 
     const status = parseJsonResult(await registry.dispatchTool("eval_health_check", {
-      step40_action: "figure_cache_status",
+      step40_action: "cache_status",
       filename,
+      kind: "figure-images",
     }));
     assert.equal(status.ok, true);
     assert.ok(status.kinds["figure-images"].files >= 1);
 
-    const dryRun = parseJsonResult(await registry.dispatchTool("eval_health_check", {
-      step40_action: "cleanup_figure_cache",
+    const cleanupResult = await registry.dispatchTool("eval_health_check", {
+      step40_action: "cleanup_cache",
       filename,
-    }));
+      kind: "figure-images",
+      max_bytes: 1,
+    });
+    const dryRun = parseJsonResult(cleanupResult);
     assert.equal(dryRun.ok, true);
     assert.equal(dryRun.dry_run, true);
     assert.ok(dryRun.selected_files >= 1);
+    assert.deepEqual(cleanupResult.structuredContent, dryRun);
   } finally {
     await fs.rm(pdfPath, { force: true }).catch(() => {});
     await removeCacheFor(filename);
+  }
+});
+
+test("cleanup_cache can select stale cache files by PDF source", async (t) => {
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-stale-cache-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  const stalePath = path.join("indexes", "cache", "figure-ocr", `${filename}-stale.json`);
+  try {
+    await fs.mkdir(path.dirname(stalePath), { recursive: true });
+    await atomicWriteJson(stalePath, {
+      schemaVersion: 1,
+      filename,
+      sourceFingerprint: "size=1;mtimeMs=1",
+      figure_id: "stale",
+    });
+    const dryRun = parseJsonResult(await registry.dispatchTool("eval_health_check", {
+      step40_action: "cleanup_cache",
+      filename,
+      kind: "figure-ocr",
+      stale_by_source: true,
+    }));
+    assert.equal(dryRun.ok, true);
+    assert.equal(dryRun.selected_files, 1);
+    assert.equal(dryRun.files[0].name, `${filename}-stale.json`);
+
+    const confirmed = parseJsonResult(await registry.dispatchTool("eval_health_check", {
+      step40_action: "cleanup_cache",
+      filename,
+      kind: "figure-ocr",
+      stale_by_source: true,
+      confirm: true,
+    }));
+    assert.equal(confirmed.deleted_files, 1);
+    await assert.rejects(fs.access(stalePath));
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+    await fs.rm(stalePath, { force: true }).catch(() => {});
   }
 });

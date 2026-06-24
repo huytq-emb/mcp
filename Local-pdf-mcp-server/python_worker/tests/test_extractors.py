@@ -1,6 +1,8 @@
 import unittest
+import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import fitz
 
@@ -133,6 +135,35 @@ class ExtractorTests(unittest.TestCase):
             self.assertIn("Figure 1.1", first["caption"])
             self.assertTrue(Path(first["renderPath"]).exists())
 
+    def test_extract_figures_rejects_full_page_drawing_and_prefers_caption_near_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "synthetic-split-figure.pdf"
+            figures_path = root / "figures.json"
+            renders_root = root / "renders"
+            doc = fitz.open()
+            page = doc.new_page(width=400, height=500)
+            page.draw_rect(fitz.Rect(5, 5, 395, 495), color=(0, 0, 0), width=1)
+            for index in range(4):
+                x0 = 110 + (index % 2) * 54
+                y0 = 170 + (index // 2) * 50
+                page.draw_rect(fitz.Rect(x0, y0, x0 + 46, y0 + 42), color=(0, 0, 0), width=1)
+            page.insert_text((90, 310), "Figure 2.1 Caption Near Component", fontsize=10)
+            doc.save(pdf_path)
+            doc.close()
+
+            artifact = extract_figures(pdf_path, pdf_path.name, figures_path, renders_root, {
+                "minFigureAreaRatio": 0.01,
+                "maxFiguresPerPage": 4,
+                "dpi": 80,
+            })
+            self.assertGreaterEqual(artifact["figureCount"], 1)
+            first = artifact["figures"][0]
+            x0, y0, x1, y1 = first["bbox"]
+            self.assertLess(x1 - x0, 220)
+            self.assertLess(y1 - y0, 180)
+            self.assertIn("Figure 2.1", first["caption"])
+
     def test_render_figure_crop_writes_png_and_reports_cache_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -234,6 +265,55 @@ class ExtractorTests(unittest.TestCase):
             self.assertEqual(result["error"], "OCR dependency missing")
             self.assertIn("requirements-ocr.txt", result["hint"])
             self.assertFalse(output_path.exists())
+
+    def test_figure_ocr_reuses_unchanged_cached_rows(self):
+        class FakeOcr:
+            def __init__(self):
+                self.calls = 0
+
+            def ocr(self, image_path, cls=True):
+                self.calls += 1
+                return [[
+                    [[[10, 10], [40, 10], [40, 25], [10, 25]], ("DMA", 0.95)],
+                ]]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "synthetic-incremental.pdf"
+            figures_path = root / "figures.json"
+            output_path = root / "figure_ocr.json"
+            checkpoint_path = root / "figure_ocr.partial.json"
+            renders_root = root / "renders"
+            doc = fitz.open()
+            page = doc.new_page(width=260, height=220)
+            page.draw_rect(fitz.Rect(30, 30, 120, 110), color=(0, 0, 0), width=1)
+            page.draw_rect(fitz.Rect(140, 30, 230, 110), color=(0, 0, 0), width=1)
+            doc.save(pdf_path)
+            doc.close()
+            figures = {
+                "schemaVersion": 1,
+                "filename": pdf_path.name,
+                "figures": [
+                    {"id": "f1", "figureUid": "f1", "page": 1, "bbox": [25, 25, 125, 115], "caption": "Figure 1", "renderPath": str(renders_root / "f1.png")},
+                    {"id": "f2", "figureUid": "f2", "page": 1, "bbox": [135, 25, 235, 115], "caption": "Figure 2", "renderPath": str(renders_root / "f2.png")},
+                ],
+            }
+            figures_path.write_text(json.dumps(figures), encoding="utf-8")
+            health = {"ok": True, "ocr": {"available": True, "enabled": True, "engine": "paddleocr"}}
+            fake = FakeOcr()
+            with patch("python_worker.figure_ocr.ocr_health", return_value=health), patch("python_worker.figure_ocr._load_paddleocr", return_value=fake):
+                first = build_figure_ocr(pdf_path, pdf_path.name, figures_path, output_path, renders_root, {}, None, None, checkpoint_path)
+                self.assertEqual(first["cacheStats"]["processed"], 2)
+                self.assertEqual(first["cacheStats"]["reused"], 0)
+                self.assertEqual(fake.calls, 2)
+                self.assertFalse(checkpoint_path.exists())
+
+                fake.calls = 0
+                second = build_figure_ocr(pdf_path, pdf_path.name, figures_path, output_path, renders_root, {}, None, None, checkpoint_path)
+                self.assertTrue(second["cached"])
+                self.assertEqual(second["cacheStats"]["processed"], 0)
+                self.assertEqual(second["cacheStats"]["reused"], 2)
+                self.assertEqual(fake.calls, 0)
 
 
 if __name__ == "__main__":

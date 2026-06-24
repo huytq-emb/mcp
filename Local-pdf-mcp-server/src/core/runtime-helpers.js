@@ -24,6 +24,18 @@ export function textResult(text) {
   };
 }
 
+export function jsonResult(payload) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: limitOutput(JSON.stringify(payload, null, 2)),
+      },
+    ],
+    structuredContent: payload,
+  };
+}
+
 export function errorResult(error) {
   const message = error instanceof Error ? error.message : String(error);
 

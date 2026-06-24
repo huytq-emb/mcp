@@ -59,7 +59,13 @@ function optionsForWorker(options = {}) {
     minFigureAreaRatio: Number(options.minFigureAreaRatio || options.min_area_ratio || 0.03),
     maxFiguresPerPage: Number(options.maxFiguresPerPage || options.max_figures_per_page || 8),
     force: Boolean(options.force),
+    ocrConcurrency: Math.max(1, Math.min(2, Number(options.ocrConcurrency || options.ocr_concurrency || 1))),
   };
+}
+
+function figureOcrCheckpointPath(filename) {
+  ensurePdfFilename(filename);
+  return ensureInsideRoot(path.join(INDEX_DIR, `${filename}.figure_ocr.partial.json`), INDEX_DIR, "figure OCR checkpoint");
 }
 
 export async function getOcrHealth(options = {}) {
@@ -158,7 +164,10 @@ export async function loadPythonFiguresIndex(filename) {
 export async function buildFiguresWithPython(filename, options = {}) {
   if (!options.force) {
     const cached = await loadPythonFiguresIndex(filename);
-    if (cached && (cached.figures || []).some((figure) => Array.isArray(figure.bbox))) return { ...cached, cached: true };
+    if (cached && (cached.figures || []).some((figure) => Array.isArray(figure.bbox))) {
+      await ensureFigureLookupIndex(filename, cached).catch(() => {});
+      return { ...cached, cached: true };
+    }
   }
   const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot("figures.extract");
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figures.extract" });
@@ -184,6 +193,7 @@ export async function buildFiguresWithPython(filename, options = {}) {
     await atomicPromoteWorkerArtifact(validated.tempPath, safeFiguresIndexPath(filename));
     const value = JSON.parse(await fs.readFile(safeFiguresIndexPath(filename), "utf-8"));
     value.producer = { engine: "python", operation: "figures.extract", requestId, durationMs: worker.durationMs };
+    await ensureFigureLookupIndex(filename, value, { force: true }).catch(() => {});
     return value;
   } finally {
     await fs.rm(workerRoot, { recursive: true, force: true }).catch(() => {});
@@ -199,17 +209,22 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
   if (!figures || !(figures.figures || []).some((figure) => Array.isArray(figure.bbox))) {
     figures = await buildFiguresWithPython(filename, { ...options, force: true });
   }
+  const health = await getOcrHealth({ timeoutMs: Math.min(Number(options.timeoutMs || 10_000), 30_000) });
+  if (!health.ocr?.available) {
+    return { ok: false, error: health.ocr?.reason || "OCR unavailable", hint: health.ocr?.hint || OCR_INSTALL_HINT, health };
+  }
   const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot("figure_ocr.build");
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figure_ocr.build" });
   const tempPath = path.join(workerRoot, "figure_ocr.json");
+  const checkpointPath = figureOcrCheckpointPath(filename);
   const source = await getPdfSourceInfo(filename);
   try {
     const worker = await runPythonWorker({
       requestId,
       operation: "figure_ocr.build",
       allowedRoots: [DOCUMENTS_DIR, INDEX_DIR, RENDERS_DIR],
-      inputs: { filename, pdfPath: safePdfPath(filename), figuresPath: safeFiguresIndexPath(filename) },
-      outputs: { artifactPath: tempPath, rendersRoot: RENDERS_DIR, cancelPath },
+      inputs: { filename, pdfPath: safePdfPath(filename), figuresPath: safeFiguresIndexPath(filename), existingArtifactPath: safeFigureOcrIndexPath(filename) },
+      outputs: { artifactPath: tempPath, checkpointPath, rendersRoot: RENDERS_DIR, cancelPath },
       options: optionsForWorker(options),
     }, {
       timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
@@ -360,6 +375,17 @@ async function writeFigureLookupIndex(filename, index) {
   const lookup = buildFigureLookupArtifact(filename, index);
   await atomicWriteJson(safeFigureLookupIndexPath(filename), lookup);
   return lookup;
+}
+
+export async function ensureFigureLookupIndex(filename, index = null, options = {}) {
+  ensurePdfFilename(filename);
+  if (!options.force) {
+    const existing = await loadFigureLookupIndex(filename).catch(() => null);
+    if (existing) return existing;
+  }
+  const figuresIndex = index || await loadPythonFiguresIndex(filename);
+  if (!figuresIndex || !Array.isArray(figuresIndex.figures)) return null;
+  return writeFigureLookupIndex(filename, figuresIndex);
 }
 
 async function resolveFigureTarget(filename, args = {}) {
@@ -906,15 +932,46 @@ async function ocrFigureForInspect(args = {}) {
   }
 }
 
-function pageContextCachePath(filename, source, startPage, endPage) {
+function pageContextCachePath(filename, source, page) {
   const key = cacheKey({
     kind: PAGE_CONTEXT_CACHE_KIND,
     filename,
-    startPage,
-    endPage,
+    page,
     source: pdfSourceFingerprint(source),
   });
   return { key, cachePath: safeCachePath(PAGE_CONTEXT_CACHE_KIND, filename, key, "json") };
+}
+
+async function readCachedContextPage(filename, source, pageNumber) {
+  const contextCache = pageContextCachePath(filename, source, pageNumber);
+  if (!(await pathExists(contextCache.cachePath))) return { page: null, cache: contextCache };
+  const cached = await readJsonCached(contextCache.cachePath);
+  if (
+    cached.schemaVersion === PAGE_CONTEXT_CACHE_SCHEMA_VERSION &&
+    cached.filename === filename &&
+    Number(cached.page) === pageNumber &&
+    typeof cached.text === "string" &&
+    (!cached.source || isSamePdfSource(cached.source, source))
+  ) {
+    return {
+      page: { page: pageNumber, text: compactText(cached.text || "", 3500) },
+      cache: contextCache,
+    };
+  }
+  return { page: null, cache: contextCache };
+}
+
+async function writeCachedContextPage(filename, source, pageNumber, text) {
+  const contextCache = pageContextCachePath(filename, source, pageNumber);
+  await atomicWriteJson(contextCache.cachePath, {
+    schemaVersion: PAGE_CONTEXT_CACHE_SCHEMA_VERSION,
+    filename,
+    page: pageNumber,
+    source,
+    sourceFingerprint: pdfSourceFingerprint(source),
+    text: String(text || ""),
+  }).catch(() => {});
+  return contextCache;
 }
 
 async function surroundingContext(filename, page, pageCount, contextPages = 0) {
@@ -923,68 +980,36 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
   const endPage = Math.min(Number(pageCount || page || 1), Number(page) + count);
   const warnings = [];
   let source = null;
-  let contextCache = null;
+  const cacheKeys = [];
+  const pagesByNumber = new Map();
+  const missingPages = [];
 
   try {
     source = await getPdfSourceInfo(filename);
-    contextCache = pageContextCachePath(filename, source, startPage, endPage);
-    if (await pathExists(contextCache.cachePath)) {
-      const cached = await readJsonCached(contextCache.cachePath);
-      if (
-        cached.schemaVersion === PAGE_CONTEXT_CACHE_SCHEMA_VERSION &&
-        cached.filename === filename &&
-        Number(cached.startPage) === startPage &&
-        Number(cached.endPage) === endPage &&
-        Array.isArray(cached.pages) &&
-        (!cached.source || isSamePdfSource(cached.source, source))
-      ) {
-        return {
-          pages: cached.pages.map((item) => ({ page: Number(item.page), text: compactText(item.text || "", 3500) })),
-          warnings,
-          context_cache_hit: true,
-          cache_key: contextCache.key,
-        };
+    for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+      try {
+        const cached = await readCachedContextPage(filename, source, pageNumber);
+        cacheKeys.push(cached.cache.key);
+        if (cached.page) pagesByNumber.set(pageNumber, cached.page);
+        else missingPages.push(pageNumber);
+      } catch {
+        missingPages.push(pageNumber);
       }
+    }
+    if (!missingPages.length) {
+      return {
+        pages: [...pagesByNumber.keys()].sort((a, b) => a - b).map((pageNumber) => pagesByNumber.get(pageNumber)),
+        warnings,
+        context_cache_hit: true,
+        cache_key: cacheKeys.join(","),
+      };
     }
   } catch (error) {
     warnings.push(`Page context cache unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  try {
-    const cachePath = safePagesCachePath(filename);
-    if (await pathExists(cachePath)) {
-      const stat = await fs.stat(cachePath);
-      if (stat.size <= contextFullCacheMaxBytes()) {
-        const cached = await readJsonCached(cachePath);
-        const cachedSource = source || await getPdfSourceInfo(filename);
-        if (cached.filename === filename && Array.isArray(cached.pages) && (!cached.source || isSamePdfSource(cached.source, cachedSource))) {
-          const pages = cached.pages
-              .filter((item) => Number(item.page) >= startPage && Number(item.page) <= endPage)
-              .map((item) => ({ page: Number(item.page), text: compactText(item.text || "", 3500) }));
-          if (contextCache && source) {
-            await atomicWriteJson(contextCache.cachePath, {
-              schemaVersion: PAGE_CONTEXT_CACHE_SCHEMA_VERSION,
-              filename,
-              startPage,
-              endPage,
-              source,
-              sourceFingerprint: pdfSourceFingerprint(source),
-              pages,
-            }).catch(() => {});
-          }
-        return {
-          pages,
-          warnings,
-          context_cache_hit: false,
-          cache_key: contextCache?.key || "",
-        };
-        }
-      }
-    }
-  } catch (error) {
-    warnings.push(`Pages cache context unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
+  const extractStart = missingPages.length ? Math.min(...missingPages) : startPage;
+  const extractEnd = missingPages.length ? Math.max(...missingPages) : endPage;
   const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot("pages.extract.figure-context");
   try {
     const worker = await runPythonWorker({
@@ -993,36 +1018,56 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
       allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
       inputs: { filename, pdfPath: safePdfPath(filename) },
       outputs: { cancelPath },
-      options: { startPage, endPage },
+      options: { startPage: extractStart, endPage: extractEnd },
     }, { timeoutMs: 120_000 });
-    const pages = (worker.result?.pages || []).map((item) => ({ page: Number(item.page), text: compactText(item.text || "", 3500) }));
-    if (contextCache && source) {
-      await atomicWriteJson(contextCache.cachePath, {
-        schemaVersion: PAGE_CONTEXT_CACHE_SCHEMA_VERSION,
-        filename,
-        startPage,
-        endPage,
-        source,
-        sourceFingerprint: pdfSourceFingerprint(source),
-        pages,
-      }).catch(() => {});
+    for (const item of worker.result?.pages || []) {
+      const pageNumber = Number(item.page);
+      if (pageNumber < startPage || pageNumber > endPage) continue;
+      const pageEntry = { page: pageNumber, text: compactText(item.text || "", 3500) };
+      pagesByNumber.set(pageNumber, pageEntry);
+      if (source) {
+        const written = await writeCachedContextPage(filename, source, pageNumber, item.text || "");
+        if (!cacheKeys.includes(written.key)) cacheKeys.push(written.key);
+      }
     }
-    return {
-      pages,
-      warnings,
-      context_cache_hit: false,
-      cache_key: contextCache?.key || "",
-    };
   } catch (error) {
-    return {
-      pages: [],
-      warnings: [...warnings, `Surrounding context unavailable: ${error instanceof Error ? error.message : String(error)}`],
-      context_cache_hit: false,
-      cache_key: contextCache?.key || "",
-    };
+    warnings.push(`Surrounding context worker unavailable: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     await fs.rm(workerRoot, { recursive: true, force: true }).catch(() => {});
   }
+
+  if (pagesByNumber.size < (endPage - startPage + 1)) {
+    try {
+      const cachePath = safePagesCachePath(filename);
+      if (await pathExists(cachePath)) {
+        const stat = await fs.stat(cachePath);
+        if (stat.size <= contextFullCacheMaxBytes()) {
+          const cached = await readJsonCached(cachePath);
+          const cachedSource = source || await getPdfSourceInfo(filename);
+          if (cached.filename === filename && Array.isArray(cached.pages) && (!cached.source || isSamePdfSource(cached.source, cachedSource))) {
+            for (const item of cached.pages) {
+              const pageNumber = Number(item.page);
+              if (pageNumber < startPage || pageNumber > endPage || pagesByNumber.has(pageNumber)) continue;
+              pagesByNumber.set(pageNumber, { page: pageNumber, text: compactText(item.text || "", 3500) });
+              if (source) {
+                const written = await writeCachedContextPage(filename, source, pageNumber, item.text || "");
+                if (!cacheKeys.includes(written.key)) cacheKeys.push(written.key);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      warnings.push(`Legacy pages cache context unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return {
+    pages: [...pagesByNumber.keys()].sort((a, b) => a - b).map((pageNumber) => pagesByNumber.get(pageNumber)),
+    warnings,
+    context_cache_hit: false,
+    cache_key: cacheKeys.join(","),
+  };
 }
 
 function uniqueLabels(items = []) {
@@ -1148,23 +1193,71 @@ async function listCacheKind(kind, filename = "") {
   return files;
 }
 
-async function listFigureCacheFiles(args = {}) {
+function normalizeCacheKinds(args = {}) {
+  const raw = args.kind ?? args.cache_kind ?? "all";
+  const requested = Array.isArray(raw) ? raw : String(raw || "all").split(",");
+  const kinds = requested.map((item) => String(item || "").trim()).filter(Boolean);
+  if (!kinds.length || kinds.includes("all")) return FIGURE_CACHE_KINDS.slice();
+  const allowed = new Set(FIGURE_CACHE_KINDS);
+  for (const kind of kinds) {
+    if (!allowed.has(kind)) throw new Error(`Unsupported cache kind: ${kind}`);
+  }
+  return [...new Set(kinds)];
+}
+
+async function listCacheFiles(args = {}) {
   const filename = String(args.filename || "").trim();
   if (filename) ensurePdfFilename(filename);
+  const selectedKinds = normalizeCacheKinds(args);
   const byKind = {};
   let files = [];
-  for (const kind of FIGURE_CACHE_KINDS) {
+  for (const kind of selectedKinds) {
     byKind[kind] = await listCacheKind(kind, filename);
     files = files.concat(byKind[kind]);
   }
-  return { filename, byKind, files };
+  return { filename, kinds: selectedKinds, byKind, files };
 }
 
-export async function getFigureCacheStatus(args = {}) {
+async function readCacheFileJson(item) {
+  if (!String(item.name || "").endsWith(".json")) return null;
   try {
-    const listed = await listFigureCacheFiles(args);
+    return await readJsonCached(item.path);
+  } catch {
+    return null;
+  }
+}
+
+function cacheSourceFingerprint(data = {}) {
+  return String(data.source_fingerprint || data.sourceFingerprint || (data.source ? pdfSourceFingerprint(data.source) : "") || "");
+}
+
+async function selectStaleBySource(files, filename) {
+  if (!filename) return [];
+  const currentSource = await getPdfSourceInfo(filename);
+  const currentFingerprint = pdfSourceFingerprint(currentSource);
+  const selectedKeys = new Set();
+  const byKey = new Map(files.map((item) => [`${item.kind}/${item.name}`, item]));
+  for (const item of files) {
+    const data = await readCacheFileJson(item);
+    if (!data) continue;
+    const fileFingerprint = cacheSourceFingerprint(data);
+    const sameSource = data.source ? isSamePdfSource(data.source, currentSource) : (fileFingerprint && fileFingerprint === currentFingerprint);
+    if (!fileFingerprint && !data.source) continue;
+    if (sameSource) continue;
+    selectedKeys.add(`${item.kind}/${item.name}`);
+    if (item.kind === "figure-images" && item.name.endsWith(".meta.json")) {
+      const imageName = item.name.replace(/\.meta\.json$/i, ".png");
+      if (byKey.has(`${item.kind}/${imageName}`)) selectedKeys.add(`${item.kind}/${imageName}`);
+    }
+  }
+  return files.filter((item) => selectedKeys.has(`${item.kind}/${item.name}`));
+}
+
+export async function getCacheStatus(args = {}) {
+  try {
+    const listed = await listCacheFiles(args);
     const kinds = {};
-    for (const kind of FIGURE_CACHE_KINDS) {
+    for (const kind of listed.kinds) {
       const files = listed.byKind[kind] || [];
       kinds[kind] = {
         files: files.length,
@@ -1174,31 +1267,41 @@ export async function getFigureCacheStatus(args = {}) {
     return {
       ok: true,
       filename: listed.filename || "",
-      cache_root: ensureInsideRoot(path.join(INDEX_DIR, "cache"), INDEX_DIR, "figure cache root"),
+      kind: args.kind || "all",
+      cache_root: ensureInsideRoot(path.join(INDEX_DIR, "cache"), INDEX_DIR, "cache root"),
       kinds,
       total_files: listed.files.length,
       total_bytes: listed.files.reduce((sum, item) => sum + item.bytes, 0),
       warnings: [],
     };
   } catch (error) {
-    return failureFromError(error, "FIGURE_CACHE_STATUS_FAILED");
+    return failureFromError(error, "CACHE_STATUS_FAILED");
   }
 }
 
-export async function cleanupFigureCache(args = {}) {
+export async function getFigureCacheStatus(args = {}) {
+  return getCacheStatus(args);
+}
+
+export async function cleanupCache(args = {}) {
   try {
-    const listed = await listFigureCacheFiles(args);
+    const listed = await listCacheFiles(args);
     const now = Date.now();
     const olderThanHours = Number(args.older_than_hours || 0);
     const maxBytes = Number(args.max_bytes || 0);
+    const staleBySource = Boolean(args.stale_by_source || args.staleBySource);
     let candidates = listed.files.slice();
     if (Number.isFinite(olderThanHours) && olderThanHours > 0) {
       const cutoff = now - olderThanHours * 60 * 60 * 1000;
       candidates = candidates.filter((item) => item.mtimeMs < cutoff);
     }
+    if (staleBySource) {
+      const stale = await selectStaleBySource(candidates, listed.filename);
+      candidates = stale;
+    }
     if (Number.isFinite(maxBytes) && maxBytes > 0) {
       let remainingBytes = listed.files.reduce((sum, item) => sum + item.bytes, 0);
-      candidates = listed.files
+      candidates = candidates
         .slice()
         .sort((a, b) => a.mtimeMs - b.mtimeMs)
         .filter((item) => {
@@ -1211,8 +1314,10 @@ export async function cleanupFigureCache(args = {}) {
     const summary = {
       ok: true,
       filename: listed.filename || "",
+      kind: args.kind || "all",
       confirm,
       dry_run: !confirm,
+      stale_by_source: staleBySource,
       total_files: listed.files.length,
       total_bytes: listed.files.reduce((sum, item) => sum + item.bytes, 0),
       selected_files: candidates.length,
@@ -1245,6 +1350,10 @@ export async function cleanupFigureCache(args = {}) {
       })),
     };
   } catch (error) {
-    return failureFromError(error, "FIGURE_CACHE_CLEANUP_FAILED");
+    return failureFromError(error, "CACHE_CLEANUP_FAILED");
   }
+}
+
+export async function cleanupFigureCache(args = {}) {
+  return cleanupCache(args);
 }

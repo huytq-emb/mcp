@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import contextlib
+import concurrent.futures
+import hashlib
+import json
 import os
 import sys
 import re
@@ -116,7 +119,7 @@ def _text_lines(page: fitz.Page) -> list[dict[str, Any]]:
     return lines
 
 
-def _caption_near(lines: list[dict[str, Any]], figure_rect: fitz.Rect) -> str:
+def _caption_match(lines: list[dict[str, Any]], figure_rect: fitz.Rect) -> tuple[str, float]:
     candidates = []
     for line in lines:
         text = line["text"]
@@ -129,7 +132,11 @@ def _caption_near(lines: list[dict[str, Any]], figure_rect: fitz.Rect) -> str:
         if vertical_gap <= 140 and overlap_ratio >= 0.15:
             candidates.append((vertical_gap, text))
     candidates.sort(key=lambda item: item[0])
-    return candidates[0][1] if candidates else ""
+    return (candidates[0][1], float(candidates[0][0])) if candidates else ("", 999999.0)
+
+
+def _caption_near(lines: list[dict[str, Any]], figure_rect: fitz.Rect) -> str:
+    return _caption_match(lines, figure_rect)[0]
 
 
 def _looks_register_table(caption: str, rect: fitz.Rect, page_rect: fitz.Rect) -> bool:
@@ -153,19 +160,136 @@ def _image_candidates(page: fitz.Page) -> list[tuple[str, fitz.Rect]]:
     return candidates
 
 
-def _drawing_candidate(page: fitz.Page) -> list[tuple[str, fitz.Rect]]:
+def _rect_distance(a: fitz.Rect, b: fitz.Rect) -> float:
+    dx = max(0.0, max(a.x0, b.x0) - min(a.x1, b.x1))
+    dy = max(0.0, max(a.y0, b.y0) - min(a.y1, b.y1))
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _rect_iou(a: fitz.Rect, b: fitz.Rect) -> float:
+    overlap = a & b
+    if overlap.is_empty:
+        return 0.0
+    intersection = _rect_area(overlap)
+    union = _rect_area(a) + _rect_area(b) - intersection
+    return intersection / max(1.0, union)
+
+
+def _is_full_page_like(rect: fitz.Rect, page_rect: fitz.Rect) -> bool:
+    page_area = max(1.0, _rect_area(page_rect))
+    area_ratio = _rect_area(rect) / page_area
+    return (
+        area_ratio >= 0.86 or
+        (rect.width >= page_rect.width * 0.96 and rect.height >= page_rect.height * 0.80) or
+        (rect.width >= page_rect.width * 0.80 and rect.height >= page_rect.height * 0.96)
+    )
+
+
+def _union_rects(rects: list[fitz.Rect]) -> fitz.Rect:
+    union = fitz.Rect(rects[0])
+    for rect in rects[1:]:
+        union |= rect
+    return union
+
+
+def _drawing_components(rects: list[fitz.Rect], page_rect: fitz.Rect) -> list[list[fitz.Rect]]:
+    merge_gap = max(8.0, min(page_rect.width, page_rect.height) * 0.04)
+    components: list[list[fitz.Rect]] = []
+    for rect in rects:
+        placed = False
+        for component in components:
+            if any(_rect_distance(rect, existing) <= merge_gap or not (rect & existing).is_empty for existing in component):
+                component.append(rect)
+                placed = True
+                break
+        if not placed:
+            components.append([rect])
+
+    changed = True
+    while changed:
+        changed = False
+        merged: list[list[fitz.Rect]] = []
+        for component in components:
+            target = None
+            component_union = _union_rects(component)
+            for candidate in merged:
+                candidate_union = _union_rects(candidate)
+                if _rect_distance(component_union, candidate_union) <= merge_gap or not (component_union & candidate_union).is_empty:
+                    target = candidate
+                    break
+            if target is None:
+                merged.append(component[:])
+            else:
+                target.extend(component)
+                changed = True
+        components = merged
+    return components
+
+
+def _dedupe_candidates(candidates: list[tuple[str, fitz.Rect]]) -> list[tuple[str, fitz.Rect]]:
+    deduped: list[tuple[str, fitz.Rect]] = []
+    for kind, rect in sorted(candidates, key=lambda item: _rect_area(item[1]), reverse=True):
+        if any(_rect_iou(rect, existing) > 0.82 for _, existing in deduped):
+            continue
+        deduped.append((kind, rect))
+    return deduped
+
+
+def _caption_guided_drawing_candidates(lines: list[dict[str, Any]], component_rects: list[fitz.Rect], page_rect: fitz.Rect) -> list[tuple[str, fitz.Rect]]:
+    candidates: list[tuple[str, fitz.Rect]] = []
+    for line in lines:
+        if not CAPTION_RE.search(line["text"]):
+            continue
+        caption_rect = line["bbox"]
+        nearby: list[fitz.Rect] = []
+        for rect in component_rects:
+            vertical_gap = min(abs(caption_rect.y0 - rect.y1), abs(rect.y0 - caption_rect.y1))
+            horizontal_overlap = max(0.0, min(caption_rect.x1, rect.x1) - max(caption_rect.x0, rect.x0))
+            overlap_ratio = horizontal_overlap / max(1.0, min(caption_rect.width, rect.width))
+            center_distance = abs(((rect.x0 + rect.x1) / 2.0) - ((caption_rect.x0 + caption_rect.x1) / 2.0))
+            if vertical_gap <= 180 and (overlap_ratio >= 0.05 or center_distance <= page_rect.width * 0.45):
+                nearby.append(rect)
+        if len(nearby) < 2:
+            continue
+        union = _union_rects(nearby)
+        if not _is_full_page_like(union, page_rect):
+            candidates.append(("drawing", union))
+    return candidates
+
+
+def _drawing_candidates(page: fitz.Page, lines: list[dict[str, Any]] | None = None) -> list[tuple[str, fitz.Rect]]:
     try:
         drawings = page.get_drawings()
     except Exception:
         return []
-    rects = [draw.get("rect") for draw in drawings if draw.get("rect")]
-    rects = [fitz.Rect(rect) for rect in rects if _rect_area(fitz.Rect(rect)) > 50]
-    if len(rects) < 8:
+    page_rect = page.rect
+    rects = []
+    for draw in drawings:
+        raw = draw.get("rect")
+        if not raw:
+            continue
+        rect = fitz.Rect(raw) & page_rect
+        if rect.is_empty or _rect_area(rect) <= 50:
+            continue
+        if _is_full_page_like(rect, page_rect):
+            continue
+        rects.append(rect)
+    if len(rects) < 4:
         return []
-    union = fitz.Rect(rects[0])
-    for rect in rects[1:]:
-        union |= rect
-    return [("drawing", union)]
+    components = _drawing_components(rects, page_rect)
+    component_rects = [_union_rects(component) for component in components if len(component) >= 2]
+    candidates = [
+        ("drawing", rect)
+        for rect in component_rects
+        if not _is_full_page_like(rect, page_rect)
+    ]
+    if not candidates:
+        union = _union_rects(rects)
+        if not _is_full_page_like(union, page_rect):
+            candidates.append(("drawing", union))
+    if lines:
+        candidates.extend(_caption_guided_drawing_candidates(lines, component_rects, page_rect))
+    return _dedupe_candidates(candidates)
 
 
 def _render_region(page: fitz.Page, rect: fitz.Rect, output_path: Path, dpi: int, force: bool = False) -> None:
@@ -269,19 +393,19 @@ def extract_figures(
             page_rect = page.rect
             page_area = max(1.0, _rect_area(page_rect))
             lines = _text_lines(page)
-            raw_candidates = _image_candidates(page) + _drawing_candidate(page)
+            raw_candidates = _image_candidates(page) + _drawing_candidates(page, lines)
             candidates = []
             for kind, rect in raw_candidates:
                 rect &= page_rect
                 area_ratio = _rect_area(rect) / page_area
                 if area_ratio < min_area_ratio:
                     continue
-                caption = _caption_near(lines, rect)
+                caption, caption_distance = _caption_match(lines, rect)
                 if opts.get("skipRegisterTables", True) and _looks_register_table(caption, rect, page_rect):
                     continue
-                candidates.append((area_ratio, kind, rect, caption))
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            for ordinal, (area_ratio, kind, rect, caption) in enumerate(candidates[:max_per_page], start=1):
+                candidates.append((1 if caption else 0, caption_distance, area_ratio, kind, rect, caption))
+            candidates.sort(key=lambda item: (-item[0], item[1], -item[2]))
+            for ordinal, (_, _, area_ratio, kind, rect, caption) in enumerate(candidates[:max_per_page], start=1):
                 uid = f"p{page_number:04d}_f{ordinal:03d}"
                 render_path = render_dir / f"page_{page_number:04d}_figure_{ordinal:03d}.png"
                 if render_regions:
@@ -579,6 +703,8 @@ def build_figure_ocr(
     options: dict[str, Any] | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancel_path: str | None = None,
+    checkpoint_path: Path | None = None,
+    existing_artifact_path: Path | None = None,
 ) -> dict[str, Any]:
     opts = {**DEFAULT_OCR_OPTIONS, **(options or {})}
     source = source_info(pdf_path)
@@ -592,19 +718,108 @@ def build_figure_ocr(
         }
     import orjson
     figures_data = orjson.loads(figures_path.read_bytes())
-    cached = None
-    if output_path.exists() and not bool(opts.get("force", False)):
-      try:
-        cached = orjson.loads(output_path.read_bytes())
-      except Exception:
-        cached = None
-    if cached and cached.get("sourceFingerprint") == source_fingerprint(source) and cached.get("engine") == OCR_ENGINE and int(cached.get("dpi", 0)) == int(opts.get("dpi", 200)):
-        return {**cached, "cached": True}
-    ocr = _load_paddleocr()
-    figures = []
     entries = figures_data.get("figures", [])
     total = len(entries)
+    dpi = int(opts.get("dpi", 200))
+    force = bool(opts.get("force", False))
+    concurrency = max(1, min(2, int(opts.get("ocrConcurrency") or opts.get("ocr_concurrency") or 1)))
+    source_fp = source_fingerprint(source)
+
+    def load_json(path_value: Path | None) -> dict[str, Any] | None:
+        if not path_value or not path_value.exists():
+            return None
+        try:
+            return orjson.loads(path_value.read_bytes())
+        except Exception:
+            return None
+
+    def figure_uid(figure: dict[str, Any]) -> str:
+        return str(figure.get("figureUid") or figure.get("figure_uid") or figure.get("id") or "").strip()
+
+    def normalized_bbox(figure: dict[str, Any]) -> list[float]:
+        try:
+            return [round(float(value), 2) for value in list(figure.get("bbox") or [])[:4]]
+        except Exception:
+            return []
+
+    def figure_cache_key(figure: dict[str, Any]) -> str:
+        payload = {
+            "source": source_fp,
+            "engine": OCR_ENGINE,
+            "dpi": dpi,
+            "id": figure_uid(figure),
+            "page": int(figure.get("page") or 0),
+            "bbox": normalized_bbox(figure),
+            "renderPath": str(figure.get("renderPath") or figure.get("render_path") or ""),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+
+    def rows_by_cache_key(*artifacts: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        rows: dict[str, dict[str, Any]] = {}
+        for artifact in artifacts:
+            if not artifact or not isinstance(artifact.get("figures"), list):
+                continue
+            if artifact.get("engine") and artifact.get("engine") != OCR_ENGINE:
+                continue
+            if artifact.get("dpi") and int(artifact.get("dpi", 0)) != dpi:
+                continue
+            if artifact.get("sourceFingerprint") and artifact.get("sourceFingerprint") != source_fp:
+                continue
+            for row in artifact.get("figures", []):
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("cacheKey") or row.get("cache_key") or "").strip()
+                if not key:
+                    key = figure_cache_key(row)
+                rows[key] = row
+        return rows
+
+    def artifact_for_rows(rows: list[dict[str, Any]], partial: bool = False, cached: bool = False, cache_stats: dict[str, Any] | None = None) -> dict[str, Any]:
+        artifact = {
+            "schemaVersion": FIGURE_OCR_SCHEMA_VERSION,
+            "schema_version": FIGURE_OCR_SCHEMA_VERSION,
+            "filename": filename,
+            "generatedBy": "python_worker.figure_ocr.build",
+            "generated_by": "python_worker.ocr_figures",
+            "createdAt": datetime.now().astimezone().isoformat(),
+            "workerVersion": WORKER_VERSION,
+            "source": source,
+            "sourceFingerprint": source_fp,
+            "engine": OCR_ENGINE,
+            "mode": "figures_only",
+            "dpi": dpi,
+            "figureCount": len(entries),
+            "figureOcrCount": len(rows),
+            "cached": cached,
+            "cacheStats": cache_stats or {},
+            "figures": rows,
+        }
+        if partial:
+            artifact["partial"] = True
+        return artifact
+
+    def write_checkpoint(rows: list[dict[str, Any]], cache_stats: dict[str, Any]) -> None:
+        if checkpoint_path:
+            atomic_write_json(checkpoint_path, artifact_for_rows(rows, partial=True, cache_stats=cache_stats))
+
+    cached_rows = {} if force else rows_by_cache_key(
+        load_json(existing_artifact_path),
+        load_json(output_path),
+        load_json(checkpoint_path),
+    )
+    result_by_index: dict[int, dict[str, Any]] = {}
+    pending: list[tuple[int, dict[str, Any], str]] = []
+    cache_stats = {"reused": 0, "processed": 0, "total": total, "checkpointPath": str(checkpoint_path) if checkpoint_path else ""}
     for index, figure in enumerate(entries, start=1):
+        key = figure_cache_key(figure)
+        cached_row = cached_rows.get(key)
+        if cached_row:
+            result_by_index[index] = {**cached_row, "cacheHit": True, "cache_hit": True}
+            cache_stats["reused"] += 1
+        else:
+            pending.append((index, figure, key))
+
+    def process_figure(index: int, figure: dict[str, Any], key: str, shared_ocr: Any = None) -> tuple[int, dict[str, Any]]:
         check_cancel(cancel_path)
         render_path_value = figure.get("renderPath") or figure.get("render_path")
         render_path = Path(render_path_value)
@@ -613,15 +828,21 @@ def build_figure_ocr(
         if not render_path.exists():
             with fitz.open(pdf_path) as document:
                 page = document.load_page(int(figure["page"]) - 1)
-                _render_region(page, _rect_from_bbox(figure.get("bbox")), render_path, int(opts.get("dpi", 200)), force=True)
-        ocr_text, confidence_avg, tokens = _ocr_image(ocr, str(render_path))
-        uid = figure.get("figureUid") or figure.get("figure_uid") or figure.get("id")
-        figures.append({
+                _render_region(page, _rect_from_bbox(figure.get("bbox")), render_path, dpi, force=True)
+        ocr_instance = shared_ocr or _load_paddleocr()
+        ocr_text, confidence_avg, tokens = _ocr_image(ocr_instance, str(render_path))
+        uid = figure_uid(figure)
+        return index, {
             "figureUid": uid,
             "figure_uid": uid,
+            "id": uid,
             "page": figure.get("page"),
             "caption": figure.get("caption", ""),
             "bbox": figure.get("bbox", []),
+            "cacheKey": key,
+            "cache_key": key,
+            "cacheHit": False,
+            "cache_hit": False,
             "ocrText": ocr_text,
             "ocr_text": ocr_text,
             "confidenceAvg": confidence_avg,
@@ -631,25 +852,40 @@ def build_figure_ocr(
             "source_type": "figure_ocr",
             "renderPath": figure.get("renderPath") or figure.get("render_path"),
             "render_path": figure.get("renderPath") or figure.get("render_path"),
-        })
-        if progress and (index == 1 or index == total or index % 5 == 0):
-            progress(index, total)
-    artifact = {
-        "schemaVersion": FIGURE_OCR_SCHEMA_VERSION,
-        "schema_version": FIGURE_OCR_SCHEMA_VERSION,
-        "filename": filename,
-        "generatedBy": "python_worker.figure_ocr.build",
-        "generated_by": "python_worker.ocr_figures",
-        "createdAt": datetime.now().astimezone().isoformat(),
-        "workerVersion": WORKER_VERSION,
-        "source": source,
-        "sourceFingerprint": source_fingerprint(source),
-        "engine": OCR_ENGINE,
-        "mode": "figures_only",
-        "dpi": int(opts.get("dpi", 200)),
-        "figureCount": len(entries),
-        "figureOcrCount": len(figures),
-        "figures": figures,
-    }
+        }
+
+    completed = len(result_by_index)
+    if pending:
+        if concurrency == 1:
+            ocr = _load_paddleocr()
+            for index, figure, key in pending:
+                result_index, row = process_figure(index, figure, key, ocr)
+                result_by_index[result_index] = row
+                cache_stats["processed"] += 1
+                completed += 1
+                rows = [result_by_index[key] for key in sorted(result_by_index)]
+                write_checkpoint(rows, cache_stats)
+                if progress and (completed == 1 or completed == total or completed % 5 == 0):
+                    progress(completed, total)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [executor.submit(process_figure, index, figure, key, None) for index, figure, key in pending]
+                for future in concurrent.futures.as_completed(futures):
+                    check_cancel(cancel_path)
+                    result_index, row = future.result()
+                    result_by_index[result_index] = row
+                    cache_stats["processed"] += 1
+                    completed += 1
+                    rows = [result_by_index[key] for key in sorted(result_by_index)]
+                    write_checkpoint(rows, cache_stats)
+                    if progress and (completed == 1 or completed == total or completed % 5 == 0):
+                        progress(completed, total)
+    elif progress:
+        progress(total, total)
+
+    figures = [result_by_index[key] for key in sorted(result_by_index)]
+    artifact = artifact_for_rows(figures, cached=(cache_stats["processed"] == 0), cache_stats=cache_stats)
     atomic_write_json(output_path, artifact)
+    if checkpoint_path:
+        checkpoint_path.unlink(missing_ok=True)
     return artifact
