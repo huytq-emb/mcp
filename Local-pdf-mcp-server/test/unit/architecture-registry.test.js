@@ -11,9 +11,8 @@ import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 const execFileAsync = promisify(execFile);
 const TOOL_CATALOG_SHA256 = "ec3a6ba8fba9d8552d836fe3da74496101fe5ecfdbf78fea80e6f22a14dc21ec";
 
-test("public MCP catalog preserves all 63 names and schemas", () => {
-  assert.equal(PUBLIC_TOOL_DEFINITIONS.length, 63);
-  assert.equal(new Set(PUBLIC_TOOL_NAMES).size, 63);
+test("public MCP catalog preserves names and schemas", () => {
+  assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);
   const digest = createHash("sha256").update(JSON.stringify(PUBLIC_TOOL_DEFINITIONS)).digest("hex");
   assert.equal(digest, TOOL_CATALOG_SHA256);
   const healthTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "eval_health_check");
@@ -25,8 +24,8 @@ test("public MCP catalog preserves all 63 names and schemas", () => {
 
 test("runtime registry covers advertised and hidden compatibility handlers", async () => {
   const registry = createRuntimeToolRegistry();
-  assert.equal(registry.advertisedCount, 63);
-  assert.equal(registry.handlerCount, 69);
+  assert.equal(registry.advertisedCount, PUBLIC_TOOL_DEFINITIONS.length);
+  assert.equal(registry.handlerCount, PUBLIC_TOOL_DEFINITIONS.length + HIDDEN_COMPATIBILITY_TOOL_NAMES.length);
   assert.deepEqual(registry.hiddenNames, HIDDEN_COMPATIBILITY_TOOL_NAMES);
   for (const name of [...PUBLIC_TOOL_NAMES, ...HIDDEN_COMPATIBILITY_TOOL_NAMES]) assert.equal(registry.has(name), true, name);
   const ping = await registry.dispatchTool("mcp_server_ping");
@@ -53,5 +52,19 @@ test("worker CLI preserves the missing-payload failure contract", async () => {
   await assert.rejects(
     execFileAsync(process.execPath, ["index.js", "--worker-rebuild-artifact"], { cwd: process.cwd() }),
     (error) => error.code === 1 && /Missing worker payload/.test(error.stderr),
+  );
+});
+
+test("worker CLI handles rebuild payload failures without missing refresh import", async () => {
+  const encoded = Buffer.from(JSON.stringify({
+    filename: "",
+    artifact: "pages",
+    options: {},
+  }), "utf-8").toString("base64");
+  await assert.rejects(
+    execFileAsync(process.execPath, ["index.js", "--worker-rebuild-artifact", encoded], { cwd: process.cwd() }),
+    (error) => error.code === 1 &&
+      /filename is required/.test(error.stderr) &&
+      !/refreshJobsStateFromDisk is not defined/.test(error.stderr),
   );
 });

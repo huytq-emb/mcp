@@ -1,3 +1,5 @@
+import Ajv from "ajv";
+
 export const HIDDEN_COMPATIBILITY_TOOL_NAMES = Object.freeze([
   "mcp_server_ping",
   "pdf_index_status_lite",
@@ -15,12 +17,29 @@ function validateDefinition(definition) {
   }
 }
 
+function formatValidationPath(error = {}) {
+  if (error.instancePath) return error.instancePath;
+  if (error.keyword === "required" && error.params?.missingProperty) return `/${error.params.missingProperty}`;
+  if (error.keyword === "additionalProperties" && error.params?.additionalProperty) return `/${error.params.additionalProperty}`;
+  return "/";
+}
+
+function formatValidationErrors(toolName, errors = []) {
+  const details = (errors || []).slice(0, 6).map((error) => {
+    const path = formatValidationPath(error);
+    const message = error.message || "is invalid";
+    return `${path} ${message}`;
+  });
+  return `Invalid arguments for ${toolName}: ${details.join("; ") || "/ is invalid"}`;
+}
+
 export function createToolRegistry({
   definitions = [],
   handlers = {},
   hiddenHandlers = {},
   expectedAdvertisedCount,
 } = {}) {
+  const ajv = new Ajv({ allErrors: true, strict: false });
   const publicEntries = new Map();
   const allHandlers = new Map();
 
@@ -30,7 +49,13 @@ export function createToolRegistry({
     if (publicEntries.has(name)) throw new Error(`Duplicate advertised tool: ${name}`);
     const handler = handlers[name];
     if (typeof handler !== "function") throw new Error(`Missing handler for advertised tool: ${name}`);
-    publicEntries.set(name, Object.freeze({ definition, handler, advertised: true }));
+    let validateArgs;
+    try {
+      validateArgs = ajv.compile(definition.inputSchema);
+    } catch (error) {
+      throw new Error(`Invalid inputSchema for tool ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    publicEntries.set(name, Object.freeze({ definition, handler, validateArgs, advertised: true }));
     allHandlers.set(name, handler);
   }
 
@@ -55,17 +80,22 @@ export function createToolRegistry({
     },
     async dispatchTool(name, args = {}) {
       const normalizedName = String(name || "");
+      const normalizedArgs = args === undefined ? {} : args;
+      const entry = publicEntries.get(normalizedName);
+      if (entry && !entry.validateArgs(normalizedArgs)) {
+        throw new Error(formatValidationErrors(normalizedName, entry.validateArgs.errors));
+      }
       const handler = allHandlers.get(normalizedName);
       if (!handler) throw new Error(`Unknown tool: ${normalizedName}`);
-      return handler(args || {}, { name: normalizedName });
+      return handler(normalizedArgs || {}, { name: normalizedName });
     },
   });
 }
 
 export function validateToolRegistryContract(registry, options = {}) {
   const errors = [];
-  const expectedAdvertisedCount = options.expectedAdvertisedCount ?? 63;
-  if (registry.advertisedCount !== expectedAdvertisedCount) {
+  const expectedAdvertisedCount = options.expectedAdvertisedCount;
+  if (expectedAdvertisedCount !== undefined && registry.advertisedCount !== expectedAdvertisedCount) {
     errors.push(`Expected ${expectedAdvertisedCount} advertised tools, found ${registry.advertisedCount}`);
   }
   const duplicates = registry.advertisedNames.filter((name, index, names) => names.indexOf(name) !== index);

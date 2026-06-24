@@ -17,6 +17,6 @@ export function createRuntimeToolRegistry(options = {}) {
     definitions: PUBLIC_TOOL_DEFINITIONS,
     handlers,
     hiddenHandlers,
-    expectedAdvertisedCount: 63,
+    expectedAdvertisedCount: PUBLIC_TOOL_DEFINITIONS.length,
   });
 }

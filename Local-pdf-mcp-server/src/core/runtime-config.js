@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 export function createRuntimeConfig(options = {}) {
-  const rootDir = path.resolve(options.rootDir || DEFAULT_ROOT_DIR);
   const env = options.env || process.env;
+  const rootDir = path.resolve(options.rootDir || env.RENESAS_MCP_ROOT || env.PDF_MANUAL_MCP_ROOT || DEFAULT_ROOT_DIR);
   const config = {
     rootDir,
     serverName: options.serverName || "local-pdf-mcp-server",

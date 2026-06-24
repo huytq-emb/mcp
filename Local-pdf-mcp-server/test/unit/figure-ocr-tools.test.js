@@ -91,7 +91,7 @@ test("figure OCR tools are advertised and handled", () => {
     assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
     assert.equal(registry.has(name), true, name);
   }
-  assert.equal(registry.advertisedCount, 63);
+  assert.equal(registry.advertisedCount, PUBLIC_TOOL_NAMES.length);
 });
 
 test("render_figure invalid input returns stable JSON instead of throwing", async () => {

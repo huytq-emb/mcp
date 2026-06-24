@@ -16,11 +16,12 @@ const require = createRequire(import.meta.url);
 const failures = [];
 const registry = createRuntimeToolRegistry();
 const tools = PUBLIC_TOOL_DEFINITIONS.map((tool) => tool.name);
-const contract = validateToolRegistryContract(registry, { expectedAdvertisedCount: 63 });
+const expectedAdvertisedCount = PUBLIC_TOOL_DEFINITIONS.length;
+const contract = validateToolRegistryContract(registry, { expectedAdvertisedCount });
 
 if (!contract.ok) failures.push(...contract.errors);
 if (!tools.length) failures.push("No tools found in structured MCP catalog");
-if (tools.length !== 63) failures.push(`Tool registry must advertise exactly 63 tools; found ${tools.length}`);
+if (tools.length !== expectedAdvertisedCount) failures.push(`Tool registry must advertise exactly ${expectedAdvertisedCount} tools; found ${tools.length}`);
 const duplicates = tools.filter((n, i) => tools.indexOf(n) !== i);
 if (duplicates.length) failures.push(`Duplicate tools: ${[...new Set(duplicates)].join(", ")}`);
 

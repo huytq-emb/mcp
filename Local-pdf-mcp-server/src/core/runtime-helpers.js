@@ -13,15 +13,29 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+export function extractEvidenceContractFromText(text) {
+  const match = String(text || "").match(/Machine-readable evidence contract:\s*```json\s*([\s\S]*?)```/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 export function textResult(text) {
-  return {
+  const fullText = String(text ?? "");
+  const evidenceContract = extractEvidenceContractFromText(fullText);
+  const result = {
     content: [
       {
         type: "text",
-        text: limitOutput(String(text ?? "")),
+        text: limitOutput(fullText),
       },
     ],
   };
+  if (evidenceContract) result.structuredContent = { evidenceContract };
+  return result;
 }
 
 export function jsonResult(payload) {

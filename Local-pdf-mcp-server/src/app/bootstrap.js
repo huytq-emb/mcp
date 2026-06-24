@@ -16,6 +16,7 @@ import {
   normalizeArtifactName,
   nowIso,
   rebuildArtifact,
+  refreshJobsStateFromDisk,
   updateJob,
 } from "../services/jobs.js";
 import { resolveDriverProfile } from "../workflows/profiles.js";
