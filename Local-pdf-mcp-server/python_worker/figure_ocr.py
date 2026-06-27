@@ -22,8 +22,11 @@ from .protocol import atomic_write_json, check_cancel
 
 FIGURE_SCHEMA_VERSION = 1
 FIGURE_OCR_SCHEMA_VERSION = 1
+FIGURE_PARSE_SCHEMA_VERSION = 1
 OCR_ENGINE = "paddleocr"
 OCR_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt"
+OCR_STRUCTURE_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-structure.txt"
+OCR_VL_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-vl.txt"
 DEFAULT_OCR_OPTIONS = {
     "enabled": True,
     "mode": "figures_only",
@@ -44,6 +47,43 @@ def _version(package: str) -> str:
         return ""
 
 
+def _dependency_status(available: bool, reason: str = "", hint: str = "", missing: list[str] | None = None, **extra: Any) -> dict[str, Any]:
+    return {
+        "available": bool(available),
+        "reason": "" if available else (reason or "missing dependency"),
+        "hint": "" if available else hint,
+        "missing": [] if available else list(missing or []),
+        **extra,
+    }
+
+
+def _paddleocr_export_available(name: str) -> tuple[bool, str]:
+    # Health checks must be cheap and must not import PaddleOCR, because import
+    # can initialize heavyweight runtime state on Windows. The explicit parser
+    # operation performs the real import and reports a structured failure if the
+    # class is not actually exported by the installed wheel.
+    if importlib.util.find_spec("paddlex") is None:
+        return False, "paddleocr document parser extras are not installed"
+    try:
+        from paddlex.utils.deps import is_extra_available
+        if not is_extra_available("ocr"):
+            return False, "paddlex[ocr] extra is not installed"
+    except Exception as error:
+        return False, f"unable to verify paddlex[ocr] extra: {error}"
+    spec = importlib.util.find_spec("paddleocr")
+    if spec is None:
+        return False, "paddleocr package is not installed"
+    if not _version("paddleocr"):
+        return False, "paddleocr package version is unavailable"
+    origin = getattr(spec, "origin", None)
+    if origin:
+        with contextlib.suppress(Exception):
+            source = Path(origin).read_text(encoding="utf-8", errors="ignore")
+            if name not in source:
+                return False, f"paddleocr.{name} is not exported by the installed package"
+    return True, ""
+
+
 def ocr_health() -> dict[str, Any]:
     missing = []
     checks = {
@@ -54,16 +94,45 @@ def ocr_health() -> dict[str, Any]:
     for name, available in checks.items():
         if not available:
             missing.append(name)
-    available = not missing
+    text_available = not missing
+    structure_available = False
+    structure_reason = "PaddleOCR text dependencies are missing"
+    vl_available = False
+    vl_reason = "PaddleOCR text dependencies are missing"
+    if text_available:
+        structure_available, structure_reason = _paddleocr_export_available("PPStructureV3")
+        vl_available, vl_reason = _paddleocr_export_available("PaddleOCRVL")
     return {
         "ok": True,
         "ocr": {
-            "enabled": available,
+            "enabled": text_available,
             "engine": OCR_ENGINE,
-            "available": available,
-            "reason": "" if available else "missing dependency",
+            "available": text_available,
+            "reason": "" if text_available else "missing dependency",
             "missing": missing,
-            "hint": "" if available else OCR_INSTALL_HINT,
+            "hint": "" if text_available else OCR_INSTALL_HINT,
+            "text": _dependency_status(
+                text_available,
+                "missing dependency",
+                OCR_INSTALL_HINT,
+                missing,
+                model=os.environ.get("RENESAS_MCP_PADDLEOCR_VERSION", "PP-OCRv4"),
+            ),
+            "structure": _dependency_status(
+                structure_available,
+                structure_reason,
+                OCR_STRUCTURE_INSTALL_HINT,
+                [] if text_available else missing,
+                parser="PP-StructureV3",
+            ),
+            "vl": _dependency_status(
+                vl_available,
+                vl_reason,
+                OCR_VL_INSTALL_HINT,
+                [] if text_available else missing,
+                parser="PaddleOCR-VL",
+                verification="visual graph edges are unverified until cross-checked",
+            ),
             "versions": {
                 "paddleocr": _version("paddleocr"),
                 "paddlepaddle": _version("paddlepaddle"),
@@ -664,6 +733,215 @@ def ocr_image_file(
         "confidence_avg": confidence_avg,
         "warnings": [],
     }
+
+
+def _load_structure_parser() -> Any:
+    health = ocr_health()
+    if not health["ocr"]["structure"]["available"]:
+        return None
+    with contextlib.redirect_stdout(sys.stderr):
+        from paddleocr import PPStructureV3
+        try:
+            return PPStructureV3(
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+            )
+        except TypeError:
+            return PPStructureV3()
+
+
+def _load_vl_parser() -> Any:
+    health = ocr_health()
+    if not health["ocr"]["vl"]["available"]:
+        return None
+    with contextlib.redirect_stdout(sys.stderr):
+        from paddleocr import PaddleOCRVL
+        try:
+            return PaddleOCRVL(
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+            )
+        except TypeError:
+            return PaddleOCRVL()
+
+
+def _jsonable(value: Any, depth: int = 0) -> Any:
+    if depth > 8:
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item, depth + 1) for item in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        with contextlib.suppress(Exception):
+            return _jsonable(item(), depth + 1)
+    json_value = getattr(value, "json", None)
+    if callable(json_value):
+        with contextlib.suppress(Exception):
+            return _jsonable(json_value(), depth + 1)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        with contextlib.suppress(Exception):
+            return _jsonable(to_dict(), depth + 1)
+    return str(value)
+
+
+def _collect_text_values(value: Any, texts: list[str], limit: int = 120) -> None:
+    if len(texts) >= limit:
+        return
+    if isinstance(value, str):
+        text = re.sub(r"\s+", " ", value).strip()
+        if text and len(text) <= 240 and text not in texts:
+            texts.append(text)
+        return
+    if isinstance(value, dict):
+        for key in ("text", "content", "label", "rec_text", "markdown"):
+            if key in value:
+                _collect_text_values(value[key], texts, limit)
+        for item in value.values():
+            _collect_text_values(item, texts, limit)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_text_values(item, texts, limit)
+
+
+def _extract_parser_markdown(items: list[Any]) -> str:
+    chunks: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            for key in ("markdown", "md", "markdown_text"):
+                text = str(item.get(key) or "").strip()
+                if text:
+                    chunks.append(text)
+    return "\n\n".join(chunks)[:120_000]
+
+
+def _predict_with_parser(parser: Any, image_path: Path) -> list[Any]:
+    with contextlib.redirect_stdout(sys.stderr):
+        if hasattr(parser, "predict"):
+            try:
+                result = parser.predict(input=str(image_path))
+            except TypeError:
+                result = parser.predict(str(image_path))
+        else:
+            result = parser(str(image_path))
+    if result is None:
+        return []
+    if isinstance(result, list):
+        return result
+    try:
+        return list(result)
+    except TypeError:
+        return [result]
+
+
+def _parser_unavailable(kind: str, capability: dict[str, Any], image_path: Path, filename: str, source: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    warning = capability.get("hint") or capability.get("reason") or f"{kind} parser unavailable"
+    return {
+        "schemaVersion": FIGURE_PARSE_SCHEMA_VERSION,
+        "filename": filename,
+        "generatedBy": f"python_worker.figure.{kind}",
+        "createdAt": datetime.now().astimezone().isoformat(),
+        "workerVersion": WORKER_VERSION,
+        "source": source,
+        "sourceFingerprint": source_fingerprint(source),
+        "parser": kind,
+        "engine": OCR_ENGINE,
+        "imagePath": str(image_path),
+        "page": int((options or {}).get("page") or 0),
+        "bbox": list((options or {}).get("bbox") or []),
+        "scale": float((options or {}).get("scale") or 1.0),
+        "ok": False,
+        "error_code": f"{kind.upper()}_PARSER_UNAVAILABLE",
+        "message": capability.get("reason") or f"{kind} parser unavailable",
+        "hint": capability.get("hint") or "",
+        "itemCount": 0,
+        "items": [],
+        "plainText": "",
+        "markdown": "",
+        "warnings": [warning],
+    }
+
+
+def parse_figure_image(
+    image_path: Path,
+    pdf_path: Path,
+    filename: str,
+    output_path: Path,
+    kind: str,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = source_info(pdf_path)
+    health = ocr_health()
+    capability = health["ocr"].get(kind, {})
+    if not capability.get("available"):
+        artifact = _parser_unavailable(kind, capability, image_path, filename, source, options)
+        atomic_write_json(output_path, artifact)
+        return artifact
+
+    try:
+        parser = _load_structure_parser() if kind == "structure" else _load_vl_parser()
+        if parser is None:
+            artifact = _parser_unavailable(kind, capability, image_path, filename, source, options)
+            atomic_write_json(output_path, artifact)
+            return artifact
+        raw_items = _predict_with_parser(parser, image_path)
+        items = [_jsonable(item) for item in raw_items]
+        texts: list[str] = []
+        _collect_text_values(items, texts)
+        markdown = _extract_parser_markdown(items)
+        artifact = {
+            "schemaVersion": FIGURE_PARSE_SCHEMA_VERSION,
+            "filename": filename,
+            "generatedBy": f"python_worker.figure.{kind}",
+            "createdAt": datetime.now().astimezone().isoformat(),
+            "workerVersion": WORKER_VERSION,
+            "source": source,
+            "sourceFingerprint": source_fingerprint(source),
+            "parser": kind,
+            "engine": OCR_ENGINE,
+            "imagePath": str(image_path),
+            "page": int((options or {}).get("page") or 0),
+            "bbox": list((options or {}).get("bbox") or []),
+            "scale": float((options or {}).get("scale") or 1.0),
+            "ok": True,
+            "itemCount": len(items),
+            "items": items,
+            "plainText": " ".join(texts[:80]).strip(),
+            "markdown": markdown,
+            "warnings": ["PaddleOCR-VL graph edges are unverified until cross-checked."] if kind == "vl" else [],
+        }
+    except Exception as error:
+        artifact = {
+            "schemaVersion": FIGURE_PARSE_SCHEMA_VERSION,
+            "filename": filename,
+            "generatedBy": f"python_worker.figure.{kind}",
+            "createdAt": datetime.now().astimezone().isoformat(),
+            "workerVersion": WORKER_VERSION,
+            "source": source,
+            "sourceFingerprint": source_fingerprint(source),
+            "parser": kind,
+            "engine": OCR_ENGINE,
+            "imagePath": str(image_path),
+            "page": int((options or {}).get("page") or 0),
+            "bbox": list((options or {}).get("bbox") or []),
+            "scale": float((options or {}).get("scale") or 1.0),
+            "ok": False,
+            "error_code": f"{kind.upper()}_PARSER_FAILED",
+            "message": str(error),
+            "hint": capability.get("hint") or "",
+            "itemCount": 0,
+            "items": [],
+            "plainText": "",
+            "markdown": "",
+            "warnings": [f"{kind} parser failed: {error}"],
+        }
+    atomic_write_json(output_path, artifact)
+    return artifact
 
 
 def inspect_figure_basic(

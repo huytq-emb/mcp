@@ -23,6 +23,8 @@ const WORKER_ARTIFACT_CONTRACTS = Object.freeze({
   cautions: { schemaVersion: 1, countKey: "cautionCount" },
   figures: { schemaVersion: 1, countKey: "figureCount" },
   figure_ocr: { schemaVersion: 1, countKey: "figureOcrCount" },
+  figure_structure: { schemaVersion: 1, countKey: "itemCount" },
+  figure_vl: { schemaVersion: 1, countKey: "itemCount" },
 });
 
 const RETRYABLE_WORKER_CODES = new Set([
@@ -101,6 +103,13 @@ export async function runPythonWorker(request, options = {}) {
   const requestId = String(request.requestId || `python-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`);
   const payload = { ...request, protocolVersion: PYTHON_WORKER_PROTOCOL_VERSION, requestId };
   const args = options.workerArgs || [...(interpreter.argsPrefix || []), "-m", "python_worker"];
+  const workerEnv = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONUNBUFFERED: "1",
+    PADDLE_PDX_CACHE_HOME: process.env.PADDLE_PDX_CACHE_HOME || path.join(rootDir, "indexes", "cache", "paddlex"),
+    ...(options.env || {}),
+  };
   let child;
   try {
     child = spawn(interpreter.command, args, {
@@ -108,7 +117,7 @@ export async function runPythonWorker(request, options = {}) {
       windowsHide: true,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1", ...(options.env || {}) },
+      env: workerEnv,
     });
   } catch (error) {
     throw new PythonWorkerError("WORKER_SPAWN_FAILED", error.message, { interpreter });

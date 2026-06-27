@@ -1157,6 +1157,7 @@ async function handle_ocr_figure(args = {}, meta = {}) {
       page: args.page,
       bbox: args.bbox,
       engine: String(args.engine || "auto").trim(),
+      mode: args.mode === undefined ? undefined : String(args.mode || "").trim(),
       force: Boolean(args.force),
     });
     return jsonResult(result);
@@ -1170,6 +1171,7 @@ async function handle_inspect_figure(args = {}, meta = {}) {
       page: args.page,
       bbox: args.bbox,
       mode: String(args.mode || "auto").trim(),
+      parser: args.parser === undefined ? undefined : String(args.parser || "").trim(),
       include_context: args.include_context,
       context_pages: args.context_pages,
       force: Boolean(args.force),

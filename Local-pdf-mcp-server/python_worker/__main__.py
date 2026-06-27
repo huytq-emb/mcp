@@ -9,7 +9,7 @@ from typing import Any
 
 from . import PROTOCOL_VERSION, WORKER_VERSION
 from .extractors import build_structured, extract_pinmux_rows, extract_tables
-from .figure_ocr import build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, render_figure_crop
+from .figure_ocr import build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, render_figure_crop
 from .pdf_engine import build_pages_cache, extract_pages, inspect_pdf, library_versions, peak_rss_bytes, source_fingerprint, source_info
 from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit, ensure_inside, log
 
@@ -17,7 +17,7 @@ from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit,
 OPERATIONS = {
     "health", "pdf.inspect", "pages.extract", "pages.build", "tables.extract", "tables.build",
     "structured.build", "registers.build", "bitfields.build", "cautions.build", "pinmux.extract",
-    "ocr.health", "figures.extract", "figure_ocr.build", "figure.render", "ocr.image", "figure.inspect_basic",
+    "ocr.health", "figures.extract", "figure_ocr.build", "figure.render", "ocr.image", "figure.structure", "figure.vl", "figure.inspect_basic",
 }
 
 
@@ -105,6 +105,23 @@ def main() -> int:
                 options.get("bbox"),
                 float(options.get("scale", 1.0)),
             )
+        elif operation in {"figure.structure", "figure.vl"}:
+            image_path = ensure_inside(inputs["imagePath"], roots, "figure image path")
+            output_path = ensure_inside(outputs["artifactPath"], roots, "figure parser artifact path")
+            kind = "structure" if operation == "figure.structure" else "vl"
+            artifact = parse_figure_image(image_path, pdf_path, inputs["filename"], output_path, kind, options)
+            descriptor = artifact_descriptor(f"figure_{kind}", output_path, 1, artifact["itemCount"])
+            emit("artifact", request_id, artifact=descriptor)
+            result = {
+                "artifact": descriptor,
+                "sourceFingerprint": artifact["sourceFingerprint"],
+                "itemCount": artifact["itemCount"],
+                "ok": bool(artifact.get("ok")),
+                "error_code": artifact.get("error_code", ""),
+                "message": artifact.get("message", ""),
+                "hint": artifact.get("hint", ""),
+                "warnings": artifact.get("warnings", []),
+            }
         elif operation == "figure.inspect_basic":
             image_path = ensure_inside(outputs["imagePath"], roots, "figure inspect image path")
             result = inspect_figure_basic(

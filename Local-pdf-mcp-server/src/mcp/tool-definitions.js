@@ -953,7 +953,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "ocr_figure",
     description:
-      "Run optional lazy OCR over an on-demand rendered figure crop. PaddleOCR is loaded only for this call and missing OCR dependencies return a structured warning instead of crashing the MCP server.",
+      "Run optional lazy OCR or local figure parsing over an on-demand rendered hardware-manual figure crop. Text mode preserves legacy PaddleOCR label extraction; structure mode uses document-structure parsing when installed; VL mode is optional and returns warnings when unavailable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -967,6 +967,11 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
           maxItems: 4,
           description: "PDF point bbox [x0,y0,x1,y1]. Required with page when figure_id is not provided."
         },
+        mode: {
+          type: "string",
+          enum: ["text", "structure", "vl", "auto"],
+          description: "Figure parsing mode. text is the backward-compatible default for OCR labels; structure uses local document-structure parsing for complex diagrams/tables when installed; vl uses optional local visual-language parsing and treats graph edges as unverified; auto prefers structure when available and otherwise falls back to text."
+        },
         engine: { type: "string", enum: ["auto", "paddleocr", "none"], description: "OCR engine. auto uses PaddleOCR when installed; none renders but skips OCR." },
         force: { type: "boolean", description: "If true, bypass render/OCR caches. Default false." }
       },
@@ -977,7 +982,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "inspect_figure",
     description:
-      "Build an evidence pack for understanding a rendered hardware-manual figure. It combines caption/provenance, OCR labels, optional surrounding text, conservative summary, and warnings without inventing arrows/connectors.",
+      "Build a hardware-manual figure evidence pack with caption/provenance, OCR or local parser labels, optional surrounding text, normalized semantic evidence, and conservative warnings without inventing arrows/connectors.",
     inputSchema: {
       type: "object",
       properties: {
@@ -992,6 +997,11 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
           description: "PDF point bbox [x0,y0,x1,y1]. Required with page when figure_id is not provided."
         },
         mode: { type: "string", enum: ["auto", "block_diagram", "sequence", "timing", "flowchart", "register_diagram"], description: "Expected figure type. Default auto." },
+        parser: {
+          type: "string",
+          enum: ["safe", "ocr", "structure", "vl", "auto"],
+          description: "Parser strategy. safe preserves conservative legacy OCR/context behavior; ocr uses text labels only; structure uses local document-structure parsing when installed; vl uses optional local visual-language parsing with unverified edges; auto selects a local parser based on figure type and available dependencies."
+        },
         include_context: { type: "boolean", description: "If true, include surrounding page text. Default true." },
         context_pages: { type: "number", description: "Number of pages before/after the figure page to include. Default 0, max 2." },
         force: { type: "boolean", description: "If true, bypass render/OCR caches. Default false." }

@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
-import { PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
+import { PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { clearOcrHealthCache, getOcrHealth } from "../../src/services/ocr.js";
 import { resolvePythonInterpreter } from "../../src/services/python-worker.js";
 import { atomicWriteJson, clearJsonFileCache, getJsonFileCacheStats, getPdfSourceInfo, readJsonCached, safeFigureLookupIndexPath, safeFiguresIndexPath, safePagesCachePath, safePdfPath } from "../../src/core/runtime-helpers.js";
@@ -40,7 +40,14 @@ async function createSyntheticPdf(filename) {
 }
 
 async function removeCacheFor(filename) {
-  for (const dir of [path.join("indexes", "cache", "figure-images"), path.join("indexes", "cache", "figure-ocr"), path.join("indexes", "cache", "page-context")]) {
+  for (const dir of [
+    path.join("indexes", "cache", "figure-images"),
+    path.join("indexes", "cache", "figure-ocr"),
+    path.join("indexes", "cache", "figure-structure"),
+    path.join("indexes", "cache", "figure-vl"),
+    path.join("indexes", "cache", "figure-semantic-evidence"),
+    path.join("indexes", "cache", "page-context"),
+  ]) {
     const entries = await fs.readdir(dir).catch(() => []);
     await Promise.all(entries
       .filter((entry) => entry.startsWith(`${filename}-`))
@@ -92,6 +99,31 @@ test("figure OCR tools are advertised and handled", () => {
     assert.equal(registry.has(name), true, name);
   }
   assert.equal(registry.advertisedCount, PUBLIC_TOOL_NAMES.length);
+});
+
+test("figure OCR tool schemas expose mode/parser and reject invalid values", async () => {
+  const ocrTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "ocr_figure");
+  const inspectTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "inspect_figure");
+  assert.deepEqual(ocrTool.inputSchema.properties.mode.enum, ["text", "structure", "vl", "auto"]);
+  assert.deepEqual(inspectTool.inputSchema.properties.parser.enum, ["safe", "ocr", "structure", "vl", "auto"]);
+  const registry = createRuntimeToolRegistry();
+  await assert.rejects(
+    registry.dispatchTool("ocr_figure", { filename: "unit-invalid.pdf", mode: "raw_upstream_name" }),
+    /mode/,
+  );
+  await assert.rejects(
+    registry.dispatchTool("inspect_figure", { filename: "unit-invalid.pdf", parser: "pp_structurev3" }),
+    /parser/,
+  );
+});
+
+test("OCR health reports text structure and VL capability fields", async () => {
+  clearOcrHealthCache();
+  const health = await getOcrHealth({ force: true });
+  assert.equal(typeof health.ocr?.text?.available, "boolean");
+  assert.equal(typeof health.ocr?.structure?.available, "boolean");
+  assert.equal(typeof health.ocr?.vl?.available, "boolean");
+  assert.equal(health.ok, true);
 });
 
 test("render_figure invalid input returns stable JSON instead of throwing", async () => {
@@ -227,9 +259,39 @@ test("ocr_figure engine none renders but returns graceful disabled status", asyn
     assert.equal(payload.ok, false);
     assert.equal(payload.error_code, "OCR_ENGINE_DISABLED");
     assert.equal(payload.engine, "none");
+    assert.equal(payload.mode, "text");
+    assert.equal(payload.parser, "ocr");
     assert.equal(Array.isArray(payload.ocr_text), true);
     assert.equal(payload.ocr_text.length, 0);
+    assert.equal(payload.semantic_evidence.schemaVersion, 1);
     await fs.access(payload.image_path);
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+  }
+});
+
+test("ocr_figure mode text remains backward-compatible", async (t) => {
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-ocr-text-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  try {
+    const payload = parseJsonResult(await registry.dispatchTool("ocr_figure", {
+      filename,
+      page: 1,
+      bbox: [30, 30, 190, 145],
+      mode: "text",
+      engine: "none",
+      force: true,
+    }));
+    assert.equal(payload.error_code, "OCR_ENGINE_DISABLED");
+    assert.equal(payload.mode, "text");
+    assert.equal(payload.semantic_evidence.parser, "ocr");
+    assert.equal(payload.semantic_evidence.raw_artifact.kind, "text");
   } finally {
     await fs.rm(pdfPath, { force: true }).catch(() => {});
     await removeCacheFor(filename);
@@ -270,6 +332,42 @@ test("ocr_figure reports missing PaddleOCR as a graceful unavailable engine", as
   }
 });
 
+test("ocr_figure mode structure returns structured unavailable warning when parser is missing", async (t) => {
+  clearOcrHealthCache();
+  const health = await getOcrHealth({ force: true });
+  if (health.ocr?.structure?.available) {
+    t.skip("PP-StructureV3 is installed in this environment");
+    return;
+  }
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-structure-missing-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  try {
+    const payload = parseJsonResult(await registry.dispatchTool("ocr_figure", {
+      filename,
+      page: 1,
+      bbox: [30, 30, 190, 145],
+      mode: "structure",
+      force: true,
+    }));
+    assert.equal(payload.ok, false);
+    assert.equal(payload.mode, "structure");
+    assert.equal(payload.parser, "structure");
+    assert.equal(payload.error_code, "STRUCTURE_PARSER_UNAVAILABLE");
+    assert.match(payload.hint || payload.warnings.join("\n"), /requirements-ocr-structure\.txt|PP-Structure/i);
+    assert.equal(payload.semantic_evidence.parser, "structure");
+    assert.equal(Array.isArray(payload.semantic_evidence.warnings), true);
+    await fs.access(payload.image_path);
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+  }
+});
+
 test("inspect_figure returns a stable evidence pack shape", async (t) => {
   const registry = createRuntimeToolRegistry();
   const filename = `unit-figure-inspect-${Date.now()}.pdf`;
@@ -289,11 +387,83 @@ test("inspect_figure returns a stable evidence pack shape", async (t) => {
     }));
     assert.equal(payload.ok, true);
     assert.equal(payload.figure_type, "block_diagram");
+    assert.equal(payload.parser, "safe");
     assert.equal(Array.isArray(payload.detected_labels), true);
     assert.deepEqual(payload.detected_connectors, []);
     assert.equal(Array.isArray(payload.technical_summary), true);
     assert.equal(typeof payload.ocr.ok, "boolean");
+    assert.equal(payload.semantic_evidence.schemaVersion, 1);
     await fs.access(payload.image_path);
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+  }
+});
+
+test("inspect_figure parser structure returns warning instead of crashing when missing", async (t) => {
+  clearOcrHealthCache();
+  const health = await getOcrHealth({ force: true });
+  if (health.ocr?.structure?.available) {
+    t.skip("PP-StructureV3 is installed in this environment");
+    return;
+  }
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-inspect-structure-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  try {
+    const payload = parseJsonResult(await registry.dispatchTool("inspect_figure", {
+      filename,
+      page: 1,
+      bbox: [30, 30, 190, 145],
+      mode: "block_diagram",
+      parser: "structure",
+      include_context: false,
+      force: true,
+    }));
+    assert.equal(payload.ok, true);
+    assert.equal(payload.parser, "structure");
+    assert.equal(payload.ocr.error_code, "STRUCTURE_PARSER_UNAVAILABLE");
+    assert.equal(payload.semantic_evidence.parser, "structure");
+    assert.match(payload.warnings.join("\n"), /requirements-ocr-structure\.txt|PP-Structure/i);
+  } finally {
+    await fs.rm(pdfPath, { force: true }).catch(() => {});
+    await removeCacheFor(filename);
+  }
+});
+
+test("inspect_figure parser vl returns unverified warning when unavailable", async (t) => {
+  clearOcrHealthCache();
+  const health = await getOcrHealth({ force: true });
+  if (health.ocr?.vl?.available) {
+    t.skip("PaddleOCR-VL is installed in this environment");
+    return;
+  }
+  const registry = createRuntimeToolRegistry();
+  const filename = `unit-figure-inspect-vl-${Date.now()}.pdf`;
+  const pdfPath = await createSyntheticPdf(filename);
+  if (!pdfPath) {
+    t.skip("Python/PyMuPDF unavailable");
+    return;
+  }
+  try {
+    const payload = parseJsonResult(await registry.dispatchTool("inspect_figure", {
+      filename,
+      page: 1,
+      bbox: [30, 30, 190, 145],
+      mode: "timing",
+      parser: "vl",
+      include_context: false,
+      force: true,
+    }));
+    assert.equal(payload.ok, true);
+    assert.equal(payload.parser, "vl");
+    assert.equal(payload.ocr.error_code, "VL_PARSER_UNAVAILABLE");
+    assert.equal(payload.semantic_evidence.parser, "vl");
+    assert.match(payload.warnings.join("\n"), /requirements-ocr-vl\.txt|PaddleOCR-VL|VL/i);
   } finally {
     await fs.rm(pdfPath, { force: true }).catch(() => {});
     await removeCacheFor(filename);

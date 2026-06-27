@@ -95,9 +95,32 @@ OCR text from rendered diagrams:
 .\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt
 ```
 
+Document-structure parsing and PaddleOCR-VL are separate optional layers:
+
+```powershell
+# Text OCR only: labels and short text from rendered figure crops.
+.\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt
+
+# Structure parsing: layout/table/document-structure output for complex figures.
+.\.venv\Scripts\python.exe -m pip install -r requirements-ocr-structure.txt
+
+# Optional local PaddleOCR-VL parsing. This is never required for server health.
+.\.venv\Scripts\python.exe -m pip install -r requirements-ocr-vl.txt
+```
+
 If PaddleOCR or PaddlePaddle is missing, the MCP server still starts. The
 on-demand OCR tools return `error_code="OCR_ENGINE_UNAVAILABLE"` with the
 install hint instead of crashing the server.
+
+`python:health` and `eval_health_check(step40_action="ocr_health")` report
+capability-level status for text OCR, structure parsing, and VL parsing. Missing
+structure/VL dependencies are advisory unless an explicit structure/VL call is
+made, and those calls return structured warnings with install hints.
+
+The JSON-line worker sets `PADDLE_PDX_CACHE_HOME` to
+`indexes/cache/paddlex` by default so PaddleX model files stay in the project
+workspace on Windows. Set `PADDLE_PDX_CACHE_HOME` yourself before starting the
+server if you want to use a shared pre-downloaded PaddleX model cache.
 
 The default OCR flow is:
 
@@ -157,10 +180,21 @@ On-demand MCP tools:
   "arguments": {
     "filename": "r01uh1069ej0115-rzg3e.pdf",
     "figure_id": "p0123_f002",
+    "mode": "text",
     "engine": "auto"
   }
 }
 ```
+
+`ocr_figure.mode` values:
+
+- `text`: backward-compatible PaddleOCR text labels and confidence values.
+- `structure`: local document-structure parsing for tables, register diagrams,
+  block diagrams, and dense figure crops when the optional dependency is
+  installed.
+- `vl`: optional local PaddleOCR-VL parsing for visually complex diagrams. Any
+  edge/topology output is unverified until cross-checked.
+- `auto`: prefer structure when available, otherwise fall back to text.
 
 ```json
 {
@@ -169,11 +203,24 @@ On-demand MCP tools:
     "filename": "r01uh1069ej0115-rzg3e.pdf",
     "figure_id": "p0123_f002",
     "mode": "block_diagram",
+    "parser": "structure",
     "include_context": true,
     "context_pages": 1
   }
 }
 ```
+
+`inspect_figure.parser` values:
+
+- `safe`: default legacy behavior; caption, OCR labels when available, context,
+  and conservative warnings.
+- `ocr`: text OCR only.
+- `structure`: local structure/document parser output normalized into hardware
+  evidence.
+- `vl`: optional PaddleOCR-VL output normalized into hardware evidence; visual
+  graph edges are not trusted as verified facts.
+- `auto`: choose a local parser from the requested figure type and installed
+  capabilities.
 
 `render_figure` and `ocr_figure` cache results under `indexes/cache/` using the
 PDF filename, page, bbox, scale, engine, and source PDF size/mtime. Pass
@@ -182,12 +229,25 @@ caption/provenance, rendered image path, OCR labels with bbox/confidence,
 optional surrounding text, conservative summary, and explicit warnings when
 connector/arrow detection is not available.
 
+Parser responses include `semantic_evidence`, a normalized hardware-manual
+evidence object. Raw PaddleOCR/PP-Structure/VL output is kept in cache artifacts
+under `indexes/cache/figure-ocr/`, `figure-structure/`, or `figure-vl/`, while
+the MCP response stays concise. Direct observations, engineering inferences,
+source implications, uncertainties, and warnings are separated deliberately.
+Visual parsing is supplemental: verify clocks, resets, interrupt routes,
+register/bitfield names, sequences, timing edges, and cautions against the
+manual text/register/bitfield/sequence/caution tools before trusting them in a
+driver implementation.
+
 Performance caches are incremental and on-demand:
 
 - `figure_id` resolution may create `indexes/<manual>.figures.lookup.json` lazily
   from the existing figures artifact.
 - OCR availability is cached briefly so missing PaddleOCR does not trigger a
   Python OCR worker import attempt on every call.
+- Structure, VL, and normalized semantic evidence caches are separate from the
+  legacy figure OCR cache, so old `indexes/<manual>.figure_ocr.json` artifacts
+  remain readable.
 - Surrounding figure context is cached under `indexes/cache/page-context/`.
 - Cache status and cleanup are routed through the existing compatibility tool:
 

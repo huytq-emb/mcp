@@ -7,7 +7,7 @@ from unittest.mock import patch
 import fitz
 
 from python_worker.extractors import build_bitfields, build_cautions, build_registers, extract_pinmux_rows, infer_kind, table_from_rows
-from python_worker.figure_ocr import _ocr_image, build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, render_figure_crop
+from python_worker.figure_ocr import _ocr_image, build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, render_figure_crop
 from python_worker.pdf_engine import peak_rss_bytes, words_to_rows
 
 
@@ -265,6 +265,38 @@ class ExtractorTests(unittest.TestCase):
             self.assertEqual(result["error"], "OCR dependency missing")
             self.assertIn("requirements-ocr.txt", result["hint"])
             self.assertFalse(output_path.exists())
+
+    def test_ocr_health_reports_parser_capabilities(self):
+        health = ocr_health()
+        self.assertIn("text", health["ocr"])
+        self.assertIn("structure", health["ocr"])
+        self.assertIn("vl", health["ocr"])
+        self.assertIn("available", health["ocr"]["text"])
+        self.assertIn("available", health["ocr"]["structure"])
+        self.assertIn("available", health["ocr"]["vl"])
+
+    def test_structure_parser_unavailable_writes_structured_artifact(self):
+        health = ocr_health()
+        if health["ocr"]["structure"]["available"]:
+            self.skipTest("PP-StructureV3 is installed in this environment")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "synthetic-structure.pdf"
+            image_path = root / "figure.png"
+            output_path = root / "structure.json"
+            doc = fitz.open()
+            page = doc.new_page(width=220, height=180)
+            page.draw_rect(fitz.Rect(40, 40, 180, 130), color=(0, 0, 0), width=1)
+            page.insert_text((78, 88), "DMA FIFO", fontsize=12)
+            doc.save(pdf_path)
+            doc.close()
+            render_figure_crop(pdf_path, pdf_path.name, image_path, 1, [30, 30, 190, 145], 2.0, False)
+            artifact = parse_figure_image(image_path, pdf_path, pdf_path.name, output_path, "structure", {"page": 1, "bbox": [30, 30, 190, 145], "scale": 2.0})
+            self.assertFalse(artifact["ok"])
+            self.assertEqual(artifact["schemaVersion"], 1)
+            self.assertEqual(artifact["itemCount"], 0)
+            self.assertIn("STRUCTURE_PARSER_UNAVAILABLE", artifact["error_code"])
+            self.assertTrue(output_path.exists())
 
     def test_figure_ocr_reuses_unchanged_cached_rows(self):
         class FakeOcr:

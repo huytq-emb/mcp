@@ -1,0 +1,7 @@
+-r requirements-ocr-structure.txt
+
+# Optional PaddleOCR-VL support for explicit mode/parser="vl" calls.
+# First use may require local model files. The MCP server treats this as
+# optional and returns structured unavailable warnings when dependencies/models
+# are missing.
+paddleocr[doc-parser]==3.7.0

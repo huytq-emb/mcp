@@ -34,11 +34,20 @@ import {
 } from "./python-worker.js";
 
 export const OCR_INSTALL_HINT = String.raw`Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt`;
+export const OCR_STRUCTURE_INSTALL_HINT = String.raw`Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-structure.txt`;
+export const OCR_VL_INSTALL_HINT = String.raw`Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-vl.txt`;
 const FIGURE_LOOKUP_SCHEMA_VERSION = 1;
 const PAGE_CONTEXT_CACHE_SCHEMA_VERSION = 1;
+const FIGURE_SEMANTIC_SCHEMA_VERSION = 1;
 const OCR_HEALTH_TTL_MS = 60_000;
 const PAGE_CONTEXT_CACHE_KIND = "page-context";
-const FIGURE_CACHE_KINDS = ["figure-images", "figure-ocr", PAGE_CONTEXT_CACHE_KIND];
+const FIGURE_STRUCTURE_CACHE_KIND = "figure-structure";
+const FIGURE_VL_CACHE_KIND = "figure-vl";
+const FIGURE_SEMANTIC_CACHE_KIND = "figure-semantic-evidence";
+const FIGURE_CACHE_KINDS = ["figure-images", "figure-ocr", FIGURE_STRUCTURE_CACHE_KIND, FIGURE_VL_CACHE_KIND, FIGURE_SEMANTIC_CACHE_KIND, PAGE_CONTEXT_CACHE_KIND];
+const OCR_FIGURE_MODES = new Set(["text", "structure", "vl", "auto"]);
+const INSPECT_FIGURE_PARSERS = new Set(["safe", "ocr", "structure", "vl", "auto"]);
+const FIGURE_TYPES = new Set(["block_diagram", "sequence", "timing", "flowchart", "register_diagram", "table", "unknown"]);
 
 let cachedOcrHealth = null;
 
@@ -66,6 +75,54 @@ function optionsForWorker(options = {}) {
 function figureOcrCheckpointPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(path.join(INDEX_DIR, `${filename}.figure_ocr.partial.json`), INDEX_DIR, "figure OCR checkpoint");
+}
+
+function capabilityStatus(raw = {}, fallback = {}) {
+  const available = Boolean(raw.available ?? fallback.available);
+  return {
+    available,
+    reason: available ? "" : String(raw.reason || fallback.reason || "missing dependency"),
+    hint: available ? "" : String(raw.hint || fallback.hint || ""),
+    missing: Array.isArray(raw.missing) ? raw.missing : Array.isArray(fallback.missing) ? fallback.missing : [],
+    ...Object.fromEntries(Object.entries(raw).filter(([key]) => !["available", "reason", "hint", "missing"].includes(key))),
+  };
+}
+
+function normalizeOcrHealthStatus(status = {}) {
+  const ocr = status.ocr || {};
+  const text = capabilityStatus(ocr.text || {}, {
+    available: Boolean(ocr.available),
+    reason: ocr.reason || "missing dependency",
+    hint: ocr.hint || OCR_INSTALL_HINT,
+    missing: ocr.missing || [],
+  });
+  const structure = capabilityStatus(ocr.structure || {}, {
+    available: false,
+    reason: text.available ? "PP-StructureV3 capability was not reported by the Python worker" : text.reason,
+    hint: OCR_STRUCTURE_INSTALL_HINT,
+    missing: text.missing,
+  });
+  const vl = capabilityStatus(ocr.vl || {}, {
+    available: false,
+    reason: text.available ? "PaddleOCR-VL capability was not reported by the Python worker" : text.reason,
+    hint: OCR_VL_INSTALL_HINT,
+    missing: text.missing,
+  });
+  return {
+    ...status,
+    ocr: {
+      ...ocr,
+      enabled: Boolean(text.available),
+      engine: ocr.engine || "paddleocr",
+      available: Boolean(text.available),
+      reason: text.available ? "" : text.reason,
+      hint: text.available ? "" : text.hint || OCR_INSTALL_HINT,
+      missing: text.available ? [] : text.missing,
+      text,
+      structure,
+      vl,
+    },
+  };
 }
 
 export async function getOcrHealth(options = {}) {
@@ -99,9 +156,13 @@ export async function getOcrHealth(options = {}) {
         available: false,
         reason: "python worker unavailable",
         hint: OCR_INSTALL_HINT,
+        text: { available: false, reason: "python worker unavailable", hint: OCR_INSTALL_HINT, missing: [] },
+        structure: { available: false, reason: "python worker unavailable", hint: OCR_STRUCTURE_INSTALL_HINT, missing: [] },
+        vl: { available: false, reason: "python worker unavailable", hint: OCR_VL_INSTALL_HINT, missing: [] },
       },
     };
   }
+  status = normalizeOcrHealthStatus(status);
   cachedOcrHealth = { checkedAtMs: now, status };
   return { ...status, cache_hit: false, ocr_health_cache_hit: false, checkedAtMs: now };
 }
@@ -112,17 +173,27 @@ export function clearOcrHealthCache() {
 
 export function formatOcrHealthReport(status) {
   const ocr = status.ocr || {};
+  const text = ocr.text || {};
+  const structure = ocr.structure || {};
+  const vl = ocr.vl || {};
   const lines = [
     "OCR health via eval_health_check: OK",
     `Node.js: ${status.node?.ok === false ? "unavailable" : "OK"}`,
     `Python worker: ${status.python?.ok === false ? `unavailable (${status.python.reason || "unknown"})` : "OK"}`,
     `PyMuPDF: ${status.python?.versions?.pymupdf || status.versions?.pymupdf || "unknown"}`,
     `PaddleOCR: ${ocr.available ? "available" : "missing"}`,
+    `PaddleOCR text OCR: ${text.available ?? ocr.available ? "available" : "missing"}`,
+    `PP-Structure/document parser: ${structure.available ? "available" : "missing"}`,
+    `PaddleOCR-VL parser: ${vl.available ? "available" : "missing"}`,
     `OCR enabled: ${ocr.enabled ? "true" : "false"}`,
     `OCR engine: ${ocr.engine || "paddleocr"}`,
   ];
   if (ocr.reason) lines.push(`Reason: ${ocr.reason}`);
   if (ocr.hint) lines.push(`Hint: ${ocr.hint}`);
+  for (const [label, capability] of [["Structure", structure], ["VL", vl]]) {
+    if (capability.reason && !capability.available) lines.push(`${label} reason: ${capability.reason}`);
+    if (capability.hint && !capability.available) lines.push(`${label} hint: ${capability.hint}`);
+  }
   lines.push("", "Machine summary JSON:");
   lines.push(JSON.stringify({
     ok: status.ok !== false,
@@ -286,6 +357,16 @@ function normalizeOcrEngine(value) {
   return "auto";
 }
 
+function normalizeOcrFigureMode(value, defaultMode = "text") {
+  const mode = String(value === undefined || value === null || value === "" ? defaultMode : value).trim().toLowerCase();
+  return OCR_FIGURE_MODES.has(mode) ? mode : defaultMode;
+}
+
+function normalizeInspectParser(value, defaultParser = "safe") {
+  const parser = String(value === undefined || value === null || value === "" ? defaultParser : value).trim().toLowerCase();
+  return INSPECT_FIGURE_PARSERS.has(parser) ? parser : defaultParser;
+}
+
 function normalizeInspectMode(value, figure = null) {
   const requested = String(value || "auto").trim().toLowerCase();
   if (["block_diagram", "sequence", "timing", "flowchart", "register_diagram"].includes(requested)) return requested;
@@ -295,6 +376,27 @@ function normalizeInspectMode(value, figure = null) {
   if (/register|bit field|bitfield/.test(text)) return "register_diagram";
   if (/block|configuration|module/.test(text)) return "block_diagram";
   return "auto";
+}
+
+function normalizeFigureType(value) {
+  const figureType = String(value || "unknown").trim().toLowerCase();
+  if (figureType === "auto") return "unknown";
+  return FIGURE_TYPES.has(figureType) ? figureType : "unknown";
+}
+
+function selectOcrMode(requestedMode, health) {
+  const mode = normalizeOcrFigureMode(requestedMode, "text");
+  if (mode !== "auto") return mode;
+  return health?.ocr?.structure?.available ? "structure" : "text";
+}
+
+function selectInspectParser(requestedParser, figureType, health) {
+  const parser = normalizeInspectParser(requestedParser, "safe");
+  if (parser !== "auto") return parser;
+  if (["timing", "sequence", "flowchart"].includes(figureType) && health?.ocr?.vl?.available) return "vl";
+  if (health?.ocr?.structure?.available) return "structure";
+  if (health?.ocr?.text?.available || health?.ocr?.available) return "ocr";
+  return "safe";
 }
 
 function cacheKey(parts) {
@@ -473,8 +575,8 @@ function renderCachePaths(filename, target, source, scale) {
   };
 }
 
-function ocrCachePaths(filename, render, source, engine) {
-  const key = cacheKey({
+function ocrCachePaths(filename, render, source, engine, mode = "text") {
+  const payload = {
     kind: "ocr_figure",
     filename,
     page: render.page,
@@ -482,11 +584,256 @@ function ocrCachePaths(filename, render, source, engine) {
     scale: render.scale,
     engine,
     source: pdfSourceFingerprint(source),
-  });
+  };
+  if (mode && mode !== "text") payload.mode = mode;
+  const key = cacheKey(payload);
   return {
     key,
     ocrPath: safeCachePath("figure-ocr", filename, key, "json"),
   };
+}
+
+function figureParserCachePaths(filename, render, source, parser, engine) {
+  const kind = parser === "vl" ? FIGURE_VL_CACHE_KIND : FIGURE_STRUCTURE_CACHE_KIND;
+  const key = cacheKey({
+    kind,
+    filename,
+    page: render.page,
+    bbox: render.bbox,
+    scale: render.scale,
+    parser,
+    engine,
+    source: pdfSourceFingerprint(source),
+  });
+  return {
+    key,
+    rawPath: safeCachePath(kind, filename, key, "json"),
+  };
+}
+
+function semanticEvidenceCachePaths(filename, render, source, parser, engine, figureType) {
+  const key = cacheKey({
+    kind: FIGURE_SEMANTIC_CACHE_KIND,
+    filename,
+    page: render.page,
+    bbox: render.bbox,
+    scale: render.scale,
+    parser,
+    engine,
+    figureType,
+    source: pdfSourceFingerprint(source),
+  });
+  return {
+    key,
+    evidencePath: safeCachePath(FIGURE_SEMANTIC_CACHE_KIND, filename, key, "json"),
+  };
+}
+
+function conciseText(value, maxChars = 160) {
+  return compactText(String(value || ""), maxChars);
+}
+
+function uniqueStrings(values = []) {
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
+function collectParserTextBlocks(value, blocks = [], limit = 40) {
+  if (blocks.length >= limit || value === null || value === undefined) return blocks;
+  if (typeof value === "string") {
+    const text = conciseText(value, 220);
+    if (text && !blocks.some((item) => item.text === text)) blocks.push({ text, source: "parser" });
+    return blocks;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectParserTextBlocks(item, blocks, limit);
+    return blocks;
+  }
+  if (typeof value === "object") {
+    for (const key of ["text", "content", "label", "rec_text", "plainText", "markdown"]) {
+      if (Object.hasOwn(value, key)) collectParserTextBlocks(value[key], blocks, limit);
+    }
+    for (const item of Object.values(value)) collectParserTextBlocks(item, blocks, limit);
+  }
+  return blocks;
+}
+
+function labelItemsFromTextBlocks(blocks = []) {
+  const labels = [];
+  const seen = new Set();
+  for (const block of blocks) {
+    const label = conciseText(block.text || "", 80);
+    if (!label || label.length > 80) continue;
+    const key = normalizeForSearch(label);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    labels.push({ label, bbox: block.bbox || [], confidence: Number(block.confidence || 0), source: block.source || "parser" });
+    if (labels.length >= 24) break;
+  }
+  return labels;
+}
+
+function classifySignalLabels(labels = [], pattern) {
+  return labels
+    .map((item) => item.label || "")
+    .filter((label) => pattern.test(label))
+    .slice(0, 16)
+    .map((label) => ({ name: label, direction: "unknown", confidence: "observed_text" }));
+}
+
+function tableItemsFromParser(raw = {}) {
+  const tables = [];
+  const visit = (value) => {
+    if (tables.length >= 8 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const typeText = normalizeForSearch(`${value.type || ""} ${value.label || ""} ${value.block_type || ""}`);
+    if (/table/.test(typeText)) {
+      tables.push({
+        title: conciseText(value.title || value.label || "", 120),
+        bbox: Array.isArray(value.bbox) ? value.bbox : [],
+        source: "parser",
+        verified: false,
+      });
+    }
+    for (const item of Object.values(value)) visit(item);
+  };
+  visit(raw.items || []);
+  return tables;
+}
+
+function rawArtifactKind(parser) {
+  if (parser === "structure") return "structure";
+  if (parser === "vl") return "vl";
+  return "text";
+}
+
+function unavailableSemanticEvidence({ filename, source, render = {}, figureType = "unknown", parser = "ocr", engine = "paddleocr", warning = "", rawPath = "", rawCached = false } = {}) {
+  const normalizedFigureType = normalizeFigureType(figureType);
+  const warnings = uniqueStrings([warning]);
+  return {
+    schemaVersion: FIGURE_SEMANTIC_SCHEMA_VERSION,
+    filename,
+    source: source || null,
+    figure_id: render.figure_id || "",
+    page: render.page || null,
+    bbox: render.bbox || [],
+    figure_type: normalizedFigureType,
+    parser,
+    engine,
+    direct_visual_observations: [],
+    extracted_items: {
+      text_blocks: [],
+      labels: [],
+      nodes: [],
+      edges: [],
+      signals: [],
+      clocks: [],
+      resets: [],
+      timing_constraints: [],
+      sequence_steps: [],
+      tables: [],
+    },
+    related_registers: [],
+    related_bitfields: [],
+    engineering_inferences: [],
+    source_implications: [],
+    uncertainties: ["No parser output is available for this figure; inspect the rendered image and nearby manual text before drawing conclusions."],
+    warnings,
+    raw_artifact: {
+      path: rawPath,
+      kind: rawArtifactKind(parser),
+      cached: Boolean(rawCached),
+    },
+  };
+}
+
+function buildSemanticEvidence({ filename, source, render = {}, figureType = "unknown", parser = "ocr", engine = "paddleocr", ocr = null, raw = null, rawPath = "", rawCached = false, extraWarnings = [] } = {}) {
+  const normalizedFigureType = normalizeFigureType(figureType);
+  const textBlocks = [];
+  if (ocr && Array.isArray(ocr.ocr_text)) {
+    for (const item of ocr.ocr_text.slice(0, 60)) {
+      const text = conciseText(item.text || "", 220);
+      if (!text) continue;
+      textBlocks.push({
+        text,
+        bbox: item.bbox || [],
+        image_bbox: item.image_bbox || [],
+        confidence: Number(item.confidence || 0),
+        source: "ocr",
+      });
+    }
+  }
+  if (raw && raw.items) collectParserTextBlocks(raw.items, textBlocks, 60);
+  if (raw?.plainText && textBlocks.length < 60) collectParserTextBlocks(raw.plainText, textBlocks, 60);
+  const labels = labelItemsFromTextBlocks(textBlocks);
+  const warnings = uniqueStrings([
+    ...(Array.isArray(render.warnings) ? render.warnings : []),
+    ...(ocr && Array.isArray(ocr.warnings) ? ocr.warnings : []),
+    ...(raw && Array.isArray(raw.warnings) ? raw.warnings : []),
+    ...extraWarnings,
+  ]);
+  const uncertainties = [
+    "Connector, arrow, signal direction, and timing-edge relationships are unverified unless separately confirmed by manual text/register/sequence/caution evidence.",
+  ];
+  if (parser === "vl") {
+    uncertainties.push("PaddleOCR-VL visual graph edges are treated as unverified observations/inferences until cross-checked.");
+  }
+  return {
+    schemaVersion: FIGURE_SEMANTIC_SCHEMA_VERSION,
+    filename,
+    source: source || null,
+    figure_id: render.figure_id || "",
+    page: render.page || raw?.page || null,
+    bbox: render.bbox || raw?.bbox || [],
+    figure_type: normalizedFigureType,
+    parser,
+    engine,
+    direct_visual_observations: [
+      ...(render.image_path ? [`Rendered figure crop is available at ${render.image_path}.`] : []),
+      ...(textBlocks.length ? [`Parser/OCR produced ${textBlocks.length} concise text block(s).`] : []),
+      ...(raw?.itemCount !== undefined ? [`Raw ${parser} parser artifact contains ${Number(raw.itemCount || 0)} top-level item(s).`] : []),
+    ],
+    extracted_items: {
+      text_blocks: textBlocks.slice(0, 40),
+      labels,
+      nodes: [],
+      edges: [],
+      signals: classifySignalLabels(labels, /irq|int|interrupt|req|ack|tx|rx|dma|signal/i),
+      clocks: classifySignalLabels(labels, /clk|clock|pclk|aclk|sclk/i),
+      resets: classifySignalLabels(labels, /reset|rst|resetn|rstn/i),
+      timing_constraints: [],
+      sequence_steps: [],
+      tables: raw ? tableItemsFromParser(raw) : [],
+    },
+    related_registers: [],
+    related_bitfields: [],
+    engineering_inferences: [],
+    source_implications: [],
+    uncertainties,
+    warnings,
+    raw_artifact: {
+      path: rawPath,
+      kind: rawArtifactKind(parser),
+      cached: Boolean(rawCached),
+    },
+  };
+}
+
+async function writeSemanticEvidenceCache(filename, render, source, parser, engine, figureType, evidence) {
+  const paths = semanticEvidenceCachePaths(filename, render, source, parser, engine, figureType);
+  await atomicWriteJson(paths.evidencePath, evidence).catch(() => {});
+  return paths;
 }
 
 export async function renderFigureOnDemand(args = {}) {
@@ -579,12 +926,296 @@ export async function renderFigureOnDemand(args = {}) {
   }
 }
 
+async function figureParserOnDemand(args = {}, parser = "structure", existingRender = null, requestedFigureType = "unknown") {
+  const engine = normalizeOcrEngine(args.engine);
+  const render = existingRender || await renderFigureOnDemand(args);
+  if (!render.ok) {
+    return {
+      ...render,
+      parser,
+      engine,
+      raw: null,
+      semantic_evidence: unavailableSemanticEvidence({
+        filename: render.filename || args.filename || "",
+        render,
+        figureType: requestedFigureType,
+        parser,
+        engine,
+        warning: render.message || "Figure render failed.",
+      }),
+    };
+  }
+  let source;
+  try {
+    source = await getPdfSourceInfo(render.filename);
+  } catch (error) {
+    const failure = failureFromError(error, "PDF_NOT_FOUND", { filename: render.filename, page: render.page, image_path: render.image_path });
+    return {
+      ...failure,
+      parser,
+      engine,
+      raw: null,
+      semantic_evidence: unavailableSemanticEvidence({
+        filename: render.filename,
+        render,
+        figureType: requestedFigureType,
+        parser,
+        engine,
+        warning: failure.message,
+      }),
+    };
+  }
+  if (engine === "none") {
+    const semantic = unavailableSemanticEvidence({
+      filename: render.filename,
+      source,
+      render,
+      figureType: requestedFigureType,
+      parser,
+      engine: "none",
+      warning: "engine=none skips OCR/parser work and returns no parsed figure evidence.",
+    });
+    return {
+      ok: false,
+      filename: render.filename,
+      page: render.page,
+      page_count: render.page_count || null,
+      figure_id: render.figure_id || "",
+      caption: render.caption || "",
+      bbox: render.bbox,
+      scale: render.scale,
+      parser,
+      engine: "none",
+      image_path: render.image_path,
+      error_code: `${parser.toUpperCase()}_PARSER_DISABLED`,
+      message: "OCR/parser engine was disabled by request.",
+      warnings: semantic.warnings,
+      raw_artifact: semantic.raw_artifact,
+      semantic_evidence: semantic,
+    };
+  }
+  const health = await getOcrHealth({ timeoutMs: Math.min(Number(args.timeoutMs || 10_000), 30_000) });
+  const capability = health.ocr?.[parser] || {};
+  const paths = figureParserCachePaths(render.filename, render, source, parser, engine);
+  const force = Boolean(args.force);
+  if (!force && await pathExists(paths.rawPath)) {
+    try {
+      const raw = await readJsonCached(paths.rawPath);
+      const semantic = buildSemanticEvidence({
+        filename: render.filename,
+        source,
+        render,
+        figureType: requestedFigureType,
+        parser,
+        engine: raw.engine || health.ocr?.engine || "paddleocr",
+        raw,
+        rawPath: paths.rawPath,
+        rawCached: true,
+      });
+      const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, parser, engine, requestedFigureType, semantic);
+      return {
+        ok: raw.ok !== false,
+        filename: render.filename,
+        page: render.page,
+        page_count: render.page_count || null,
+        figure_id: render.figure_id || "",
+        caption: render.caption || "",
+        bbox: render.bbox,
+        scale: render.scale,
+        parser,
+        engine: raw.engine || "paddleocr",
+        image_path: render.image_path,
+        cache_key: paths.key,
+        cache_hit: true,
+        raw_artifact: { path: paths.rawPath, kind: rawArtifactKind(parser), cached: true },
+        plain_text: conciseText(raw.plainText || raw.plain_text || "", 1000),
+        error_code: raw.ok === false ? raw.error_code || `${parser.toUpperCase()}_PARSER_UNAVAILABLE` : "",
+        message: raw.ok === false ? raw.message || `${parser} parser unavailable` : "",
+        hint: raw.hint || "",
+        warnings: [...(render.warnings || []), ...(raw.warnings || [])].filter(Boolean),
+        semantic_evidence: semantic,
+        semantic_cache_key: semanticPaths.key,
+        semantic_cache_path: semanticPaths.evidencePath,
+      };
+    } catch {
+      // Re-run parser below when cached raw parser metadata is unreadable.
+    }
+  }
+  if (!capability.available) {
+    const warning = capability.hint || capability.reason || `${parser} parser unavailable`;
+    const semantic = unavailableSemanticEvidence({
+      filename: render.filename,
+      source,
+      render,
+      figureType: requestedFigureType,
+      parser,
+      engine: health.ocr?.engine || "paddleocr",
+      rawPath: "",
+      rawCached: false,
+      warning,
+    });
+    const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, parser, engine, requestedFigureType, semantic);
+    return {
+      ok: false,
+      filename: render.filename,
+      page: render.page,
+      page_count: render.page_count || null,
+      figure_id: render.figure_id || "",
+      caption: render.caption || "",
+      bbox: render.bbox,
+      scale: render.scale,
+      parser,
+      engine: health.ocr?.engine || "paddleocr",
+      image_path: render.image_path,
+      cache_key: paths.key,
+      cache_hit: false,
+      raw_artifact: semantic.raw_artifact,
+      plain_text: "",
+      error_code: `${parser.toUpperCase()}_PARSER_UNAVAILABLE`,
+      message: capability.reason || `${parser} parser unavailable`,
+      hint: capability.hint || (parser === "vl" ? OCR_VL_INSTALL_HINT : OCR_STRUCTURE_INSTALL_HINT),
+      health,
+      warnings: [...(render.warnings || []), warning].filter(Boolean),
+      semantic_evidence: semantic,
+      semantic_cache_key: semanticPaths.key,
+      semantic_cache_path: semanticPaths.evidencePath,
+    };
+  }
+
+  const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot(`figure.${parser}`);
+  const tempPath = path.join(workerRoot, `${parser}.json`);
+  try {
+    const worker = await runPythonWorker({
+      requestId,
+      operation: parser === "vl" ? "figure.vl" : "figure.structure",
+      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      inputs: { filename: render.filename, pdfPath: safePdfPath(render.filename), imagePath: render.image_path },
+      outputs: { artifactPath: tempPath, cancelPath },
+      options: { page: render.page, bbox: render.bbox, scale: render.scale, engine, force },
+    }, {
+      timeoutMs: args.timeoutMs || 300_000,
+      onProgress: args.onProgress,
+      onSpawn: args.onWorkerSpawn,
+      onStderr: args.onWorkerStderr,
+    });
+    const descriptor = worker.artifacts.find((entry) => entry.kind === `figure_${parser}`) || worker.result?.artifact;
+    if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", `Python worker did not return ${parser} artifact metadata`);
+    const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename: render.filename, source });
+    await atomicPromoteWorkerArtifact(validated.tempPath, paths.rawPath);
+    const raw = await readJsonCached(paths.rawPath);
+    const semantic = buildSemanticEvidence({
+      filename: render.filename,
+      source,
+      render,
+      figureType: requestedFigureType,
+      parser,
+      engine: raw.engine || health.ocr?.engine || "paddleocr",
+      raw,
+      rawPath: paths.rawPath,
+      rawCached: false,
+    });
+    const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, parser, engine, requestedFigureType, semantic);
+    return {
+      ok: raw.ok !== false,
+      filename: render.filename,
+      page: render.page,
+      page_count: render.page_count || null,
+      figure_id: render.figure_id || "",
+      caption: render.caption || "",
+      bbox: render.bbox,
+      scale: render.scale,
+      parser,
+      engine: raw.engine || "paddleocr",
+      image_path: render.image_path,
+      cache_key: paths.key,
+      cache_hit: false,
+      raw_artifact: { path: paths.rawPath, kind: rawArtifactKind(parser), cached: false },
+      plain_text: conciseText(raw.plainText || raw.plain_text || "", 1000),
+      error_code: raw.ok === false ? raw.error_code || `${parser.toUpperCase()}_PARSER_UNAVAILABLE` : "",
+      message: raw.ok === false ? raw.message || `${parser} parser unavailable` : "",
+      hint: raw.hint || "",
+      health: raw.ok === false ? health : undefined,
+      warnings: [...(render.warnings || []), ...(raw.warnings || [])].filter(Boolean),
+      semantic_evidence: semantic,
+      semantic_cache_key: semanticPaths.key,
+      semantic_cache_path: semanticPaths.evidencePath,
+    };
+  } catch (error) {
+    const warning = `${parser} parser worker unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    const semantic = unavailableSemanticEvidence({
+      filename: render.filename,
+      source,
+      render,
+      figureType: requestedFigureType,
+      parser,
+      engine,
+      warning,
+    });
+    const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, parser, engine, requestedFigureType, semantic);
+    return {
+      ok: false,
+      filename: render.filename,
+      page: render.page,
+      page_count: render.page_count || null,
+      figure_id: render.figure_id || "",
+      caption: render.caption || "",
+      bbox: render.bbox,
+      scale: render.scale,
+      parser,
+      engine,
+      image_path: render.image_path,
+      cache_key: paths.key,
+      cache_hit: false,
+      raw_artifact: semantic.raw_artifact,
+      plain_text: "",
+      error_code: `${parser.toUpperCase()}_PARSER_FAILED`,
+      message: error instanceof Error ? error.message : String(error),
+      warnings: [...(render.warnings || []), warning].filter(Boolean),
+      semantic_evidence: semantic,
+      semantic_cache_key: semanticPaths.key,
+      semantic_cache_path: semanticPaths.evidencePath,
+    };
+  } finally {
+    await fs.rm(workerRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function ocrFigureOnDemand(args = {}) {
   const engine = normalizeOcrEngine(args.engine);
+  const requestedMode = normalizeOcrFigureMode(args.mode, "text");
+  let effectiveMode = requestedMode;
+  if (requestedMode === "auto") {
+    const health = await getOcrHealth({ timeoutMs: Math.min(Number(args.timeoutMs || 10_000), 30_000) });
+    effectiveMode = selectOcrMode("auto", health);
+  }
   const render = await renderFigureOnDemand(args);
-  if (!render.ok) return { ...render, engine, ocr_text: [], plain_text: "" };
+  if (!render.ok) return { ...render, engine, mode: effectiveMode, parser: effectiveMode === "text" ? "ocr" : effectiveMode, ocr_text: [], plain_text: "" };
+
+  if (effectiveMode === "structure" || effectiveMode === "vl") {
+    const parsed = await figureParserOnDemand(args, effectiveMode, render, normalizeFigureType(args.figure_type || args.mode_hint || "unknown"));
+    const textBlocks = parsed.semantic_evidence?.extracted_items?.text_blocks || [];
+    return {
+      ...parsed,
+      mode: effectiveMode,
+      ocr_text: textBlocks.slice(0, 60).map((item) => ({
+        text: item.text || "",
+        bbox: item.bbox || [],
+        image_bbox: item.image_bbox || [],
+        confidence: Number(item.confidence || 0),
+      })),
+      confidence_avg: 0,
+    };
+  }
 
   if (engine === "none") {
+    const semantic = unavailableSemanticEvidence({
+      filename: render.filename,
+      render,
+      figureType: "unknown",
+      parser: "ocr",
+      engine: "none",
+      warning: "engine=none skips OCR and returns no text.",
+    });
     return {
       ok: false,
       filename: render.filename,
@@ -593,6 +1224,8 @@ export async function ocrFigureOnDemand(args = {}) {
       figure_id: render.figure_id || "",
       bbox: render.bbox,
       engine: "none",
+      mode: "text",
+      parser: "ocr",
       cache_hit: false,
       image_path: render.image_path,
       ocr_text: [],
@@ -600,6 +1233,7 @@ export async function ocrFigureOnDemand(args = {}) {
       error_code: "OCR_ENGINE_DISABLED",
       message: "OCR engine was disabled by request.",
       warnings: ["engine=none skips OCR and returns no text."],
+      semantic_evidence: semantic,
     };
   }
 
@@ -610,12 +1244,35 @@ export async function ocrFigureOnDemand(args = {}) {
     return failureFromError(error, "PDF_NOT_FOUND", { filename: render.filename, page: render.page, image_path: render.image_path });
   }
 
-  const paths = ocrCachePaths(render.filename, render, source, engine);
+  const paths = ocrCachePaths(render.filename, render, source, engine, "text");
   const force = Boolean(args.force);
   if (!force && await pathExists(paths.ocrPath)) {
     try {
       const cached = await readJsonCached(paths.ocrPath);
-      return { ...cached, cache_hit: true, image_cache_hit: Boolean(render.cache_hit), image_path: render.image_path };
+      const semantic = buildSemanticEvidence({
+        filename: render.filename,
+        source,
+        render,
+        figureType: "unknown",
+        parser: "ocr",
+        engine: cached.engine || "paddleocr",
+        ocr: cached,
+        rawPath: paths.ocrPath,
+        rawCached: true,
+      });
+      const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, "ocr", cached.engine || engine, "unknown", semantic);
+      return {
+        ...cached,
+        mode: "text",
+        parser: "ocr",
+        cache_hit: true,
+        image_cache_hit: Boolean(render.cache_hit),
+        image_path: render.image_path,
+        raw_artifact: { path: paths.ocrPath, kind: "text", cached: true },
+        semantic_evidence: semantic,
+        semantic_cache_key: semanticPaths.key,
+        semantic_cache_path: semanticPaths.evidencePath,
+      };
     } catch {
       // Re-run OCR below when metadata is unreadable.
     }
@@ -633,6 +1290,8 @@ export async function ocrFigureOnDemand(args = {}) {
       bbox: render.bbox,
       scale: render.scale,
       engine: health.ocr?.engine || "paddleocr",
+      mode: "text",
+      parser: "ocr",
       cache_hit: false,
       image_cache_hit: Boolean(render.cache_hit),
       image_path: render.image_path,
@@ -644,6 +1303,15 @@ export async function ocrFigureOnDemand(args = {}) {
       health,
       ocr_health_cache_hit: Boolean(health.ocr_health_cache_hit || health.cache_hit),
       warnings: [...(render.warnings || []), health.ocr?.hint || OCR_INSTALL_HINT].filter(Boolean),
+      semantic_evidence: unavailableSemanticEvidence({
+        filename: render.filename,
+        source,
+        render,
+        figureType: "unknown",
+        parser: "ocr",
+        engine: health.ocr?.engine || "paddleocr",
+        warning: health.ocr?.hint || OCR_INSTALL_HINT,
+      }),
     };
   }
 
@@ -672,6 +1340,8 @@ export async function ocrFigureOnDemand(args = {}) {
         figure_id: render.figure_id || "",
         bbox: render.bbox,
         engine: result.engine || "paddleocr",
+        mode: "text",
+        parser: "ocr",
         cache_hit: false,
         image_path: render.image_path,
         ocr_text: [],
@@ -681,6 +1351,15 @@ export async function ocrFigureOnDemand(args = {}) {
         hint: result.hint || "",
         health: result.health || null,
         warnings: [...(render.warnings || []), ...(result.warnings || [])].filter(Boolean),
+        semantic_evidence: unavailableSemanticEvidence({
+          filename: render.filename,
+          source,
+          render,
+          figureType: "unknown",
+          parser: "ocr",
+          engine: result.engine || "paddleocr",
+          warning: result.message || result.error || "OCR failed",
+        }),
       };
     }
     const items = Array.isArray(result.ocr_text) ? result.ocr_text : [];
@@ -694,6 +1373,8 @@ export async function ocrFigureOnDemand(args = {}) {
       bbox: render.bbox,
       scale: render.scale,
       engine: result.engine || "paddleocr",
+      mode: "text",
+      parser: "ocr",
       cache_key: paths.key,
       cache_hit: false,
       image_cache_hit: Boolean(render.cache_hit),
@@ -706,6 +1387,22 @@ export async function ocrFigureOnDemand(args = {}) {
       warnings: [...(render.warnings || []), ...(result.warnings || [])].filter(Boolean),
     };
     await atomicWriteJson(paths.ocrPath, output);
+    const semantic = buildSemanticEvidence({
+      filename: render.filename,
+      source,
+      render,
+      figureType: "unknown",
+      parser: "ocr",
+      engine: output.engine,
+      ocr: output,
+      rawPath: paths.ocrPath,
+      rawCached: false,
+    });
+    const semanticPaths = await writeSemanticEvidenceCache(render.filename, render, source, "ocr", output.engine, "unknown", semantic);
+    output.raw_artifact = { path: paths.ocrPath, kind: "text", cached: false };
+    output.semantic_evidence = semantic;
+    output.semantic_cache_key = semanticPaths.key;
+    output.semantic_cache_path = semanticPaths.evidencePath;
     return output;
   } catch (error) {
     return failureFromError(error, "OCR_FAILED", {
@@ -715,6 +1412,8 @@ export async function ocrFigureOnDemand(args = {}) {
       figure_id: render.figure_id || "",
       bbox: render.bbox,
       engine,
+      mode: "text",
+      parser: "ocr",
       image_path: render.image_path,
       ocr_text: [],
       plain_text: "",
@@ -750,7 +1449,7 @@ async function ocrFigureForInspect(args = {}) {
   }
 
   const renderPaths = renderCachePaths(filename, target, source, scale);
-  const ocrPaths = ocrCachePaths(filename, { ...target, scale }, source, engine);
+  const ocrPaths = ocrCachePaths(filename, { ...target, scale }, source, engine, "text");
   const force = Boolean(args.force);
   if (!force && await pathExists(renderPaths.imagePath) && await pathExists(ocrPaths.ocrPath)) {
     try {
@@ -1097,33 +1796,130 @@ function technicalSummary({ caption = "", labels = [], context = [], ocrOk = fal
 }
 
 export async function inspectFigureOnDemand(args = {}) {
-  const inspectOcr = await ocrFigureForInspect({ ...args, engine: "auto" });
+  const requestedParser = normalizeInspectParser(args.parser, "safe");
+  let target = null;
+  try {
+    target = await resolveFigureTarget(String(args.filename || "").trim(), args);
+  } catch {
+    target = null;
+  }
+  const figure = target?.figure || null;
+  const mode = normalizeInspectMode(args.mode, figure);
+  let parser = requestedParser;
+  if (requestedParser === "auto") {
+    const health = await getOcrHealth({ timeoutMs: Math.min(Number(args.timeoutMs || 10_000), 30_000) });
+    parser = selectInspectParser("auto", normalizeFigureType(mode), health);
+  }
+
+  if (parser === "structure" || parser === "vl") {
+    const render = await renderFigureOnDemand(args);
+    if (!render.ok) return { ...render, parser, semantic_evidence: render.semantic_evidence || null };
+    const parsed = await figureParserOnDemand({ ...args, engine: "auto" }, parser, render, mode);
+    const includeContext = args.include_context === undefined ? true : Boolean(args.include_context);
+    const context = includeContext
+      ? await surroundingContext(parsed.filename, parsed.page, parsed.page_count || parsed.page, args.context_pages)
+      : { pages: [], warnings: [] };
+    const semantic = parsed.semantic_evidence || unavailableSemanticEvidence({
+      filename: parsed.filename,
+      render: parsed,
+      figureType: mode,
+      parser,
+      engine: parsed.engine || "paddleocr",
+      warning: parsed.message || `${parser} parser returned no semantic evidence`,
+    });
+    const semanticLabels = semantic.extracted_items?.labels || [];
+    const labels = semanticLabels.map((item) => item.label || "").filter(Boolean).slice(0, 16);
+    const warnings = uniqueStrings([
+      ...(parsed.warnings || []),
+      ...(context.warnings || []),
+      "Connector/arrow detection remains unverified; verify control/data flow against rendered image and manual text.",
+      parser === "vl" ? "PaddleOCR-VL graph edges are not verified evidence until cross-checked against manual text/register/sequence/caution tools." : "",
+    ]);
+    return {
+      ok: true,
+      filename: parsed.filename,
+      page: parsed.page,
+      figure_id: parsed.figure_id || "",
+      caption: parsed.caption || figure?.caption || figure?.title || "",
+      bbox: parsed.bbox || [],
+      figure_type: mode,
+      parser,
+      image_path: parsed.image_path || "",
+      raw_artifact: parsed.raw_artifact || semantic.raw_artifact,
+      ocr: {
+        ok: parser === "structure" || parser === "vl" ? Boolean(parsed.ok) : false,
+        engine: parsed.engine || "paddleocr",
+        error_code: parsed.ok ? "" : parsed.error_code || `${parser.toUpperCase()}_PARSER_UNAVAILABLE`,
+        message: parsed.ok ? "" : parsed.message || "",
+        items: semantic.extracted_items?.text_blocks || [],
+        plain_text: parsed.plain_text || "",
+      },
+      detected_labels: semanticLabels.map((item) => ({
+        label: item.label || "",
+        bbox: item.bbox || [],
+        image_bbox: [],
+        confidence: Number(item.confidence || 0),
+      })),
+      detected_blocks: [],
+      detected_connectors: [],
+      surrounding_context: context.pages || [],
+      context_cache_hit: Boolean(context.context_cache_hit),
+      context_cache_key: context.cache_key || "",
+      technical_summary: technicalSummary({
+        caption: parsed.caption || figure?.caption || figure?.title || "",
+        labels,
+        context: context.pages || [],
+        ocrOk: Boolean(parsed.ok),
+      }),
+      limitations: warnings,
+      warnings,
+      semantic_evidence: semantic,
+      semantic_cache_key: parsed.semantic_cache_key || "",
+      semantic_cache_path: parsed.semantic_cache_path || "",
+      provenance: {
+        tool: "inspect_figure",
+        render_tool: "render_figure",
+        ocr_tool: "ocr_figure",
+        parser,
+        figures_index: parsed.figure_id ? safeFiguresIndexPath(parsed.filename) : "",
+        raw_cache: parsed.raw_artifact?.path || "",
+        semantic_cache: parsed.semantic_cache_path || "",
+      },
+    };
+  }
+
+  const inspectOcr = await ocrFigureForInspect({ ...args, engine: "auto", mode: "text" });
   const ocr = inspectOcr.ocr;
   const renderFailed = !ocr.ok && !ocr.image_path;
   if (renderFailed) return ocr;
 
-  let target = inspectOcr.target || null;
-  if (!target) {
-    try {
-      target = await resolveFigureTarget(String(args.filename || ocr.filename || "").trim(), args);
-    } catch {
-      target = null;
-    }
-  }
-  const figure = target?.figure || null;
-  const mode = normalizeInspectMode(args.mode, figure);
+  if (!target) target = inspectOcr.target || null;
   const includeContext = args.include_context === undefined ? true : Boolean(args.include_context);
   const context = includeContext
     ? await surroundingContext(ocr.filename, ocr.page, ocr.page_count || ocr.page, args.context_pages)
     : { pages: [], warnings: [] };
   const items = ocr.ok ? (ocr.ocr_text || []) : [];
   const labels = uniqueLabels(items);
-  const warnings = [
+  const source = await getPdfSourceInfo(ocr.filename).catch(() => null);
+  const semanticParser = parser === "ocr" ? "ocr" : "safe";
+  const semantic = ocr.semantic_evidence || buildSemanticEvidence({
+    filename: ocr.filename,
+    source,
+    render: ocr,
+    figureType: mode,
+    parser: semanticParser,
+    engine: ocr.engine || "paddleocr",
+    ocr,
+    rawPath: ocr.raw_artifact?.path || "",
+    rawCached: Boolean(ocr.cache_hit),
+  });
+  const warnings = uniqueStrings([
     ...(ocr.warnings || []),
+    ...(semantic.warnings || []),
     ...(context.warnings || []),
     "Connector/arrow detection is not implemented in this on-demand inspector; verify control/data flow against the rendered image and surrounding manual text.",
     "Block detection is limited to OCR label evidence and should not be treated as verified diagram topology.",
-  ].filter(Boolean);
+  ]);
 
   return {
     ok: true,
@@ -1133,7 +1929,9 @@ export async function inspectFigureOnDemand(args = {}) {
     caption: ocr.caption || figure?.caption || figure?.title || "",
     bbox: ocr.bbox || [],
     figure_type: mode,
+    parser: semanticParser,
     image_path: ocr.image_path || "",
+    raw_artifact: ocr.raw_artifact || semantic.raw_artifact,
     ocr: {
       ok: Boolean(ocr.ok),
       engine: ocr.engine || "paddleocr",
@@ -1161,12 +1959,17 @@ export async function inspectFigureOnDemand(args = {}) {
     }),
     limitations: warnings,
     warnings,
+    semantic_evidence: semantic,
+    semantic_cache_key: ocr.semantic_cache_key || "",
+    semantic_cache_path: ocr.semantic_cache_path || "",
     provenance: {
       tool: "inspect_figure",
       render_tool: "render_figure",
       ocr_tool: "ocr_figure",
+      parser: semanticParser,
       figures_index: ocr.figure_id ? safeFiguresIndexPath(ocr.filename) : "",
       ocr_cache: ocr.cache_key || "",
+      semantic_cache: ocr.semantic_cache_path || "",
     },
   };
 }
