@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
-import { clearOcrHealthCache, getOcrHealth } from "../../src/services/ocr.js";
+import { buildSemanticEvidence, clearOcrHealthCache, getOcrHealth, selectInspectParser } from "../../src/services/ocr.js";
 import { resolvePythonInterpreter } from "../../src/services/python-worker.js";
 import { atomicWriteJson, clearJsonFileCache, getJsonFileCacheStats, getPdfSourceInfo, readJsonCached, safeFigureLookupIndexPath, safeFiguresIndexPath, safePagesCachePath, safePdfPath } from "../../src/core/runtime-helpers.js";
 
@@ -124,6 +124,103 @@ test("OCR health reports text structure and VL capability fields", async () => {
   assert.equal(typeof health.ocr?.structure?.available, "boolean");
   assert.equal(typeof health.ocr?.vl?.available, "boolean");
   assert.equal(health.ok, true);
+});
+
+test("inspect auto parser does not select VL unless explicitly enabled", () => {
+  const timingHealth = {
+    ocr: {
+      available: true,
+      text: { available: true },
+      structure: { available: false },
+      vl: { available: true },
+    },
+  };
+  assert.equal(selectInspectParser("auto", "timing", timingHealth, {}), "ocr");
+  assert.equal(selectInspectParser("auto", "timing", timingHealth, { RENESAS_MCP_AUTO_VL: "0" }), "ocr");
+  assert.equal(selectInspectParser("auto", "timing", timingHealth, { RENESAS_MCP_AUTO_VL: "1" }), "vl");
+  assert.equal(selectInspectParser("vl", "timing", timingHealth, {}), "vl");
+  assert.equal(selectInspectParser("auto", "block_diagram", timingHealth, { RENESAS_MCP_AUTO_VL: "1" }), "ocr");
+
+  const structureHealth = {
+    ocr: {
+      available: true,
+      text: { available: true },
+      structure: { available: true },
+      vl: { available: true },
+    },
+  };
+  assert.equal(selectInspectParser("auto", "timing", structureHealth, { RENESAS_MCP_AUTO_VL: "1" }), "structure");
+});
+
+test("semantic evidence extracts only unverified candidates from explicit text", () => {
+  const semantic = buildSemanticEvidence({
+    filename: "manual.pdf",
+    render: { figure_id: "fig-p1-test", page: 1, bbox: [10, 20, 110, 120], image_path: "indexes/cache/figure-images/test.png" },
+    figureType: "block_diagram",
+    parser: "structure",
+    raw: {
+      itemCount: 5,
+      items: [
+        { text: "DMA Controller" },
+        { text: "AXI Bus" },
+        { text: "DMA Controller -> AXI Bus" },
+      ],
+      plainText: "RESET before rising edge of clock",
+      markdown: "1. Enable DMA\n2. Wait for IRQ",
+    },
+  });
+
+  assert.equal(semantic.schemaVersion, 1);
+  assert.equal(semantic.parser, "structure");
+  assert.equal(semantic.extracted_items.nodes.some((node) => node.label === "DMA Controller" && node.verified === false), true);
+  assert.equal(semantic.extracted_items.nodes.some((node) => node.label === "AXI Bus" && node.type === "bus"), true);
+  assert.equal(semantic.extracted_items.edges.length, 1);
+  assert.deepEqual(
+    {
+      from: semantic.extracted_items.edges[0].from,
+      to: semantic.extracted_items.edges[0].to,
+      verified: semantic.extracted_items.edges[0].verified,
+      direction: semantic.extracted_items.edges[0].direction,
+    },
+    { from: "DMA Controller", to: "AXI Bus", verified: false, direction: "candidate" },
+  );
+  assert.equal(semantic.extracted_items.timing_constraints.length, 1);
+  assert.equal(semantic.extracted_items.timing_constraints[0].verified, false);
+  assert.equal(semantic.extracted_items.sequence_steps.length, 2);
+  assert.match(semantic.uncertainties.join("\n"), /Candidate edges are derived only from explicit OCR\/parser text phrases/);
+});
+
+test("semantic evidence does not invent edges from nearby labels", () => {
+  const semantic = buildSemanticEvidence({
+    filename: "manual.pdf",
+    figureType: "block_diagram",
+    parser: "ocr",
+    ocr: {
+      ocr_text: [
+        { text: "DMA Controller", confidence: 0.9 },
+        { text: "AXI Bus", confidence: 0.9 },
+      ],
+    },
+  });
+  assert.equal(semantic.extracted_items.nodes.length >= 2, true);
+  assert.deepEqual(semantic.extracted_items.edges, []);
+});
+
+test("VL semantic evidence keeps candidate relations unverified", () => {
+  const semantic = buildSemanticEvidence({
+    filename: "manual.pdf",
+    figureType: "timing",
+    parser: "vl",
+    raw: {
+      itemCount: 2,
+      plainText: "CLK drives DMA request\nRESET after falling edge of clock",
+    },
+  });
+  assert.equal(semantic.extracted_items.edges.length, 1);
+  assert.equal(semantic.extracted_items.edges[0].verified, false);
+  assert.equal(semantic.extracted_items.edges[0].source, "vl_text");
+  assert.equal(semantic.extracted_items.timing_constraints[0].verified, false);
+  assert.match(semantic.uncertainties.join("\n"), /PaddleOCR-VL visual graph edges are treated as unverified/);
 });
 
 test("render_figure invalid input returns stable JSON instead of throwing", async () => {

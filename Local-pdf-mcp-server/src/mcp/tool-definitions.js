@@ -1000,7 +1000,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
         parser: {
           type: "string",
           enum: ["safe", "ocr", "structure", "vl", "auto"],
-          description: "Parser strategy. safe preserves conservative legacy OCR/context behavior; ocr uses text labels only; structure uses local document-structure parsing when installed; vl uses optional local visual-language parsing with unverified edges; auto selects a local parser based on figure type and available dependencies."
+          description: "Parser strategy. safe preserves conservative legacy OCR/context behavior; ocr uses text labels only; structure uses local document-structure parsing when installed; vl uses optional local visual-language parsing with unverified edges; auto prefers structure and only considers VL when RENESAS_MCP_AUTO_VL=1."
         },
         include_context: { type: "boolean", description: "If true, include surrounding page text. Default true." },
         context_pages: { type: "number", description: "Number of pages before/after the figure page to include. Default 0, max 2." },

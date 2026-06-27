@@ -262,12 +262,12 @@ eval_health_check(step40_action="ocr_health", json=true)
 
 Expected OCR health shape includes:
 
-```json
+```text
 {
   "ocr": {
     "text": { "available": true },
-    "structure": { "available": true },
-    "vl": { "available": true },
+    "structure": { "available": true_or_false },
+    "vl": { "available": true_or_false },
     "modelCache": {
       "path": "...\\indexes\\cache\\paddlex",
       "modelCount": 0
@@ -276,7 +276,21 @@ Expected OCR health shape includes:
 }
 ```
 
+`available=true` means the package/export check passed. It does not guarantee
+that model inference has already succeeded. Run `ocr:prewarm` or a real
+`ocr_figure`/`inspect_figure` smoke test to verify model availability.
+Actual responses use normal JSON booleans (`true` or `false`).
+
 `modelCount` may be `0` until you run `ocr:prewarm` or copy model files.
+
+By default, `inspect_figure(parser="auto")` avoids selecting PaddleOCR-VL
+because VL can be slow or model-cache sensitive on Windows. To allow auto mode
+to select VL for timing/sequence/flowchart figures when PP-Structure is not
+available, set:
+
+```powershell
+$env:RENESAS_MCP_AUTO_VL = "1"
+```
 
 ## 11. Common Problems
 

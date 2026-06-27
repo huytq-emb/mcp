@@ -397,11 +397,15 @@ function selectOcrMode(requestedMode, health) {
   return health?.ocr?.structure?.available ? "structure" : "text";
 }
 
-function selectInspectParser(requestedParser, figureType, health) {
+function autoVlEnabled(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env.RENESAS_MCP_AUTO_VL || "").trim());
+}
+
+export function selectInspectParser(requestedParser, figureType, health, env = process.env) {
   const parser = normalizeInspectParser(requestedParser, "safe");
   if (parser !== "auto") return parser;
-  if (["timing", "sequence", "flowchart"].includes(figureType) && health?.ocr?.vl?.available) return "vl";
   if (health?.ocr?.structure?.available) return "structure";
+  if (["timing", "sequence", "flowchart"].includes(figureType) && autoVlEnabled(env) && health?.ocr?.vl?.available) return "vl";
   if (health?.ocr?.text?.available || health?.ocr?.available) return "ocr";
   return "safe";
 }
@@ -768,6 +772,197 @@ function tableItemsFromParser(raw = {}) {
   return tables;
 }
 
+function semanticTextSources(textBlocks = [], raw = {}, parser = "ocr") {
+  const result = [];
+  const seen = new Set();
+  const add = (text, source = "") => {
+    const value = conciseText(text, 1200);
+    if (!value) return;
+    const key = normalizeForSearch(value);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    result.push({ text: value, source: source || (parser === "ocr" ? "ocr" : "parser") });
+  };
+  for (const block of textBlocks) add(block.text || "", block.source || "");
+  add(raw?.plainText || raw?.plain_text || "", parser === "vl" ? "vl" : "parser");
+  add(raw?.markdown || raw?.markdown_text || "", parser === "vl" ? "vl" : "parser");
+  return result;
+}
+
+function semanticLines(text) {
+  return String(text || "")
+    .split(/[\r\n;]+/)
+    .map((line) => conciseText(line.replace(/\s+/g, " "), 260))
+    .filter(Boolean);
+}
+
+function nodeTypeFromLabel(label) {
+  const normalized = normalizeForSearch(label);
+  if (!normalized) return "";
+  if (/\b(bus|axi|ahb|apb|i2c|spi|usb|can|ethernet|gmii|mii|mdio)\b/.test(normalized)) return "bus";
+  if (/\b(clk|clock|pclk|aclk|sclk|pll|oscillator|divider)\b/.test(normalized)) return "clock";
+  if (/\b(reset|rst|resetn|rstn)\b/.test(normalized)) return "reset";
+  if (/\b(irq|int|interrupt|request|req|ack|tx|rx|signal)\b/.test(normalized)) return "signal";
+  if (/\b(register|reg)\b/.test(normalized) || /\b[A-Z0-9_]+_REG\b/.test(label)) return "register";
+  if (/\b(controller|module|block|unit|engine|fifo|buffer|channel|mux|selector|port|pin|gpio|timer|counter|dma)\b/.test(normalized)) return "block";
+  return "";
+}
+
+function technicalEndpoint(value) {
+  const text = conciseText(value, 80)
+    .replace(/^[\s"'`([{]+|[\s"'`)\]}]+$/g, "")
+    .replace(/[,:.]+$/g, "")
+    .replace(/^\s*(?:from|to|the|a|an)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || text.length < 2 || text.length > 80) return "";
+  if (text.split(/\s+/).length > 8) return "";
+  if (/^(and|or|then|before|after|when|while|with|without|input|output|connected|connects|feeds|drives)$/i.test(text)) return "";
+  return text;
+}
+
+function endpointLooksTechnical(text) {
+  if (!text) return false;
+  if (nodeTypeFromLabel(text)) return true;
+  if (/[A-Z0-9_]{2,}/.test(text)) return true;
+  return /^[A-Z][A-Za-z0-9_./-]+(?:\s+[A-Z][A-Za-z0-9_./-]+){0,4}$/.test(text);
+}
+
+function candidateNodesFromLabels(labels = [], parser = "ocr", figureType = "unknown") {
+  const nodes = [];
+  const seen = new Set();
+  for (const item of labels) {
+    const label = technicalEndpoint(item.label || "");
+    if (!label) continue;
+    if (/(?:->|=>)|\b(?:connected\s+to|connects\s+to|feeds|drives|input\s+to|output\s+(?:to|from)|to)\b/i.test(label)) continue;
+    const type = nodeTypeFromLabel(label);
+    const blockDiagramLabel = ["block_diagram", "sequence", "flowchart"].includes(figureType) && endpointLooksTechnical(label);
+    if (!type && !blockDiagramLabel) continue;
+    const key = normalizeForSearch(label);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    nodes.push({
+      label,
+      type: type || "block",
+      bbox: item.bbox || [],
+      source: item.source || (parser === "ocr" ? "ocr" : "parser"),
+      confidence: Number(item.confidence || 0) > 0 ? "observed_text" : "low",
+      verified: false,
+    });
+    if (nodes.length >= 24) break;
+  }
+  return nodes;
+}
+
+function addCandidateEdge(edges, seen, fromRaw, toRaw, relation, confidence, source, evidence, requireTechnical = false) {
+  const from = technicalEndpoint(fromRaw);
+  const to = technicalEndpoint(toRaw);
+  if (!from || !to || normalizeForSearch(from) === normalizeForSearch(to)) return;
+  if (requireTechnical && (!endpointLooksTechnical(from) || !endpointLooksTechnical(to))) return;
+  const key = `${normalizeForSearch(from)}|${normalizeForSearch(to)}|${relation}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  edges.push({
+    from,
+    to,
+    relation,
+    direction: "candidate",
+    confidence,
+    source,
+    evidence: conciseText(evidence, 180),
+    verified: false,
+  });
+}
+
+function candidateEdgesFromText(sources = [], parser = "ocr") {
+  const edges = [];
+  const seen = new Set();
+  for (const sourceItem of sources) {
+    const source = parser === "vl" || sourceItem.source === "vl" ? "vl_text" : sourceItem.source === "ocr" ? "ocr_text" : "parser_text";
+    for (const line of semanticLines(sourceItem.text)) {
+      if (/(?:->|=>)/.test(line)) {
+        const parts = line.split(/\s*(?:->|=>)\s*/).map((part) => technicalEndpoint(part)).filter(Boolean);
+        if (parts.length > 2) {
+          for (let index = 0; index < parts.length - 1; index += 1) {
+            addCandidateEdge(edges, seen, parts[index], parts[index + 1], "connects_to", "medium", source, line);
+          }
+          if (edges.length >= 16) return edges;
+          continue;
+        }
+      }
+      let match = line.match(/^(.+?)\s*(?:->|=>)\s*(.+)$/);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "connects_to", "medium", source, line);
+      match = line.match(/^from\s+(.+?)\s+to\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "connects_to", "low", source, line);
+      match = line.match(/^(.+?)\s+(?:is\s+)?(?:connected\s+to|connects\s+to)\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "connects_to", "low", source, line);
+      match = line.match(/^(.+?)\s+(feeds|drives)\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[3], match[2].toLowerCase(), "low", source, line);
+      match = line.match(/^(.+?)\s+(?:is\s+)?input\s+to\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "input_to", "low", source, line);
+      match = line.match(/^(.+?)\s+(?:is\s+)?output\s+to\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "output_to", "low", source, line);
+      match = line.match(/^output\s+from\s+(.+?)\s+to\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "output_to", "low", source, line);
+      match = line.match(/^(.+?)\s+to\s+(.+)$/i);
+      if (match) addCandidateEdge(edges, seen, match[1], match[2], "connects_to", "low", source, line, true);
+      if (edges.length >= 16) return edges;
+    }
+  }
+  return edges;
+}
+
+function timingConstraintsFromText(sources = [], parser = "ocr") {
+  const constraints = [];
+  const seen = new Set();
+  const timingPattern = /\b(rising edge|falling edge|setup|hold|delay|before|after|cycle|clock)\b/i;
+  for (const sourceItem of sources) {
+    const source = parser === "vl" || sourceItem.source === "vl" ? "vl_text" : sourceItem.source === "ocr" ? "ocr_text" : "parser_text";
+    for (const line of semanticLines(sourceItem.text)) {
+      if (!timingPattern.test(line)) continue;
+      const description = conciseText(line, 180);
+      const key = normalizeForSearch(description);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      constraints.push({
+        description,
+        edge: /rising edge/i.test(line) ? "rising" : /falling edge/i.test(line) ? "falling" : "unknown",
+        confidence: "low",
+        source,
+        verified: false,
+      });
+      if (constraints.length >= 12) return constraints;
+    }
+  }
+  return constraints;
+}
+
+function sequenceStepsFromText(sources = [], parser = "ocr", figureType = "unknown") {
+  const steps = [];
+  const seen = new Set();
+  const addStep = (text, source) => {
+    const value = conciseText(text, 180);
+    const key = normalizeForSearch(value);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    steps.push({ index: steps.length + 1, text: value, source, confidence: "low", verified: false });
+  };
+  for (const sourceItem of sources) {
+    const source = parser === "vl" || sourceItem.source === "vl" ? "vl_text" : sourceItem.source === "ocr" ? "ocr_text" : "parser_text";
+    for (const line of semanticLines(sourceItem.text)) {
+      let match = line.match(/^\s*(?:step\s*)?(\d{1,2})[\).:-]\s+(.{3,180})$/i);
+      if (match) addStep(match[2], source);
+      match = line.match(/^\s*[-*]\s+(.{3,180})$/);
+      if (match) addStep(match[1], source);
+      if (["sequence", "flowchart"].includes(figureType) && line.includes("->")) {
+        for (const part of line.split("->")) addStep(part, source);
+      }
+      if (steps.length >= 16) return steps;
+    }
+  }
+  return steps;
+}
+
 function rawArtifactKind(parser) {
   if (parser === "structure") return "structure";
   if (parser === "vl") return "vl";
@@ -814,7 +1009,7 @@ function unavailableSemanticEvidence({ filename, source, render = {}, figureType
   };
 }
 
-function buildSemanticEvidence({ filename, source, render = {}, figureType = "unknown", parser = "ocr", engine = "paddleocr", ocr = null, raw = null, rawPath = "", rawCached = false, extraWarnings = [] } = {}) {
+export function buildSemanticEvidence({ filename, source, render = {}, figureType = "unknown", parser = "ocr", engine = "paddleocr", ocr = null, raw = null, rawPath = "", rawCached = false, extraWarnings = [] } = {}) {
   const normalizedFigureType = normalizeFigureType(figureType);
   const textBlocks = [];
   if (ocr && Array.isArray(ocr.ocr_text)) {
@@ -832,7 +1027,14 @@ function buildSemanticEvidence({ filename, source, render = {}, figureType = "un
   }
   if (raw && raw.items) collectParserTextBlocks(raw.items, textBlocks, 60);
   if (raw?.plainText && textBlocks.length < 60) collectParserTextBlocks(raw.plainText, textBlocks, 60);
+  if (raw?.plain_text && textBlocks.length < 60) collectParserTextBlocks(raw.plain_text, textBlocks, 60);
+  if (raw?.markdown && textBlocks.length < 60) collectParserTextBlocks(raw.markdown, textBlocks, 60);
   const labels = labelItemsFromTextBlocks(textBlocks);
+  const semanticSources = semanticTextSources(textBlocks, raw, parser);
+  const nodes = candidateNodesFromLabels(labels, parser, normalizedFigureType);
+  const edges = candidateEdgesFromText(semanticSources, parser);
+  const timingConstraints = timingConstraintsFromText(semanticSources, parser);
+  const sequenceSteps = sequenceStepsFromText(semanticSources, parser, normalizedFigureType);
   const warnings = uniqueStrings([
     ...(Array.isArray(render.warnings) ? render.warnings : []),
     ...(ocr && Array.isArray(ocr.warnings) ? ocr.warnings : []),
@@ -842,6 +1044,15 @@ function buildSemanticEvidence({ filename, source, render = {}, figureType = "un
   const uncertainties = [
     "Connector, arrow, signal direction, and timing-edge relationships are unverified unless separately confirmed by manual text/register/sequence/caution evidence.",
   ];
+  if (edges.length) {
+    uncertainties.push("Candidate edges are derived only from explicit OCR/parser text phrases; visual connector geometry and direction are not verified.");
+  }
+  if (timingConstraints.length) {
+    uncertainties.push("Candidate timing constraints are text hints only and must be verified against the rendered diagram and manual timing tables.");
+  }
+  if (sequenceSteps.length) {
+    uncertainties.push("Candidate sequence steps are parser/OCR text observations and do not verify flowchart ordering by themselves.");
+  }
   if (parser === "vl") {
     uncertainties.push("PaddleOCR-VL visual graph edges are treated as unverified observations/inferences until cross-checked.");
   }
@@ -859,17 +1070,21 @@ function buildSemanticEvidence({ filename, source, render = {}, figureType = "un
       ...(render.image_path ? [`Rendered figure crop is available at ${render.image_path}.`] : []),
       ...(textBlocks.length ? [`Parser/OCR produced ${textBlocks.length} concise text block(s).`] : []),
       ...(raw?.itemCount !== undefined ? [`Raw ${parser} parser artifact contains ${Number(raw.itemCount || 0)} top-level item(s).`] : []),
+      ...(nodes.length ? [`Semantic normalizer found ${nodes.length} candidate node label(s) from parser/OCR text.`] : []),
+      ...(edges.length ? [`Semantic normalizer found ${edges.length} candidate relation(s) from explicit text phrases.`] : []),
+      ...(timingConstraints.length ? [`Semantic normalizer found ${timingConstraints.length} timing hint(s) from parser/OCR text.`] : []),
+      ...(sequenceSteps.length ? [`Semantic normalizer found ${sequenceSteps.length} candidate sequence step(s) from parser/OCR text.`] : []),
     ],
     extracted_items: {
       text_blocks: textBlocks.slice(0, 40),
       labels,
-      nodes: [],
-      edges: [],
+      nodes,
+      edges,
       signals: classifySignalLabels(labels, /irq|int|interrupt|req|ack|tx|rx|dma|signal/i),
       clocks: classifySignalLabels(labels, /clk|clock|pclk|aclk|sclk/i),
       resets: classifySignalLabels(labels, /reset|rst|resetn|rstn/i),
-      timing_constraints: [],
-      sequence_steps: [],
+      timing_constraints: timingConstraints,
+      sequence_steps: sequenceSteps,
       tables: raw ? tableItemsFromParser(raw) : [],
     },
     related_registers: [],
