@@ -176,6 +176,7 @@ export function formatOcrHealthReport(status) {
   const text = ocr.text || {};
   const structure = ocr.structure || {};
   const vl = ocr.vl || {};
+  const modelCache = ocr.modelCache || {};
   const lines = [
     "OCR health via eval_health_check: OK",
     `Node.js: ${status.node?.ok === false ? "unavailable" : "OK"}`,
@@ -185,11 +186,17 @@ export function formatOcrHealthReport(status) {
     `PaddleOCR text OCR: ${text.available ?? ocr.available ? "available" : "missing"}`,
     `PP-Structure/document parser: ${structure.available ? "available" : "missing"}`,
     `PaddleOCR-VL parser: ${vl.available ? "available" : "missing"}`,
+    `PaddleX model cache: ${modelCache.path || "unknown"}`,
+    `Cached PaddleX models: ${Number(modelCache.modelCount || 0)}`,
     `OCR enabled: ${ocr.enabled ? "true" : "false"}`,
     `OCR engine: ${ocr.engine || "paddleocr"}`,
   ];
+  if (modelCache.path && Number(modelCache.modelCount || 0) <= 0) {
+    lines.push("Model cache status: empty; first OCR inference may need network or a pre-downloaded PaddleX cache.");
+  }
   if (ocr.reason) lines.push(`Reason: ${ocr.reason}`);
   if (ocr.hint) lines.push(`Hint: ${ocr.hint}`);
+  if (modelCache.hint) lines.push(`Model cache hint: ${modelCache.hint}`);
   for (const [label, capability] of [["Structure", structure], ["VL", vl]]) {
     if (capability.reason && !capability.available) lines.push(`${label} reason: ${capability.reason}`);
     if (capability.hint && !capability.available) lines.push(`${label} hint: ${capability.hint}`);
@@ -645,10 +652,54 @@ function uniqueStrings(values = []) {
   return result;
 }
 
+const PARSER_TEXT_KEYS = new Set(["text", "content", "label", "rec_text", "plaintext", "plain_text", "markdown", "markdown_text"]);
+const PARSER_TEXT_SKIP_KEYS = new Set([
+  "bbox",
+  "box",
+  "boxes",
+  "coordinate",
+  "coordinates",
+  "created_at",
+  "height",
+  "image_path",
+  "imagepath",
+  "input_path",
+  "length",
+  "omitted",
+  "page_count",
+  "page_index",
+  "path",
+  "reason",
+  "shape",
+  "source",
+  "sourcefingerprint",
+  "type",
+  "width",
+]);
+
+function parserKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function isHeavyParserKey(key) {
+  const normalized = parserKey(key);
+  return normalized.endsWith("_img") || normalized.endsWith("_image") || normalized.includes("base64") || normalized.includes("binary");
+}
+
+function usefulParserText(value) {
+  const text = conciseText(value, 220);
+  if (!text) return "";
+  if (/^[A-Za-z]:\\/.test(text) || /\\indexes\\cache\\/i.test(text)) return "";
+  if (/large parser (?:image|binary) payload omitted/i.test(text)) return "";
+  if (/^(ndarray|image)$/i.test(text)) return "";
+  if (/^(figure_title|footer|number|region|supplementaryregion|min|general)$/i.test(text)) return "";
+  return text;
+}
+
 function collectParserTextBlocks(value, blocks = [], limit = 40) {
   if (blocks.length >= limit || value === null || value === undefined) return blocks;
   if (typeof value === "string") {
-    const text = conciseText(value, 220);
+    const text = usefulParserText(value);
     if (text && !blocks.some((item) => item.text === text)) blocks.push({ text, source: "parser" });
     return blocks;
   }
@@ -657,10 +708,15 @@ function collectParserTextBlocks(value, blocks = [], limit = 40) {
     return blocks;
   }
   if (typeof value === "object") {
-    for (const key of ["text", "content", "label", "rec_text", "plainText", "markdown"]) {
-      if (Object.hasOwn(value, key)) collectParserTextBlocks(value[key], blocks, limit);
+    if (value.omitted === true) return blocks;
+    for (const [key, item] of Object.entries(value)) {
+      if (PARSER_TEXT_KEYS.has(parserKey(key))) collectParserTextBlocks(item, blocks, limit);
     }
-    for (const item of Object.values(value)) collectParserTextBlocks(item, blocks, limit);
+    for (const [key, item] of Object.entries(value)) {
+      const normalized = parserKey(key);
+      if (PARSER_TEXT_KEYS.has(normalized) || PARSER_TEXT_SKIP_KEYS.has(normalized) || isHeavyParserKey(normalized)) continue;
+      collectParserTextBlocks(item, blocks, limit);
+    }
   }
   return blocks;
 }

@@ -122,6 +122,26 @@ The JSON-line worker sets `PADDLE_PDX_CACHE_HOME` to
 workspace on Windows. Set `PADDLE_PDX_CACHE_HOME` yourself before starting the
 server if you want to use a shared pre-downloaded PaddleX model cache.
 
+After installing the OCR packages, prewarm the local model cache before judging
+OCR quality on real manuals:
+
+```powershell
+# Downloads or initializes text OCR and PP-Structure models into indexes/cache/paddlex.
+npm.cmd run ocr:prewarm -- --mode=text,structure
+
+# Optional and much heavier: include PaddleOCR-VL.
+npm.cmd run ocr:prewarm -- --mode=vl
+```
+
+`ocr:prewarm` is an explicit setup command, not a server startup dependency. It
+sets `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True` for the prewarm process so
+PaddleX attempts the selected model source instead of failing early when hoster
+HEAD checks are blocked. Use `--check-source` if you want PaddleX's default
+connectivity check, `--model-source=bos|huggingface|modelscope|aistudio` to
+prefer a source, or `--cache=D:\path\to\paddlex-cache` to populate a shared
+cache. If the machine has no network, copy a populated `official_models`
+directory into `indexes/cache/paddlex` or point `PADDLE_PDX_CACHE_HOME` at it.
+
 The default OCR flow is:
 
 1. `figures.extract` detects image/vector regions with PyMuPDF, filters small

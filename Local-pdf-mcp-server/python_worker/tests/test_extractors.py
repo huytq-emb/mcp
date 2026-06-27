@@ -7,7 +7,7 @@ from unittest.mock import patch
 import fitz
 
 from python_worker.extractors import build_bitfields, build_cautions, build_registers, extract_pinmux_rows, infer_kind, table_from_rows
-from python_worker.figure_ocr import _ocr_image, build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, render_figure_crop
+from python_worker.figure_ocr import _ocr_image, build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, prewarm_ocr_models, render_figure_crop
 from python_worker.pdf_engine import peak_rss_bytes, words_to_rows
 
 
@@ -271,9 +271,30 @@ class ExtractorTests(unittest.TestCase):
         self.assertIn("text", health["ocr"])
         self.assertIn("structure", health["ocr"])
         self.assertIn("vl", health["ocr"])
+        self.assertIn("modelCache", health["ocr"])
         self.assertIn("available", health["ocr"]["text"])
         self.assertIn("available", health["ocr"]["structure"])
         self.assertIn("available", health["ocr"]["vl"])
+        self.assertIn("path", health["ocr"]["modelCache"])
+        self.assertIn("prewarmHint", health["ocr"]["text"])
+
+    def test_ocr_model_hosting_failure_returns_cache_hint(self):
+        health = {"ok": True, "ocr": {"available": True, "enabled": True, "engine": "paddleocr", "text": {"available": True}}}
+        message = "No available model hosting platforms detected. Please check your network connection."
+        with patch("python_worker.figure_ocr.ocr_health", return_value=health), patch("python_worker.figure_ocr._load_paddleocr", side_effect=Exception(message)):
+            result = ocr_image_file(Path("unused.png"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "OCR_MODEL_UNAVAILABLE")
+        self.assertIn("PADDLE_PDX_CACHE_HOME", result["hint"])
+
+    def test_ocr_prewarm_reports_model_cache_failure_without_crashing(self):
+        health = {"ok": True, "ocr": {"available": True, "enabled": True, "engine": "paddleocr", "text": {"available": True}}}
+        message = "No available model hosting platforms detected. Please check your network connection."
+        with patch("python_worker.figure_ocr.ocr_health", return_value=health), patch("python_worker.figure_ocr._load_paddleocr", side_effect=Exception(message)):
+            result = prewarm_ocr_models({"modes": ["text"]})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["results"][0]["error_code"], "TEXT_MODEL_UNAVAILABLE")
+        self.assertIn("modelCache", result)
 
     def test_structure_parser_unavailable_writes_structured_artifact(self):
         health = ocr_health()
@@ -297,6 +318,30 @@ class ExtractorTests(unittest.TestCase):
             self.assertEqual(artifact["itemCount"], 0)
             self.assertIn("STRUCTURE_PARSER_UNAVAILABLE", artifact["error_code"])
             self.assertTrue(output_path.exists())
+
+    def test_structure_parser_artifact_jsonifies_numpy_scalars(self):
+        try:
+            import numpy as np
+        except Exception:
+            self.skipTest("numpy is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "synthetic-structure.pdf"
+            image_path = root / "figure.png"
+            output_path = root / "structure.json"
+            doc = fitz.open()
+            doc.new_page(width=220, height=180)
+            doc.save(pdf_path)
+            doc.close()
+            health = {"ok": True, "ocr": {"structure": {"available": True}, "available": True, "enabled": True, "engine": "paddleocr"}}
+            raw_items = [{"score": np.float64(0.5), "box": np.array([1, 2, 3, 4]), "input_img": np.zeros((20, 20, 3)), "text": "GPIO"}]
+            with patch("python_worker.figure_ocr.ocr_health", return_value=health), patch("python_worker.figure_ocr._load_structure_parser", return_value=object()), patch("python_worker.figure_ocr._predict_with_parser", return_value=raw_items):
+                artifact = parse_figure_image(image_path, pdf_path, pdf_path.name, output_path, "structure", {"page": 1, "bbox": [30, 30, 190, 145], "scale": 2.0})
+            self.assertTrue(artifact["ok"])
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["items"][0]["score"], 0.5)
+            self.assertEqual(payload["items"][0]["box"], [1, 2, 3, 4])
+            self.assertTrue(payload["items"][0]["input_img"]["omitted"])
 
     def test_figure_ocr_reuses_unchanged_cached_rows(self):
         class FakeOcr:

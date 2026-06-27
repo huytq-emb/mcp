@@ -9,7 +9,7 @@ from typing import Any
 
 from . import PROTOCOL_VERSION, WORKER_VERSION
 from .extractors import build_structured, extract_pinmux_rows, extract_tables
-from .figure_ocr import build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, render_figure_crop
+from .figure_ocr import build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, prewarm_ocr_models, render_figure_crop
 from .pdf_engine import build_pages_cache, extract_pages, inspect_pdf, library_versions, peak_rss_bytes, source_fingerprint, source_info
 from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit, ensure_inside, log
 
@@ -17,7 +17,7 @@ from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit,
 OPERATIONS = {
     "health", "pdf.inspect", "pages.extract", "pages.build", "tables.extract", "tables.build",
     "structured.build", "registers.build", "bitfields.build", "cautions.build", "pinmux.extract",
-    "ocr.health", "figures.extract", "figure_ocr.build", "figure.render", "ocr.image", "figure.structure", "figure.vl", "figure.inspect_basic",
+    "ocr.health", "ocr.prewarm", "figures.extract", "figure_ocr.build", "figure.render", "ocr.image", "figure.structure", "figure.vl", "figure.inspect_basic",
 }
 
 
@@ -44,6 +44,10 @@ def main() -> int:
             return 0
         if operation == "ocr.health":
             result = {"versions": library_versions(), **ocr_health()}
+            emit("result", request_id, ok=True, operation=operation, result=result)
+            return 0
+        if operation == "ocr.prewarm":
+            result = {"versions": library_versions(), **prewarm_ocr_models(request.get("options") or {})}
             emit("result", request_id, ok=True, operation=operation, result=result)
             return 0
 

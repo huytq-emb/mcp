@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +28,54 @@ OCR_ENGINE = "paddleocr"
 OCR_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr.txt"
 OCR_STRUCTURE_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-structure.txt"
 OCR_VL_INSTALL_HINT = r"Run: .\.venv\Scripts\python.exe -m pip install -r requirements-ocr-vl.txt"
+OCR_MODEL_HOSTING_RE = re.compile(
+    r"No available model hosting platforms|No model source is available|Please check network or use local model files",
+    re.I,
+)
+RAW_TEXT_LIMIT = 50_000
+RAW_LIST_LIMIT = 500
+RAW_ARRAY_VALUE_LIMIT = 1_000
+RAW_HEAVY_KEYS = {
+    "input_img",
+    "output_img",
+    "ori_img",
+    "img",
+    "image",
+    "images",
+    "page_img",
+    "vis_img",
+    "vis_image",
+    "visualization",
+}
+PARSER_TEXT_KEYS = {"text", "content", "label", "rec_text", "markdown", "markdown_text", "html"}
+PARSER_TEXT_SKIP_KEYS = {
+    "bbox",
+    "box",
+    "boxes",
+    "coordinate",
+    "coordinates",
+    "created_at",
+    "height",
+    "image_path",
+    "imagepath",
+    "input_path",
+    "items",
+    "length",
+    "omitted",
+    "page_count",
+    "page_index",
+    "path",
+    "reason",
+    "shape",
+    "source",
+    "sourcefingerprint",
+    "type",
+    "width",
+}
+PARSER_TEXT_VALUE_SKIP_RE = re.compile(
+    r"^(?:ndarray|image|figure_title|footer|number|region|supplementaryregion|min|general)$",
+    re.I,
+)
 DEFAULT_OCR_OPTIONS = {
     "enabled": True,
     "mode": "figures_only",
@@ -55,6 +104,111 @@ def _dependency_status(available: bool, reason: str = "", hint: str = "", missin
         "missing": [] if available else list(missing or []),
         **extra,
     }
+
+
+def _paddlex_cache_home() -> Path:
+    return Path(os.environ.get("PADDLE_PDX_CACHE_HOME") or Path.home() / ".paddlex").resolve()
+
+
+def _model_cache_status() -> dict[str, Any]:
+    cache_dir = _paddlex_cache_home()
+    official_dir = cache_dir / "official_models"
+    models: list[str] = []
+    if official_dir.exists():
+        with contextlib.suppress(Exception):
+            models = sorted(
+                item.name for item in official_dir.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            )[:80]
+    return {
+        "path": str(cache_dir),
+        "officialModelsPath": str(official_dir),
+        "exists": cache_dir.exists(),
+        "officialModelsExists": official_dir.exists(),
+        "modelCount": len(models),
+        "models": models,
+        "hint": (
+            r"Run: npm.cmd run ocr:prewarm -- --mode=text,structure "
+            r"or set PADDLE_PDX_CACHE_HOME to a writable pre-downloaded PaddleX cache."
+        ),
+    }
+
+
+def _model_cache_hint(mode: str = "text") -> str:
+    cache_dir = _paddlex_cache_home()
+    mode_arg = "text,structure" if mode == "structure" else mode
+    return (
+        f"Populate PaddleX model cache at {cache_dir}. "
+        f"Run: npm.cmd run ocr:prewarm -- --mode={mode_arg} with network access, "
+        "or set PADDLE_PDX_CACHE_HOME to a writable pre-downloaded model cache before starting the MCP server."
+    )
+
+
+def _is_model_hosting_error(error: Exception | str) -> bool:
+    return bool(OCR_MODEL_HOSTING_RE.search(str(error or "")))
+
+
+def _is_heavy_parser_key(key: str) -> bool:
+    normalized = _normalized_key(key)
+    return (
+        normalized in RAW_HEAVY_KEYS
+        or normalized.endswith("_img")
+        or normalized.endswith("_image")
+        or "base64" in normalized
+        or "binary" in normalized
+    )
+
+
+def _normalized_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(key or "").strip().lower()).strip("_")
+
+
+def _value_shape(value: Any) -> list[int]:
+    shape = getattr(value, "shape", None)
+    if not shape:
+        return []
+    result: list[int] = []
+    for dim in shape:
+        with contextlib.suppress(Exception):
+            result.append(int(dim))
+    return result
+
+
+def _value_size_from_shape(shape: list[int]) -> int:
+    size = 1
+    for dim in shape:
+        size *= max(0, int(dim))
+    return size
+
+
+def _omitted_parser_value(value: Any, reason: str) -> dict[str, Any]:
+    shape = _value_shape(value)
+    summary: dict[str, Any] = {
+        "omitted": True,
+        "reason": reason,
+        "type": type(value).__name__,
+    }
+    if shape:
+        summary["shape"] = shape
+    else:
+        with contextlib.suppress(Exception):
+            summary["length"] = len(value)
+    return summary
+
+
+def _useful_parser_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if len(text) > 240:
+        return ""
+    if PARSER_TEXT_VALUE_SKIP_RE.match(text):
+        return ""
+    if re.match(r"^[A-Za-z]:\\", text) or "\\indexes\\cache\\" in text.lower():
+        return ""
+    if "large parser image/binary payload omitted" in text.lower():
+        return ""
+    return text
 
 
 def _paddleocr_export_available(name: str) -> tuple[bool, str]:
@@ -102,6 +256,7 @@ def ocr_health() -> dict[str, Any]:
     if text_available:
         structure_available, structure_reason = _paddleocr_export_available("PPStructureV3")
         vl_available, vl_reason = _paddleocr_export_available("PaddleOCRVL")
+    model_cache = _model_cache_status()
     return {
         "ok": True,
         "ocr": {
@@ -117,6 +272,8 @@ def ocr_health() -> dict[str, Any]:
                 OCR_INSTALL_HINT,
                 missing,
                 model=os.environ.get("RENESAS_MCP_PADDLEOCR_VERSION", "PP-OCRv4"),
+                requiresModelCache=True,
+                prewarmHint=_model_cache_hint("text"),
             ),
             "structure": _dependency_status(
                 structure_available,
@@ -124,6 +281,8 @@ def ocr_health() -> dict[str, Any]:
                 OCR_STRUCTURE_INSTALL_HINT,
                 [] if text_available else missing,
                 parser="PP-StructureV3",
+                requiresModelCache=True,
+                prewarmHint=_model_cache_hint("structure"),
             ),
             "vl": _dependency_status(
                 vl_available,
@@ -132,7 +291,10 @@ def ocr_health() -> dict[str, Any]:
                 [] if text_available else missing,
                 parser="PaddleOCR-VL",
                 verification="visual graph edges are unverified until cross-checked",
+                requiresModelCache=True,
+                prewarmHint=_model_cache_hint("vl"),
             ),
+            "modelCache": model_cache,
             "versions": {
                 "paddleocr": _version("paddleocr"),
                 "paddlepaddle": _version("paddlepaddle"),
@@ -714,15 +876,16 @@ def ocr_image_file(
         ocr = _load_paddleocr()
         plain_text, confidence_avg, tokens = _ocr_image(ocr, str(image_path), crop_bbox, scale)
     except Exception as error:
+        model_error = _is_model_hosting_error(error)
         return {
             "ok": False,
-            "error_code": "OCR_FAILED",
+            "error_code": "OCR_MODEL_UNAVAILABLE" if model_error else "OCR_FAILED",
             "message": str(error),
             "engine": OCR_ENGINE,
-            "hint": "",
+            "hint": _model_cache_hint("text") if model_error else "",
             "ocr_text": [],
             "plain_text": "",
-            "warnings": [f"OCR failed: {error}"],
+            "warnings": [f"OCR model unavailable: {error}" if model_error else f"OCR failed: {error}"],
         }
     return {
         "ok": True,
@@ -765,19 +928,158 @@ def _load_vl_parser() -> Any:
             return PaddleOCRVL()
 
 
+def _write_prewarm_probe_image(path: Path) -> Path:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (720, 360), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((24, 24, 696, 336), outline="black", width=2)
+    draw.rectangle((56, 72, 250, 150), outline="black", width=2)
+    draw.rectangle((430, 72, 640, 150), outline="black", width=2)
+    draw.line((250, 112, 430, 112), fill="black", width=2)
+    draw.line((420, 104, 430, 112), fill="black", width=2)
+    draw.line((420, 120, 430, 112), fill="black", width=2)
+    draw.text((86, 98), "PFC GPIO", fill="black")
+    draw.text((470, 98), "IRQ RESET", fill="black")
+    draw.text((56, 190), "Signal", fill="black")
+    draw.text((250, 190), "Direction", fill="black")
+    draw.text((440, 190), "Register", fill="black")
+    draw.line((48, 184, 660, 184), fill="black", width=1)
+    draw.line((48, 224, 660, 224), fill="black", width=1)
+    draw.line((220, 184, 220, 264), fill="black", width=1)
+    draw.line((410, 184, 410, 264), fill="black", width=1)
+    image.save(path)
+    return path
+
+
+def _exercise_prewarmed_model(mode: str, model: Any) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        image_path = _write_prewarm_probe_image(Path(tmp) / "ocr-prewarm-probe.png")
+        if mode == "text":
+            _ocr_image(model, str(image_path))
+        else:
+            _predict_with_parser(model, image_path)
+
+
+def _normalize_prewarm_modes(options: dict[str, Any] | None = None) -> list[str]:
+    opts = options or {}
+    raw_modes = opts.get("modes", opts.get("mode", ["text", "structure"]))
+    if isinstance(raw_modes, str):
+        modes = [item.strip().lower() for item in re.split(r"[,;\s]+", raw_modes) if item.strip()]
+    elif isinstance(raw_modes, list):
+        modes = [str(item).strip().lower() for item in raw_modes if str(item).strip()]
+    else:
+        modes = ["text", "structure"]
+    if "all" in modes:
+        modes = ["text", "structure", "vl"]
+    if bool(opts.get("includeVl") or opts.get("include_vl")) and "vl" not in modes:
+        modes.append("vl")
+    result: list[str] = []
+    for mode in modes:
+        if mode == "ocr":
+            mode = "text"
+        if mode in {"text", "structure", "vl"} and mode not in result:
+            result.append(mode)
+    return result or ["text", "structure"]
+
+
+def _prewarm_one_model(mode: str) -> dict[str, Any]:
+    health = ocr_health()
+    capability_key = "text" if mode == "text" else mode
+    capability = health["ocr"].get(capability_key, {})
+    if not capability.get("available"):
+        return {
+            "mode": mode,
+            "ok": False,
+            "available": False,
+            "error_code": f"{mode.upper()}_DEPENDENCY_UNAVAILABLE",
+            "message": capability.get("reason") or "OCR dependency unavailable",
+            "hint": capability.get("hint") or capability.get("prewarmHint") or "",
+        }
+    try:
+        if mode == "text":
+            model = _load_paddleocr()
+        elif mode == "structure":
+            model = _load_structure_parser()
+        else:
+            model = _load_vl_parser()
+        if model is None:
+            raise RuntimeError(f"{mode} parser dependency unavailable")
+        _exercise_prewarmed_model(mode, model)
+        return {
+            "mode": mode,
+            "ok": True,
+            "available": True,
+            "message": "model initialized",
+            "hint": "",
+        }
+    except Exception as error:
+        model_error = _is_model_hosting_error(error)
+        return {
+            "mode": mode,
+            "ok": False,
+            "available": True,
+            "error_code": f"{mode.upper()}_MODEL_UNAVAILABLE" if model_error else f"{mode.upper()}_PREWARM_FAILED",
+            "message": str(error),
+            "hint": _model_cache_hint(mode) if model_error else capability.get("prewarmHint") or "",
+        }
+
+
+def prewarm_ocr_models(options: dict[str, Any] | None = None) -> dict[str, Any]:
+    modes = _normalize_prewarm_modes(options)
+    results = [_prewarm_one_model(mode) for mode in modes]
+    failed = [item for item in results if not item.get("ok")]
+    return {
+        "ok": not failed,
+        "engine": OCR_ENGINE,
+        "modes": modes,
+        "results": results,
+        "modelCache": _model_cache_status(),
+        "warnings": [f"{item['mode']} prewarm failed: {item.get('message', '')}" for item in failed],
+    }
+
+
 def _jsonable(value: Any, depth: int = 0) -> Any:
     if depth > 8:
         return str(value)
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, bool):
         return value
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item, depth + 1) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item, depth + 1) for item in value]
+    if isinstance(value, str):
+        if len(value) > RAW_TEXT_LIMIT:
+            return value[:RAW_TEXT_LIMIT] + f"... [truncated {len(value) - RAW_TEXT_LIMIT} chars]"
+        return value
+    if type(value) in (int, float):
+        return value
+    shape = _value_shape(value)
+    if shape and _value_size_from_shape(shape) > RAW_ARRAY_VALUE_LIMIT:
+        return _omitted_parser_value(value, "large parser array omitted")
     item = getattr(value, "item", None)
     if callable(item):
         with contextlib.suppress(Exception):
             return _jsonable(item(), depth + 1)
+    to_list = getattr(value, "tolist", None)
+    if callable(to_list):
+        with contextlib.suppress(Exception):
+            return _jsonable(to_list(), depth + 1)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key)
+            if _is_heavy_parser_key(normalized_key):
+                result[normalized_key] = _omitted_parser_value(item, "large parser image/binary payload omitted")
+            else:
+                result[normalized_key] = _jsonable(item, depth + 1)
+        return result
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        if len(items) > RAW_LIST_LIMIT:
+            return {
+                "omitted": True,
+                "reason": "large parser list truncated",
+                "length": len(items),
+                "items": [_jsonable(item, depth + 1) for item in items[:RAW_LIST_LIMIT]],
+            }
+        return [_jsonable(item, depth + 1) for item in items]
     json_value = getattr(value, "json", None)
     if callable(json_value):
         with contextlib.suppress(Exception):
@@ -793,15 +1095,21 @@ def _collect_text_values(value: Any, texts: list[str], limit: int = 120) -> None
     if len(texts) >= limit:
         return
     if isinstance(value, str):
-        text = re.sub(r"\s+", " ", value).strip()
-        if text and len(text) <= 240 and text not in texts:
+        text = _useful_parser_text(value)
+        if text and text not in texts:
             texts.append(text)
         return
     if isinstance(value, dict):
-        for key in ("text", "content", "label", "rec_text", "markdown"):
-            if key in value:
-                _collect_text_values(value[key], texts, limit)
-        for item in value.values():
+        if value.get("omitted") is True:
+            return
+        for key, item in value.items():
+            normalized = _normalized_key(key)
+            if normalized in PARSER_TEXT_KEYS:
+                _collect_text_values(item, texts, limit)
+        for key, item in value.items():
+            normalized = _normalized_key(key)
+            if normalized in PARSER_TEXT_KEYS or normalized in PARSER_TEXT_SKIP_KEYS or _is_heavy_parser_key(normalized):
+                continue
             _collect_text_values(item, texts, limit)
         return
     if isinstance(value, list):
@@ -916,6 +1224,7 @@ def parse_figure_image(
             "warnings": ["PaddleOCR-VL graph edges are unverified until cross-checked."] if kind == "vl" else [],
         }
     except Exception as error:
+        model_error = _is_model_hosting_error(error)
         artifact = {
             "schemaVersion": FIGURE_PARSE_SCHEMA_VERSION,
             "filename": filename,
@@ -931,14 +1240,14 @@ def parse_figure_image(
             "bbox": list((options or {}).get("bbox") or []),
             "scale": float((options or {}).get("scale") or 1.0),
             "ok": False,
-            "error_code": f"{kind.upper()}_PARSER_FAILED",
+            "error_code": f"{kind.upper()}_MODEL_UNAVAILABLE" if model_error else f"{kind.upper()}_PARSER_FAILED",
             "message": str(error),
-            "hint": capability.get("hint") or "",
+            "hint": _model_cache_hint(kind) if model_error else capability.get("hint") or "",
             "itemCount": 0,
             "items": [],
             "plainText": "",
             "markdown": "",
-            "warnings": [f"{kind} parser failed: {error}"],
+            "warnings": [f"{kind} model unavailable: {error}" if model_error else f"{kind} parser failed: {error}"],
         }
     atomic_write_json(output_path, artifact)
     return artifact

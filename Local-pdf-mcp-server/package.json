@@ -22,6 +22,7 @@
     "test:tools": "node scripts/tool-smoke-rzg3e.js --filename=r01uh1069ej0115-rzg3e.pdf",
     "python:setup": "node scripts/python-setup.js",
     "python:health": "node scripts/python-health.js",
+    "ocr:prewarm": "node scripts/ocr-prewarm.js",
     "test:python": "node scripts/python-test.js",
     "test:hybrid": "node --test test/unit/python-worker.test.js && node scripts/python-test.js",
     "benchmark:extraction": "node scripts/benchmark-extraction.js"

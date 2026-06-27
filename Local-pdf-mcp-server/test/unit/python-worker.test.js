@@ -117,10 +117,13 @@ test("OCR health formatter reports optional dependency hints without failing cor
       available: false,
       reason: "missing dependency",
       hint: "Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements-ocr.txt",
+      modelCache: { path: "C:\\workspace\\indexes\\cache\\paddlex", modelCount: 0, hint: "Run: npm.cmd run ocr:prewarm -- --mode=text,structure" },
     },
   });
   assert.match(text, /OCR health via eval_health_check: OK/);
   assert.match(text, /PaddleOCR: missing/);
+  assert.match(text, /Cached PaddleX models: 0/);
+  assert.match(text, /ocr:prewarm/);
   assert.match(text, /requirements-ocr\.txt/);
   assert.match(text, /Machine summary JSON/);
 });
