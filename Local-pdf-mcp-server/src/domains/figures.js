@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
@@ -269,7 +269,13 @@ async function buildCaptionOnlyManifest(filename, pageCache = null, options = {}
   const pages = (cache.pages || []).filter((page) => !requestedPage || Number(page.page) === requestedPage);
   const figures = [];
   for (const page of pages) {
-    const headings = detectHeadings(page.text || "");
+    let headings = [];
+    try {
+      headings = detectHeadings(page.text || "");
+    } catch (error) {
+      if (!/Runtime port is not wired: detectHeadings/.test(error instanceof Error ? error.message : String(error))) throw error;
+      headings = [];
+    }
     const captions = extractFigureCaptionsFromPageText(page.text || "", page.page);
     captions.forEach((caption, index) => figures.push(figureFromCaption(filename, caption, index + 1, headings)));
   }
@@ -434,7 +440,13 @@ export async function getFigureContext(filename, options = {}) {
 
 export async function rebuildFigureManifest(filename, options = {}) {
   const page = Number(options.page || 0);
-  const pageCache = await getPagesCache(filename, { buildIfMissing: true });
+  let pageCache;
+  try {
+    pageCache = await getPagesCache(filename, { buildIfMissing: true });
+  } catch (error) {
+    if (!/Runtime port is not wired: getPagesCache/.test(error instanceof Error ? error.message : String(error))) throw error;
+    pageCache = await readJsonCached(safePagesCachePath(filename));
+  }
   if (page) {
     const existing = await loadFiguresIndex(filename).catch(() => null);
     const pageIndex = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force), page });
@@ -492,7 +504,7 @@ export async function getFigureImage(filename, figureId, options = {}) {
   const dpi = Number(options.dpi || 200);
   const render = await renderFigureOnDemand({ filename, figure_id: figureId, page: options.page, bbox: options.bbox, scale: Math.max(0.25, dpi / 100), force: Boolean(options.force) });
   const access = await imageAccessWithExists(render.image_path || "");
-  return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", dpi, width: Number(render.width || 0), height: Number(render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
+  return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", mode: render.render?.mode || render.render_mode || "crop", reason: render.render?.reason || render.render_reason || "", dpi: Number(render.render?.dpi || dpi || 0), width: Number(render.render?.width || render.width || 0), height: Number(render.render?.height || render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
 }
 
 function normalizeAnchorText(text = "") {
@@ -530,8 +542,10 @@ function anchorPageContext(text = "", figure = {}) {
   }
   const keywords = splitTokens([caption, figure.section_title, figure.kind].join(" ")).filter((t) => t.length >= 4);
   for (const kw of keywords) {
-    pos = normalizeAnchorText(text).indexOf(kw);
-    if (pos >= 0) return { offset: Math.min(text.length, pos), length: kw.length, method: "keyword", confidence: "low" };
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(new RegExp(`\\b${escaped}`, "i"));
+    pos = match?.index ?? -1;
+    if (pos >= 0) return { offset: pos, length: match[0].length, method: "keyword_original", confidence: "low" };
   }
   return { offset: Math.floor(text.length / 2), length: 0, method: "fallback", confidence: "low" };
 }
@@ -554,7 +568,7 @@ export async function getFigureContextPack(filename, figureId, options = {}) {
     const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
     if (cached) ocr_text = cached.ocr_text || cached.items || [];
   }
-  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, agent_instruction: FIGURE_AGENT_INSTRUCTION };
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: image.warnings || [], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} The image may be a full-page fallback because the exact figure bbox was unavailable.` : FIGURE_AGENT_INSTRUCTION };
 }
 
 export async function ocrFigureForSearch(filename, figureId, options = {}) {

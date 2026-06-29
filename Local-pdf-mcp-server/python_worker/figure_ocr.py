@@ -556,7 +556,7 @@ def render_figure_crop(
     force: bool = False,
 ) -> dict[str, Any]:
     source = source_info(pdf_path)
-    rect = _rect_from_bbox(bbox)
+    rect = _rect_from_bbox(bbox) if bbox else None
     with fitz.open(pdf_path) as document:
         page_count = document.page_count
         page_num = int(page_number)
@@ -569,7 +569,7 @@ def render_figure_crop(
             }
         page = document.load_page(page_num - 1)
         page_rect = page.rect
-        clipped = rect & page_rect
+        clipped = page_rect if rect is None else rect & page_rect
         if clipped.is_empty or clipped.width <= 0 or clipped.height <= 0:
             return {
                 "ok": False,
@@ -593,7 +593,9 @@ def render_figure_crop(
         "cache_hit": bool(render["cache_hit"]),
         "source": source,
         "sourceFingerprint": source_fingerprint(source),
-        "warnings": [] if clipped == rect else ["Input bbox was clipped to the PDF page bounds."],
+        "mode": "page_fallback" if rect is None else "crop",
+        "reason": "figure_bbox_unavailable" if rect is None else "",
+        "warnings": ["Figure bbox is unavailable; rendered the full page instead of a cropped figure."] if rect is None else ([] if clipped == rect else ["Input bbox was clipped to the PDF page bounds."]),
     }
 
 
