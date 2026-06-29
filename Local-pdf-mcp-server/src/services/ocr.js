@@ -1131,7 +1131,7 @@ export async function renderFigureOnDemand(args = {}) {
   if (!force && await pathExists(paths.imagePath) && await pathExists(paths.metaPath)) {
     try {
       const cached = await readJsonCached(paths.metaPath);
-      return { ...cached, cache_hit: true, image_path: paths.imagePath };
+      return { ...cached, cache_hit: true, image_path: paths.imagePath, image_access: cached.image_access || { local_path: path.resolve(paths.imagePath), mime_type: "image/png", exists: await pathExists(paths.imagePath), agent_should_open_as_image: true }, render: cached.render || { status: "ready", dpi: Math.round(scale * 100), width: 0, height: 0 } };
     } catch {
       // Re-render below when metadata is unreadable.
     }
@@ -1176,6 +1176,18 @@ export async function renderFigureOnDemand(args = {}) {
       bbox: result.bbox || target.bbox,
       scale,
       image_path: paths.imagePath,
+      image_access: {
+        local_path: path.resolve(paths.imagePath),
+        mime_type: "image/png",
+        exists: await pathExists(paths.imagePath),
+        agent_should_open_as_image: true,
+      },
+      render: {
+        status: "ready",
+        dpi: Math.round(scale * 100),
+        width: Number(result.width || 0),
+        height: Number(result.height || 0),
+      },
       cache_key: paths.key,
       cache_hit: Boolean(result.cache_hit),
       lookup_cache_hit: Boolean(target.lookup_cache_hit),

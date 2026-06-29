@@ -1,7 +1,9 @@
+import path from "node:path";
+import fs from "node:fs/promises";
 import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
-import { buildFiguresWithPython, ensureFigureLookupIndex } from "../services/ocr.js";
+import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
 
 
 const detectHeadings = createRuntimePort("detectHeadings");
@@ -15,6 +17,110 @@ const q = createRuntimePort("q");
 
 
 const scoreSimpleText = createRuntimePort("scoreSimpleText");
+
+
+const FIGURE_AGENT_INSTRUCTION = "Open image_path as an image and analyze the figure visually. Use the text context only as supporting evidence.";
+
+function figureId(figure = {}, index = 0) {
+  return String(figure.figure_id || figure.id || figure.figureUid || figure.figure_uid || `p${String(figure.page || 0).padStart(4, "0")}_f${index + 1}`).trim();
+}
+
+function figureSectionTitle(figure = {}) {
+  return String(figure.section_title || figure.sectionTitle || (figure.headings || [])[0] || "").trim();
+}
+
+function figureNearbyPreview(figure = {}) {
+  return compactText(String(figure.nearby_text_preview || figure.contextPreview || (figure.contextLines || []).join("\n") || ""), 1000);
+}
+
+function imageAccess(localPath = "") {
+  const abs = localPath ? path.resolve(localPath) : "";
+  return { local_path: abs, mime_type: "image/png", exists: false, agent_should_open_as_image: true };
+}
+
+async function imageAccessWithExists(localPath = "") {
+  const access = imageAccess(localPath);
+  access.exists = Boolean(access.local_path && await pathExists(access.local_path));
+  return access;
+}
+
+function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) {
+  const id = figureId(figure, index);
+  const img = String(figure.image_path || figure.renderPath || figure.render_path || "");
+  return {
+    schemaVersion: 1,
+    filename,
+    figure_id: id,
+    id,
+    page: Number(figure.page || 0),
+    bbox: Array.isArray(figure.bbox) ? figure.bbox : [],
+    image_path: img,
+    caption: String(figure.caption || figure.title || "").trim(),
+    section_title: figureSectionTitle(figure),
+    nearby_text_preview: figureNearbyPreview(figure),
+    ocr_keywords: Array.isArray(figure.ocr_keywords) ? figure.ocr_keywords : [],
+    related_registers: Array.isArray(figure.related_registers) ? figure.related_registers : [],
+    related_bitfields: Array.isArray(figure.related_bitfields) ? figure.related_bitfields : [],
+    related_cautions: Array.isArray(figure.related_cautions) ? figure.related_cautions : [],
+    related_tables: Array.isArray(figure.related_tables) ? figure.related_tables : [],
+    render: { status: img ? "ready" : "missing", dpi: Number(figure.render?.dpi || 0), width: Number(figure.render?.width || 0), height: Number(figure.render?.height || 0), mtimeMs: Number(figure.render?.mtimeMs || 0) },
+    image_access: { local_path: img ? path.resolve(img) : "", mime_type: "image/png", exists: false, agent_should_open_as_image: true },
+    provenance: { sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : String(figure.sourceFingerprint || ""), generatedAt: new Date().toISOString() },
+    // Backward-compatible fields used by older tools.
+    title: String(figure.title || figure.caption || "").trim(),
+    kind: String(figure.kind || figure.type || "figure").trim() || "figure",
+    type: String(figure.type || figure.kind || "Figure").trim() || "Figure",
+    headings: Array.isArray(figure.headings) ? figure.headings : [],
+    contextLines: Array.isArray(figure.contextLines) ? figure.contextLines : [],
+    contextPreview: figureNearbyPreview(figure),
+    confidence: Number(figure.confidence || 50),
+    searchText: normalizeForSearch([figure.caption, figure.title, figureSectionTitle(figure), figureNearbyPreview(figure)].join("\n")),
+  };
+}
+
+async function normalizeFigureManifest(filename, index) {
+  const source = index.source || await getPdfSourceInfo(filename).catch(() => null);
+  const figures = [];
+  for (const [i, fig] of (index.figures || []).entries()) {
+    const rec = normalizeFigureRecord(filename, fig, i, source);
+    if (rec.image_path) {
+      rec.image_access = await imageAccessWithExists(rec.image_path);
+      if (rec.image_access.exists) {
+        const st = await fs.stat(rec.image_access.local_path).catch(() => null);
+        rec.render.mtimeMs = st ? Math.round(st.mtimeMs) : rec.render.mtimeMs;
+        rec.render.status = "ready";
+      }
+    }
+    figures.push(rec);
+  }
+  return { ...index, schemaVersion: 1, filename, source, sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "", figureCount: figures.length, figures };
+}
+
+function splitTokens(text) {
+  return normalizeForSearch(text).split(/\s+/).filter((t) => t.length >= 2);
+}
+
+function scoreManifestFigure(figure, query) {
+  const tokens = splitTokens(query);
+  const fields = {
+    caption: normalizeForSearch(figure.caption || ""),
+    section: normalizeForSearch(figure.section_title || ""),
+    nearby: normalizeForSearch(figure.nearby_text_preview || figure.contextPreview || ""),
+    ocr: normalizeForSearch((figure.ocr_keywords || []).join(" ")),
+    related: normalizeForSearch([...(figure.related_registers || []), ...(figure.related_bitfields || []), ...(figure.related_cautions || []), ...(figure.related_tables || [])].join(" ")),
+  };
+  const reasons = [];
+  let score = 0;
+  for (const token of tokens) {
+    if (fields.caption.split(/\s+/).includes(token)) { score += 12; reasons.push(`exact token in caption: ${token}`); }
+    else if (fields.caption.includes(token)) { score += 8; reasons.push(`caption match: ${token}`); }
+    if (fields.section.includes(token)) { score += 6; reasons.push(`section title match: ${token}`); }
+    if (fields.nearby.includes(token)) { score += 3; reasons.push(`nearby text match: ${token}`); }
+    if (fields.ocr.includes(token)) { score += 2; reasons.push(`cached OCR keyword match: ${token}`); }
+    if (fields.related.includes(token)) { score += 4; reasons.push(`related evidence match: ${token}`); }
+  }
+  return { score, reasons: [...new Set(reasons)].slice(0, 12) };
+}
 
 // -----------------------------------------------------------------------------
 // Step 31A: figure/caption index and visual-context helpers
@@ -128,7 +234,11 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
 
 export async function buildFiguresIndex(filename, pageCache = null, options = {}) {
   try {
-    return await buildFiguresWithPython(filename, { force: Boolean(options.force) });
+    const pythonIndex = await buildFiguresWithPython(filename, { force: Boolean(options.force) });
+    const normalizedPython = await normalizeFigureManifest(filename, pythonIndex);
+    await atomicWriteJson(safeFiguresIndexPath(filename), normalizedPython).catch(() => {});
+    await ensureFigureLookupIndex(filename, normalizedPython, { force: true }).catch(() => {});
+    return normalizedPython;
   } catch {
     // Python figure-region extraction is preferred, but figures remain
     // optional-advisory. Fall back to native caption indexing when the worker
@@ -156,7 +266,7 @@ export async function buildFiguresIndex(filename, pageCache = null, options = {}
     byId.set(id, { ...figure, id });
   }
 
-  const result = {
+  let result = {
     schemaVersion: FIGURE_INDEX_SCHEMA_VERSION,
     serverVersion: SERVER_VERSION,
     filename,
@@ -171,6 +281,7 @@ export async function buildFiguresIndex(filename, pageCache = null, options = {}
     figures: [...byId.values()],
   };
 
+  result = await normalizeFigureManifest(filename, result);
   await atomicWriteJson(safeFiguresIndexPath(filename), result);
   await ensureFigureLookupIndex(filename, result, { force: true }).catch(() => {});
   return result;
@@ -186,6 +297,11 @@ export async function loadFiguresIndex(filename) {
     if (!Array.isArray(data.figures)) return null;
     const source = await getPdfSourceInfo(filename);
     if (!isSamePdfSource(data.source, source)) return null;
+    if (!(data.figures || [])[0]?.figure_id || !(data.figures || [])[0]?.image_access) {
+      const normalized = await normalizeFigureManifest(filename, data);
+      await atomicWriteJson(filePath, normalized).catch(() => {});
+      return normalized;
+    }
     return data;
   } catch {
     return null;
@@ -285,6 +401,78 @@ export async function getFigureContext(filename, options = {}) {
   }
 
   return { filename, figure, startPage, endPage, pages: pageData.pages || [], layoutTables };
+}
+
+
+export async function rebuildFigureManifest(filename, options = {}) {
+  const pageCache = await getPagesCache(filename, { buildIfMissing: true });
+  const index = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force) });
+  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), figureCount: index.figureCount, page: options.page || null, manifest: options.includeManifest ? index : undefined };
+}
+
+export async function searchFigures(filename, options = {}) {
+  const query = String(options.query || "").trim();
+  if (!query) throw new Error("query is required");
+  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const page = Number(options.page || 0);
+  const section = normalizeForSearch(options.section || "");
+  const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
+  const results = (index.figures || [])
+    .filter((fig) => !page || Number(fig.page) === page)
+    .filter((fig) => !section || normalizeForSearch(fig.section_title || "").includes(section))
+    .map((fig) => ({ ...fig, match: scoreManifestFigure(fig, query) }))
+    .filter((fig) => fig.match.score > 0)
+    .sort((a, b) => b.match.score - a.match.score || a.page - b.page)
+    .slice(0, limit)
+    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: fig.image_path || "", match_score: fig.match.score, match_reasons: fig.match.reasons, render: fig.render || { status: "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "" }));
+  return { ok: true, filename, query, results };
+}
+
+export async function listFigureManifest(filename, options = {}) {
+  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const page = Number(options.page || 0);
+  const section = normalizeForSearch(options.section || "");
+  const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
+  const results = (index.figures || [])
+    .filter((fig) => !page || Number(fig.page) === page)
+    .filter((fig) => !section || normalizeForSearch(fig.section_title || "").includes(section))
+    .sort((a,b) => a.page - b.page || String(a.figure_id || a.id).localeCompare(String(b.figure_id || b.id)))
+    .slice(0, limit)
+    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: fig.image_path || "", render_status: fig.render?.status || "missing", nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "" }));
+  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), figureCount: index.figureCount, results };
+}
+
+export async function getFigureImage(filename, figureId, options = {}) {
+  const dpi = Number(options.dpi || 200);
+  const render = await renderFigureOnDemand({ filename, figure_id: figureId, page: options.page, bbox: options.bbox, scale: Math.max(0.25, dpi / 100), force: Boolean(options.force) });
+  const access = await imageAccessWithExists(render.image_path || "");
+  return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", dpi, width: Number(render.width || 0), height: Number(render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
+}
+
+export async function getFigureContextPack(filename, figureId, options = {}) {
+  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const figure = (index.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid].filter(Boolean).includes(figureId));
+  if (!figure) throw new Error(`Figure not found: ${figureId}`);
+  const image = await getFigureImage(filename, figureId, { dpi: options.dpi || figure.render?.dpi || 200 });
+  const pageData = await extractPdfPages(filename, { startPage: figure.page, endPage: figure.page });
+  const text = pageData.pages?.[0]?.text || "";
+  const caption = figure.caption || "";
+  const pos = caption ? text.indexOf(caption) : -1;
+  const before = pos >= 0 ? text.slice(Math.max(0, pos - 2500), pos) : text.slice(0, 2500);
+  const after = pos >= 0 ? text.slice(pos + caption.length, pos + caption.length + 2500) : text.slice(2500, 5000);
+  let ocr_text = [];
+  if (options.include_ocr) {
+    const ocrIndex = await loadFigureOcrIndex(filename).catch(() => null);
+    const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid].filter(Boolean).includes(figureId));
+    if (cached) ocr_text = cached.ocr_text || cached.items || [];
+  }
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, agent_instruction: FIGURE_AGENT_INSTRUCTION };
+}
+
+export async function ocrFigureForSearch(filename, figureId, options = {}) {
+  const result = await ocrFigureOnDemand({ filename, figure_id: figureId, engine: "auto", mode: "text", force: Boolean(options.force) });
+  const text = result.plain_text || (result.ocr_text || []).map((i) => i.text || "").join(" ");
+  return { ok: Boolean(result.ok), figure_id: figureId, image_path: result.image_path || "", ocr: { text_original: text, text_normalized: normalizeForSearch(text), bbox: result.bbox || [], confidence: Number(result.confidence_avg || 0), tokens: splitTokens(text) }, warnings: result.warnings || [], message: result.message || "" };
 }
 
 export function buildFigureEvidenceContract(tool, filename, query, figures) {
