@@ -18,7 +18,6 @@ const isDoctorCoreCheck = createRuntimePort("isDoctorCoreCheck");
 const listEvalFixtureFiles = createRuntimePort("listEvalFixtureFiles");
 const loadEvalCases = createRuntimePort("loadEvalCases");
 const normalizeStringArray = createRuntimePort("normalizeStringArray");
-const nowIso = createRuntimePort("nowIso");
 const validateDriverProfileCatalog = createRuntimePort("validateDriverProfileCatalog");
 
 
@@ -196,9 +195,9 @@ export const TOOL_USAGE_CATALOG = {
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
   extract_layout_tables_from_pages: { when: "Wide tables where text extraction may collapse columns.", next: "visual_review_handoff_pack/add_visual_evidence", trust: "layout hint" },
-  render_figure: { when: "Render a figure_id or explicit page+bbox to a cached PNG crop for OCR/vision review.", next: "ocr_figure or inspect_figure", trust: "rendered visual provenance" },
-  ocr_figure: { when: "Run lazy optional OCR over a rendered figure crop.", next: "inspect_figure/read_pdf_pages for context", trust: "supplemental OCR; verify important labels visually" },
-  inspect_figure: { when: "Build a figure evidence pack with render path, OCR labels, context, and conservative warnings.", next: "add_visual_evidence or verify against manual text/register tools", trust: "evidence pack; connector topology remains unverified" },
+  render_figure: { when: "Hidden legacy compatibility path only; do not advertise in normal workflows.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
+  ocr_figure: { when: "Hidden legacy compatibility path only; OCR is optional search metadata, not semantic truth.", next: "ocr_figure_for_search only when search keywords need OCR", trust: "deprecated compatibility" },
+  inspect_figure: { when: "Hidden legacy compatibility path only; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   visual_review_handoff_pack: { when: "Prepare human/agent visual review for figures, pinmux, bit tables, timing diagrams.", next: "add_visual_evidence/verify_visual_evidence", trust: "handoff" },
   verify_visual_evidence: { when: "Mark visual/table evidence as verified/rejected/needs_verification.", next: "driver_completeness_checklist/source_review_prompt_pack", trust: "verified visual evidence if status=verified" },
   driver_completeness_checklist: { when: "Create subsystem/profile checklist for source review.", next: "source_review_prompt_pack", trust: "review contract" },
@@ -207,7 +206,7 @@ export const TOOL_USAGE_CATALOG = {
   verify_register_usage: { when: "Verify a readl/writel/regmap/register operation from source against manual semantics.", next: "compare_driver_requirements", trust: "strongest register-operation evidence" },
   compare_driver_requirements: { when: "Final source-observation vs manual/profile matrix.", next: "final report/patch plan", trust: "synthesis; depends on source observations quality" },
   plan_manual_workflow: { when: "First tool when task is ambiguous or multi-step.", next: "follow recommendedCalls", trust: "router" },
-  eval_health_check: { when: "After modifying MCP code/eval/profile files or when using Step 40 control-plane actions such as ping/index_status_lite/rebuild_artifact/job_status/list_jobs.", next: "run_eval/npm test or eval_health_check(step40_action=compat_report)", trust: "static hardening and Step 40 compatibility control-plane" },
+  eval_health_check: { when: "After modifying MCP code/eval/profile files for eval/static health only.", next: "run_eval/npm test; use mcp_control(action=\"compat_report\") for control-plane compatibility", trust: "static hardening only" },
   run_eval: { when: "Run regression/smoke cases against a manual.", next: "fix failures or add fixtures", trust: "regression signal" },
 };
 
@@ -237,7 +236,7 @@ export function buildStep407CompatibilityReport() {
   return {
     schemaVersion: "step40.7.compatibility.v1",
     serverVersion: SERVER_VERSION,
-    createdAt: nowIso(),
+    createdAt: new Date().toISOString(),
     mode: STEP40_COMPAT_MODE,
     health: "PASS",
     supportedInterface: "mcp_control(action=...)",

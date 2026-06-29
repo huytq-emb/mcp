@@ -412,7 +412,7 @@ export function formatRenderResult(result) {
   }
   lines.push("");
   lines.push("Suggested follow-up:");
-  lines.push(`- get_figure_context(filename="${result.filename}", page=${result.page}, include_pages=1, include_layout_tables=true)`);
+  lines.push(`- search_figures(filename="${result.filename}", page=${result.page}, limit=5) then get_figure_context_pack(filename="${result.filename}", figure_id="<figure-id>")`);
   lines.push(`- read_pdf_pages(filename="${result.filename}", start_page=${result.page}, end_page=${result.page})`);
   return lines.join("\n");
 }
@@ -624,7 +624,7 @@ export function formatRegionRenderResult(result, title = "Rendered PDF Region") 
   lines.push("This cropped/zoomed image is intended for vision review of diagrams, timing charts, clock trees, block diagrams, and dense tables.");
   lines.push("");
   lines.push("Suggested follow-up:");
-  lines.push(`- get_figure_context(filename="${result.filename}", page=${result.page}, include_pages=1, include_layout_tables=true)`);
+  lines.push(`- search_figures(filename="${result.filename}", page=${result.page}, limit=5) then get_figure_context_pack(filename="${result.filename}", figure_id="<figure-id>")`);
   lines.push(`- render_pdf_page(filename="${result.filename}", page=${result.page}, dpi=${result.dpi}, format="${result.outputFormat}")`);
   return lines.join("\n");
 }

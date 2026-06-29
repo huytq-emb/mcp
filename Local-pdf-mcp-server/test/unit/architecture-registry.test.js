@@ -34,7 +34,7 @@ test("public MCP catalog preserves names and schemas", () => {
   const digest = createHash("sha256").update(JSON.stringify(PUBLIC_TOOL_DEFINITIONS)).digest("hex");
   assert.match(digest, /^[a-f0-9]{64}$/);
   const healthTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "eval_health_check");
-  assert.equal(Object.hasOwn(healthTool.inputSchema.properties, "step40_action"), false);
+  assert.equal(healthTool.inputSchema.properties.step40_action.description.includes("Deprecated"), true);
   assert.doesNotMatch(healthTool.description, /job|artifact|cache control/i);
   const controlTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "mcp_control");
   assert.equal(controlTool.inputSchema.required.includes("action"), true);
@@ -92,4 +92,48 @@ test("worker CLI handles rebuild payload failures without missing refresh import
       /filename is required/.test(error.stderr) &&
       !/refreshJobsStateFromDisk is not defined/.test(error.stderr),
   );
+});
+
+
+test("mcp_control validates required action arguments and eval_health_check step40 shim migrates", async () => {
+  const registry = createRuntimeToolRegistry();
+  const deprecated = await registry.dispatchTool("eval_health_check", { step40_action: "ping" });
+  assert.match(deprecated.content[0].text, /Deprecated: use mcp_control\(action=\.\.\.\) instead/);
+  assert.doesNotMatch(deprecated.content[0].text, /MCP control ping: OK/);
+
+  await assert.rejects(
+    registry.dispatchTool("mcp_control", { action: "rebuild_artifact" }),
+    /filename is required for mcp_control\(action="rebuild_artifact"\)/,
+  );
+  await assert.rejects(
+    registry.dispatchTool("mcp_control", { action: "job_status" }),
+    /job_id is required for mcp_control\(action="job_status"\)/,
+  );
+
+  const compat = await registry.dispatchTool("mcp_control", { action: "compat_report", json: true });
+  const report = JSON.parse(compat.content[0].text);
+  assert.equal(report.supportedInterface, "mcp_control(action=...)");
+  assert.equal(report.deprecatedInterface, "eval_health_check(step40_action=...)");
+  assert.equal(report.notes.some((note) => /supported.*eval_health_check\(step40_action/i.test(note)), false);
+});
+
+test("ultra-lite index status hints recommend mcp_control only", async () => {
+  const registry = createRuntimeToolRegistry();
+  const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf" });
+  const text = result.content[0].text;
+  assert.match(text, /mcp_control\(action="rebuild_artifact"/);
+  assert.match(text, /mcp_control\(action="index_status_lite"/);
+  assert.doesNotMatch(text, /eval_health_check\(step40_action/);
+  assert.doesNotMatch(text, /\bindex_status\(filename=/);
+  assert.doesNotMatch(text, /\brebuild_artifact\(\.\.\./);
+});
+
+test("hidden compatibility handlers warn while remaining unadvertised", async () => {
+  const registry = createRuntimeToolRegistry();
+  for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) {
+    assert.equal(registry.has(name), true, name);
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+  }
+  const ping = await registry.dispatchTool("mcp_server_ping");
+  assert.match(ping.content[0].text, /Deprecated compatibility path\. Prefer mcp_control\(action=\.\.\.\)\./);
 });

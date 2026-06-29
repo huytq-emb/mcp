@@ -14,11 +14,12 @@ export const RENDERS_DIR = DEFAULT_RUNTIME_CONFIG.paths.rendersDir;
 
 export const SERVER_NAME = "local-pdf-mcp-server";
 export const SERVER_VERSION = "7.1.0";
-export const STEP40_COMPAT_MODE = "eval-health-control-plane";
+export const STEP40_COMPAT_MODE = "mcp-control-plane";
 export const STEP40_DIRECT_TOOL_COMPAT_NOTES = [
   "Step 40 direct tool names were observed to be cancelled by some VS Code AI-agent MCP clients even when the server and handler registry were healthy.",
-  "The supported Step 40 interface is eval_health_check(step40_action=...).",
-  "Direct Step 40 tools remain handled internally for backwards compatibility but are no longer advertised in the tools registry."
+  "The supported Step 40 interface is mcp_control(action=...).",
+  "eval_health_check(step40_action=...) is deprecated and now returns only a migration message.",
+  "Direct Step 40 tools remain hidden/internal compatibility paths only and must not be advertised."
 ];
 export const STEP40_CONTROL_ACTIONS = [
   "ping",
@@ -124,7 +125,13 @@ export const JOBS_STATE_WRITE_DELAY_MS = 250;
 // background work starts. setTimeout(..., 0) can still let PDF extraction begin
 // before some clients receive the response, causing opaque "tool call canceled"
 // failures on large manuals.
-export const BACKGROUND_JOB_START_DELAY_MS = 5000;
+function parseBackgroundJobStartDelayMs(env = process.env) {
+  const raw = env.RENESAS_MCP_BACKGROUND_JOB_START_DELAY_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return 5000;
+  const value = Number(String(raw).trim());
+  return Number.isFinite(value) && value >= 0 ? value : 5000;
+}
+export const BACKGROUND_JOB_START_DELAY_MS = parseBackgroundJobStartDelayMs();
 export const WORKER_JOB_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_INDEX_JOB_MODE = "auto";
 export const PYTHON_WORKER_PROTOCOL_VERSION = 1;

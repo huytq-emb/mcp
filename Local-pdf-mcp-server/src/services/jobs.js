@@ -690,8 +690,8 @@ export function getIndexStatusUltraLite(filename) {
     artifacts,
     relatedJobs: [],
     next: [
-      `For detailed artifact checks, call index_status(filename="${filename}", details=true).`,
-      `To avoid blocking the MCP server, run rebuild_artifact(..., background=true) and poll job_status(job_id="...").`,
+      `For detailed artifact checks, call mcp_control(action="index_status_lite", filename="${filename}").`,
+      `To avoid blocking the MCP server, run mcp_control(action="rebuild_artifact", filename="${filename}", artifact="pages") and poll mcp_control(action="job_status", job_id="...") or mcp_control(action="list_jobs").`,
     ],
   };
 }
