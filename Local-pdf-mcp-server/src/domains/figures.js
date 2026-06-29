@@ -48,6 +48,25 @@ function imageAccess(localPath = "") {
   return { local_path: abs, mime_type: "image/png", exists: false, agent_should_open_as_image: true };
 }
 
+function normalizePathForMatch(value = "") {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function isLegacyRenderPath(value = "") {
+  const normalized = normalizePathForMatch(value);
+  return /(^|\/)renders?\//i.test(normalized);
+}
+
+function isCanonicalFigureImagePath(value = "") {
+  const normalized = normalizePathForMatch(value);
+  return /(^|\/)indexes\/cache\/figure-images\//i.test(normalized);
+}
+
+function aiVisibleImagePath(value = "") {
+  const candidate = String(value || "").trim();
+  return candidate && isCanonicalFigureImagePath(candidate) && !isLegacyRenderPath(candidate) ? candidate : "";
+}
+
 async function imageAccessWithExists(localPath = "") {
   const access = imageAccess(localPath);
   access.exists = Boolean(access.local_path && await pathExists(access.local_path));
@@ -58,7 +77,8 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
   const canonical = /^p\d+_f\d{3}$/.test(String(figure.figure_id || "")) ? String(figure.figure_id) : canonicalFigureId(figure.page || 0, index + 1);
   const aliases = [...new Set(legacyFigureIds(figure).filter((alias) => alias && alias !== canonical))];
   const id = canonical;
-  const img = String(figure.image_path || figure.renderPath || figure.render_path || "");
+  const img = aiVisibleImagePath(figure.image_path || "");
+  const legacyIgnored = [figure.renderPath, figure.render_path, isLegacyRenderPath(figure.image_path) ? figure.image_path : ""].map((item) => String(item || "").trim()).filter(Boolean);
   return {
     schemaVersion: 1,
     filename,
@@ -77,8 +97,9 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
     related_bitfields: Array.isArray(figure.related_bitfields) ? figure.related_bitfields : [],
     related_cautions: Array.isArray(figure.related_cautions) ? figure.related_cautions : [],
     related_tables: Array.isArray(figure.related_tables) ? figure.related_tables : [],
-    render: { status: img ? "ready" : "missing", dpi: Number(figure.render?.dpi || 0), width: Number(figure.render?.width || 0), height: Number(figure.render?.height || 0), mtimeMs: Number(figure.render?.mtimeMs || 0) },
+    render: { status: img ? "ready" : "missing", mode: img ? String(figure.render?.mode || "") : "", dpi: Number(figure.render?.dpi || 0), width: Number(figure.render?.width || 0), height: Number(figure.render?.height || 0), mtimeMs: Number(figure.render?.mtimeMs || 0) },
     image_access: { local_path: img ? path.resolve(img) : "", mime_type: "image/png", exists: false, agent_should_open_as_image: true },
+    legacy_render_path_ignored: legacyIgnored[0] || undefined,
     provenance: { sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : String(figure.sourceFingerprint || ""), generatedAt: new Date().toISOString() },
     // Backward-compatible fields used by older tools.
     title: String(figure.title || figure.caption || "").trim(),
@@ -331,7 +352,7 @@ export async function loadFiguresIndex(filename) {
     if (!Array.isArray(data.figures)) return null;
     const source = await getPdfSourceInfo(filename);
     if (!isSamePdfSource(data.source, source)) return null;
-    if (!(data.figures || [])[0]?.figure_id || !(data.figures || [])[0]?.image_access) {
+    if (!(data.figures || [])[0]?.figure_id || !(data.figures || [])[0]?.image_access || (data.figures || []).some((fig) => fig.renderPath || fig.render_path || isLegacyRenderPath(fig.image_path || "") || (fig.image_path && !isCanonicalFigureImagePath(fig.image_path)))) {
       const normalized = await normalizeFigureManifest(filename, data);
       await atomicWriteJson(filePath, normalized).catch(() => {});
       return normalized;
@@ -482,8 +503,8 @@ export async function searchFigures(filename, options = {}) {
     .filter((fig) => fig.match.score > 0)
     .sort((a, b) => b.match.score - a.match.score || a.page - b.page)
     .slice(0, limit)
-    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: fig.image_path || "", match_score: fig.match.score, match_reasons: fig.match.reasons, render: fig.render || { status: "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "" }));
-  return { ok: true, filename, query, results };
+    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: aiVisibleImagePath(fig.image_path || ""), match_score: fig.match.score, match_reasons: fig.match.reasons, render: fig.render || { status: "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "", next_tool: "get_figure_context_pack" }));
+  return { ok: true, filename, query, next_tool: "get_figure_context_pack", results };
 }
 
 export async function listFigureManifest(filename, options = {}) {
@@ -496,15 +517,18 @@ export async function listFigureManifest(filename, options = {}) {
     .filter((fig) => !section || normalizeForSearch(fig.section_title || "").includes(section))
     .sort((a,b) => a.page - b.page || String(a.figure_id || a.id).localeCompare(String(b.figure_id || b.id)))
     .slice(0, limit)
-    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: fig.image_path || "", render_status: fig.render?.status || "missing", nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "" }));
-  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), figureCount: index.figureCount, results };
+    .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: aiVisibleImagePath(fig.image_path || ""), render: { status: fig.render?.status || "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "", next_tool: "get_figure_context_pack" }));
+  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), figureCount: index.figureCount, next_tool: "get_figure_context_pack", results };
 }
 
 export async function getFigureImage(filename, figureId, options = {}) {
   const dpi = clampInteger(options.dpi, 200, MIN_RENDER_DPI, MAX_RENDER_DPI);
   const render = await renderFigureOnDemand({ filename, figure_id: figureId, page: options.page, bbox: options.bbox, scale: Math.max(0.25, dpi / 100), force: Boolean(options.force) });
-  const access = await imageAccessWithExists(render.image_path || "");
-  return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", mode: render.render?.mode || render.render_mode || "crop", reason: render.render?.reason || render.render_reason || "", dpi: Number(render.render?.dpi || dpi || 0), width: Number(render.render?.width || render.width || 0), height: Number(render.render?.height || render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
+  const safeImagePath = aiVisibleImagePath(render.image_path || "");
+  const access = await imageAccessWithExists(safeImagePath);
+  const warnings = [...(render.warnings || [])];
+  if (render.image_path && !safeImagePath) warnings.push("Renderer returned a non-canonical figure image path; it was suppressed from AI-visible output.");
+  return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: safeImagePath, image_access: access, render: { status: render.ok && safeImagePath ? "ready" : "failed", mode: render.render?.mode || render.render_mode || "crop", reason: render.render?.reason || render.render_reason || "", dpi: Number(render.render?.dpi || dpi || 0), width: Number(render.render?.width || render.width || 0), height: Number(render.render?.height || render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok && safeImagePath), warnings, message: render.message || "" };
 }
 
 function normalizeAnchorText(text = "") {
@@ -606,7 +630,7 @@ export function buildFigureEvidenceContract(tool, filename, query, figures) {
   }));
   const inference = [makeInference({ statement: "Figure/visual context is inferred from PDF text captions and nearby text, not from image OCR or vision rendering.", basis: "PDF text layer captions", confidence: "medium", risk: "If the visual object has no extractable caption/text, it may be missed." })];
   const needsVerification = [makeNeedsVerification({ item: "Visual content inside the actual figure/diagram", reason: "Step 31A locates captions/context but does not inspect raster/vector graphics visually.", suggestedTools: ["read_pdf_pages(...)", "extract_layout_tables_from_pages(...)", "open the PDF page visually if the diagram itself is required"] })];
-  return makeEvidenceContract({ tool, filename, query, evidence, inference, needsVerification, warnings: ["Caption index is text-layer based; use it to locate visual pages, then verify the original PDF page."], recommendedNextTools: [`get_figure_context(filename="${filename}", figure_id="<figure-id>")`, `read_pdf_pages(filename="${filename}", start_page=<page>, end_page=<page>)`] });
+  return makeEvidenceContract({ tool, filename, query, evidence, inference, needsVerification, warnings: ["Caption index is text-layer based; use it to locate visual pages, then verify the original PDF page."], recommendedNextTools: [`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`, `read_pdf_pages(filename="${filename}", start_page=<page>, end_page=<page>)`] });
 }
 
 export function formatFigureList(result, mode = "list") {
@@ -637,7 +661,7 @@ export function formatFigureList(result, mode = "list") {
 
   lines.push("", "Suggested follow-up:");
   for (const figure of rows.slice(0, 8)) {
-    lines.push(`- get_figure_context(filename="${result.index.filename}", figure_id="${figure.id}", include_pages=1, include_layout_tables=true)`);
+    lines.push(`- get_figure_context_pack(filename="${result.index.filename}", figure_id="${figure.id}")`);
   }
 
   return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract(mode === "find" ? "find_figure" : "list_figures", result.index.filename, result.query || result.filter || "", rows));
@@ -681,5 +705,5 @@ export function formatFigureContext(result) {
   lines.push(`- extract_layout_tables_from_pages(filename="${result.filename}", start_page=${result.startPage}, end_page=${result.endPage}, kind="all")`);
   lines.push("- If the actual graphic content is required, open/render the original PDF page visually; this tool only indexes text/captions around it.");
 
-  return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract("get_figure_context", result.filename, figure.caption, [figure]));
+  return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract("get_figure_context_pack", result.filename, figure.caption, [figure]));
 }

@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
-import { PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
+import { PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { buildSemanticEvidence, clearOcrHealthCache, getOcrHealth, selectInspectParser } from "../../src/services/ocr.js";
 import { resolvePythonInterpreter } from "../../src/services/python-worker.js";
 import { atomicWriteJson, clearJsonFileCache, getJsonFileCacheStats, getPdfSourceInfo, readJsonCached, safeFigureLookupIndexPath, safeFiguresIndexPath, safePagesCachePath, safePdfPath } from "../../src/core/runtime-helpers.js";
@@ -92,29 +92,22 @@ test("ocr health preflight is cached for repeated OCR unavailable checks", async
   assert.equal(second.ocr_health_cache_hit, true);
 });
 
-test("figure OCR tools are advertised and handled", () => {
+test("legacy figure OCR/render tools are hidden compatibility handlers", () => {
   const registry = createRuntimeToolRegistry();
   for (const name of ["render_figure", "ocr_figure", "inspect_figure"]) {
-    assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
     assert.equal(registry.has(name), true, name);
   }
   assert.equal(registry.advertisedCount, PUBLIC_TOOL_NAMES.length);
 });
 
-test("figure OCR tool schemas expose mode/parser and reject invalid values", async () => {
-  const ocrTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "ocr_figure");
-  const inspectTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "inspect_figure");
-  assert.deepEqual(ocrTool.inputSchema.properties.mode.enum, ["text", "structure", "vl", "auto"]);
-  assert.deepEqual(inspectTool.inputSchema.properties.parser.enum, ["safe", "ocr", "structure", "vl", "auto"]);
-  const registry = createRuntimeToolRegistry();
-  await assert.rejects(
-    registry.dispatchTool("ocr_figure", { filename: "unit-invalid.pdf", mode: "raw_upstream_name" }),
-    /mode/,
-  );
-  await assert.rejects(
-    registry.dispatchTool("inspect_figure", { filename: "unit-invalid.pdf", parser: "pp_structurev3" }),
-    /parser/,
-  );
+test("public figure registry advertises only retrieval-first figure tools", () => {
+  for (const name of ["rebuild_figure_manifest", "list_figures", "search_figures", "get_figure_image", "get_figure_context_pack", "ocr_figure_for_search"]) {
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
+  }
+  for (const name of ["build_figures_index", "find_figure", "get_figure_context", "inspect_figure", "render_figure", "render_figure_page", "render_figure_region", "ocr_figure"]) {
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+  }
 });
 
 test("OCR health reports text structure and VL capability fields", async () => {

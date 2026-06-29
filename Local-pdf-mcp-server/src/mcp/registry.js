@@ -7,6 +7,14 @@ export const HIDDEN_COMPATIBILITY_TOOL_NAMES = Object.freeze([
   "rebuild_artifact",
   "cancel_job",
   "cleanup_jobs",
+  "build_figures_index",
+  "find_figure",
+  "get_figure_context",
+  "inspect_figure",
+  "render_figure",
+  "render_figure_page",
+  "render_figure_region",
+  "ocr_figure",
 ]);
 
 function validateDefinition(definition) {

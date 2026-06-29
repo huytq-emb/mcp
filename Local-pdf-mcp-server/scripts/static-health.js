@@ -44,9 +44,9 @@ const criticalTools = [
   "prepare_driver_task",
   "build_driver_evidence_pack",
   "verify_register_usage",
-  "render_figure",
-  "ocr_figure",
-  "inspect_figure",
+  "rebuild_figure_manifest",
+  "search_figures",
+  "get_figure_context_pack",
 ];
 for (const name of criticalTools) {
   if (!tools.includes(name)) failures.push(`Critical tool missing from registry: ${name}`);

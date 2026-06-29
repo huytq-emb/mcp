@@ -91,6 +91,42 @@ test("list/search do not build missing manifests unless explicitly requested", a
   assert.ok(built.figureCount > 0);
 });
 
+test("manifest normalization ignores legacy render paths and public retrieval does not expose them", async () => {
+  await resetArtifacts();
+  wirePorts();
+  const source = await getPdfSourceInfo(filename);
+  await atomicWriteJson(safeFiguresIndexPath(filename), {
+    schemaVersion: 1,
+    filename,
+    source,
+    sourceFingerprint: `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}`,
+    figureCount: 1,
+    figures: [{
+      figure_id: "p1_f001",
+      page: 1,
+      caption: "Figure 1.1 Example",
+      section_title: "Intro section",
+      nearby_text_preview: "Example context",
+      renderPath: "render/bad-crop.png",
+      render_path: "renders/bad-crop.png",
+      image_path: "render/bad-crop.png",
+    }],
+  });
+
+  const listed = await listFigureManifest(filename, { limit: 5 });
+  assert.equal(listed.results[0].image_path, "");
+  assert.equal(listed.results[0].render.status, "missing");
+  assert.equal(listed.results[0].next_tool, "get_figure_context_pack");
+  assert.doesNotMatch(JSON.stringify(listed), /(^|[\\/])renders?[\\/]/i);
+
+  const found = await searchFigures(filename, { query: "Example" });
+  assert.equal(found.next_tool, "get_figure_context_pack");
+  assert.equal(found.results[0].figure_id, "p1_f001");
+  assert.equal(found.results[0].image_path, "");
+  assert.equal(found.results[0].render.status, "missing");
+  assert.doesNotMatch(JSON.stringify(found), /(^|[\\/])renders?[\\/]/i);
+});
+
 
 test("legacy find_figure can lightweight-build missing manifests when requested", async () => {
   await resetArtifacts();
@@ -130,6 +166,8 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.ok(pack.page_text_after.includes("alpha") || pack.page_text_before.includes("alpha"));
   assert.ok(pack.context_anchor.method);
   assert.equal(pack.agent_instruction.includes("Open image_path"), true);
+  assert.match(pack.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
+  assert.doesNotMatch(pack.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
 });
 
 
@@ -149,6 +187,8 @@ test("context pack returns page fallback image when bbox is missing", async (t) 
   const pack = await getFigureContextPack(filename, manifest.figures[0].figure_id);
   assert.equal(pack.image_access.exists, true);
   assert.match(pack.image_path, /\.png$/);
+  assert.match(pack.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
+  assert.doesNotMatch(pack.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
   assert.equal(pack.image_access.mime_type, "image/png");
   assert.equal(pack.image_access.agent_should_open_as_image, true);
   assert.equal(pack.render.status, "ready");
@@ -172,6 +212,8 @@ test("figure image crop path still works and reports dimensions", async (t) => {
   const result = await getFigureImage(filename, manifest.figures[0].figure_id);
   assert.equal(result.render.mode, "crop");
   assert.equal(result.image_access.exists, true);
+  assert.match(result.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
+  assert.doesNotMatch(result.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
   assert.ok(result.render.width >= 0);
   assert.ok(result.render.height >= 0);
 });
