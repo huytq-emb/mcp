@@ -943,7 +943,8 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
           maxItems: 4,
           description: "PDF point bbox [x0,y0,x1,y1]. Required when figure_id is not provided."
         },
-        scale: { type: "number", description: "PyMuPDF render scale. Default 2.0." },
+        dpi: { type: "number", description: "Requested render DPI. Default 200. Internally mapped to local renderer scale." },
+        scale: { type: "number", description: "Legacy PyMuPDF render scale. Default 2.0." },
         force: { type: "boolean", description: "If true, bypass the cached PNG render. Default false." }
       },
       required: ["filename"],
@@ -982,7 +983,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "inspect_figure",
     description:
-      "Build a hardware-manual figure evidence pack with caption/provenance, OCR or local parser labels, optional surrounding text, normalized semantic evidence, and conservative warnings without inventing arrows/connectors.",
+      "Legacy/experimental. Prefer get_figure_context_pack. By default this returns conservative render/context/OCR-label evidence and instructs agents to verify by opening the PNG; it must not run heavy VL unless explicitly requested.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1068,9 +1069,12 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
       type: "object",
       properties: {
         filename: { type: "string", description: "PDF filename." },
-        filter: { type: "string", description: "Optional substring filter across caption/context, for example clock tree, timing, reset, pin function, interrupt." },
-        kind: { type: "string", description: "Optional kind filter: figure, table, clock-tree, timing-diagram, block-diagram, flow-sequence, pinmux, register-table, interrupt, reset, unknown." },
-        top_k: { type: "number", description: `Maximum candidates to list. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+        page: { type: "number", description: "Optional 1-based page filter." },
+        section: { type: "string", description: "Optional section-title filter." },
+        limit: { type: "number", description: `Maximum records to return. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
+        filter: { type: "string", description: "Legacy optional substring filter across caption/context." },
+        kind: { type: "string", description: "Legacy optional kind filter." },
+        top_k: { type: "number", description: `Legacy maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -1091,6 +1095,42 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
       required: ["filename", "query"],
       additionalProperties: false,
     },
+  },
+
+  {
+    name: "search_figures",
+    description: "Search figure manifest records by caption, section title, nearby text, cached OCR keywords, and related evidence. Does not run heavy OCR or VL parsing by default.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      query: { type: "string", description: "Search query." },
+      page: { type: "number", description: "Optional 1-based page filter." },
+      section: { type: "string", description: "Optional section-title filter." },
+      limit: { type: "number", description: `Maximum records. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+    }, required: ["filename", "query"], additionalProperties: false }
+  },
+  {
+    name: "get_figure_image",
+    description: "Ensure a cached PNG exists for a figure and return image_access metadata so the AI agent can open it visually.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested DPI. Default 200." }
+    }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
+  {
+    name: "get_figure_context_pack",
+    description: "Main AI-agent figure retrieval tool: returns rendered image path, image_access, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string" }, figure_id: { type: "string" }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
+    }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
+  {
+    name: "rebuild_figure_manifest",
+    description: "Build or rebuild <filename>.figures.json without heavy OCR/VL semantic parsing by default.",
+    inputSchema: { type: "object", properties: { filename: { type: "string" }, page: { type: "number", description: "Optional page-limited rebuild hint." }, force: { type: "boolean" } }, required: ["filename"], additionalProperties: false }
+  },
+  {
+    name: "ocr_figure_for_search",
+    description: "Optional lightweight OCR for search indexing only. Cache-aware and not semantic truth.",
+    inputSchema: { type: "object", properties: { filename: { type: "string" }, figure_id: { type: "string" }, force: { type: "boolean" } }, required: ["filename", "figure_id"], additionalProperties: false }
   },
   {
     name: "get_figure_context",
