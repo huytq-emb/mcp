@@ -10,7 +10,7 @@ export function createRuntimeConfig(options = {}) {
     rootDir,
     serverName: options.serverName || "local-pdf-mcp-server",
     serverVersion: options.serverVersion || "7.1.0",
-    step40CompatMode: "eval-health-control-plane",
+    step40CompatMode: "mcp-control-plane",
     paths: {
       documentsDir: path.join(rootDir, "documents"),
       indexDir: path.join(rootDir, "indexes"),

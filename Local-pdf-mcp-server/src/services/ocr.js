@@ -539,7 +539,7 @@ async function resolveFigureTarget(filename, args = {}) {
       return failureFromError(error, "FIGURES_INDEX_UNAVAILABLE", { filename, figure_id: figureId });
     }
     if (!index) {
-      return softFailure("FIGURES_INDEX_UNAVAILABLE", `Figures index is not available for ${filename}. Run build_figures_index first.`, { filename, figure_id: figureId });
+      return softFailure("FIGURES_INDEX_UNAVAILABLE", `Figures index is not available for ${filename}. Run rebuild_figure_manifest first.`, { filename, figure_id: figureId });
     }
     const figure = (index.figures || []).find((item) => figureIdentifiers(item).includes(figureId));
     if (!figure) {

@@ -475,9 +475,9 @@ export function getIndexStatusUltraMinimal(filename) {
     health: "UNKNOWN",
     note: "No filesystem, PDF, job-state, lock, or artifact probing was performed.",
     next: [
-      `Use eval_health_check(step40_action="rebuild_artifact", filename="${safeName}", artifact="pages") to start a detached rebuild.`,
-      `Use eval_health_check(step40_action="index_status_lite", filename="${safeName}") for status checks on MCP clients that cancel direct Step 40 tools.`,
-      `Use eval_health_check(step40_action="compat_report") for the Step 40.7 compatibility contract.`,
+      `Use mcp_control(action="rebuild_artifact", filename="${safeName}", artifact="pages") to start a detached rebuild.`,
+      `Use mcp_control(action="index_status_lite", filename="${safeName}") for status checks.`,
+      `Use mcp_control(action="compat_report") for the Step 40.7 compatibility contract.`,
     ],
   };
 }

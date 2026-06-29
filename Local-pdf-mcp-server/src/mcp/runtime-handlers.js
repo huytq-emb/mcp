@@ -28,6 +28,26 @@ import { buildSourceReviewPromptPack, formatSourceReviewPromptPack } from "../wo
 const extractPdfPages = createRuntimePort("extractPdfPages");
 const getPdfPageCount = createRuntimePort("getPdfPageCount");
 
+const LEGACY_CONTROL_WARNING = "Deprecated compatibility path. Prefer mcp_control(action=...).";
+const LEGACY_FIGURE_WARNING = "Deprecated compatibility path. Prefer search_figures -> get_figure_context_pack.";
+
+function requireStringArg(args, key, action) {
+  const value = String(args?.[key] || "").trim();
+  if (!value) throw new Error(`${key} is required for mcp_control(action="${action}")`);
+  return value;
+}
+
+function legacyTextResult(warning, text) {
+  return textResult([warning, "", text].join("\n"));
+}
+
+function legacyJsonResult(warning, payload) {
+  const next = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? { warning, ...payload, warnings: [warning, ...(Array.isArray(payload.warnings) ? payload.warnings : [])] }
+    : { warning, result: payload };
+  return jsonResult(next);
+}
+
 async function handle_list_pdfs(args = {}, meta = {}) {
   const name = meta.name || "list_pdfs";
     const pdfs = await listPdfFiles();
@@ -74,7 +94,8 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatStep407CompatibilityReport(report));
       }
       if (action === "index_status_lite") {
-        const status = getIndexStatusUltraMinimal(args.filename);
+        const filename = requireStringArg(args, "filename", action);
+        const status = getIndexStatusUltraMinimal(filename);
         if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
         return textResult(formatIndexStatusUltraMinimal(status));
       }
@@ -84,7 +105,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatOcrHealthReport(status));
       }
       if (action === "rebuild_artifact") {
-        const filename = args.filename;
+        const filename = requireStringArg(args, "filename", action);
         const artifact = normalizeArtifactName(args.artifact || "pages");
         const job = await startRebuildArtifactJob(filename, artifact, {
           forceLock: Boolean(args.force_lock),
@@ -108,7 +129,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
       }
       if (action === "job_status") {
         await refreshJobsStateFromDisk();
-        const jobId = String(args.job_id || "").trim();
+        const jobId = requireStringArg(args, "job_id", action);
         const job = jobs.get(jobId);
         return textResult(formatJobStatus(job));
       }
@@ -117,8 +138,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatJobsList());
       }
       if (action === "cancel_job") {
-        const jobId = String(args.job_id || "").trim();
-        if (!jobId) throw new Error("job_id is required");
+        const jobId = requireStringArg(args, "job_id", action);
         const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
         if (!job) return textResult(`Job not found: ${jobId}`);
         return textResult(formatJobStatus(job));
@@ -136,18 +156,22 @@ async function handle_mcp_control(args = {}, meta = {}) {
         ].join("\n"));
       }
       if (action === "cache_status") {
+        requireStringArg(args, "filename", action);
         const status = await getCacheStatus(args);
         return jsonResult(status);
       }
       if (action === "cleanup_cache") {
+        requireStringArg(args, "filename", action);
         const status = await cleanupCache(args);
         return jsonResult(status);
       }
       if (action === "figure_cache_status") {
+        requireStringArg(args, "filename", action);
         const status = await getFigureCacheStatus(args);
         return jsonResult(status);
       }
       if (action === "cleanup_figure_cache") {
+        requireStringArg(args, "filename", action);
         const status = await cleanupFigureCache(args);
         return jsonResult(status);
       }
@@ -465,8 +489,8 @@ async function handle_start_index_pdf(args = {}, meta = {}) {
       `Status: ${job.status}`,
       `Mode: background`,
       "",
-      `Poll: job_status(job_id="${job.id}")`,
-      `List jobs: list_jobs()`,
+      `Poll: mcp_control(action="job_status", job_id="${job.id}")`,
+      `List jobs: mcp_control(action="list_jobs")`,
       `Persistent job state: ${safeJobsStatePath()}`,
     ].join("\n"));
 }
@@ -490,8 +514,8 @@ async function handle_cancel_job(args = {}, meta = {}) {
     const jobId = String(args.job_id || "").trim();
     if (!jobId) throw new Error("job_id is required");
     const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
-    if (!job) return textResult(`Job not found: ${jobId}`);
-    return textResult(formatJobStatus(job));
+    if (!job) return legacyTextResult(LEGACY_CONTROL_WARNING, `Job not found: ${jobId}`);
+    return legacyTextResult(LEGACY_CONTROL_WARNING, formatJobStatus(job));
 }
 
 async function handle_cleanup_jobs(args = {}, meta = {}) {
@@ -499,7 +523,7 @@ async function handle_cleanup_jobs(args = {}, meta = {}) {
     const statuses = Array.isArray(args.statuses) ? args.statuses.map(String) : undefined;
     const olderThanHours = Number(args.older_than_hours || 0);
     const removed = cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
-    return textResult([
+    return legacyTextResult(LEGACY_CONTROL_WARNING, [
       `Removed jobs: ${removed.length}`,
       ...removed.map((id) => `- ${id}`),
       "",
@@ -510,14 +534,14 @@ async function handle_cleanup_jobs(args = {}, meta = {}) {
 
 async function handle_mcp_server_ping(args = {}, meta = {}) {
   const name = meta.name || "mcp_server_ping";
-    return textResult(`MCP server ping: OK\nServer version: ${SERVER_VERSION}\nGenerated: ${nowIso()}`);
+    return legacyTextResult(LEGACY_CONTROL_WARNING, `MCP server ping: OK\nServer version: ${SERVER_VERSION}\nGenerated: ${nowIso()}`);
 }
 
 async function handle_pdf_index_status_lite(args = {}, meta = {}) {
   const name = meta.name || "pdf_index_status_lite";
     const status = getIndexStatusUltraMinimal(args.filename);
-    if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
-    return textResult(formatIndexStatusUltraMinimal(status));
+    if (Boolean(args.json)) return legacyJsonResult(LEGACY_CONTROL_WARNING, status);
+    return legacyTextResult(LEGACY_CONTROL_WARNING, formatIndexStatusUltraMinimal(status));
 }
 
 async function handle_index_status(args = {}, meta = {}) {
@@ -526,13 +550,13 @@ async function handle_index_status(args = {}, meta = {}) {
     const details = Boolean(args.details);
     if (!details) {
       const status = getIndexStatusUltraMinimal(filename);
-      if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
-      return textResult(formatIndexStatusUltraMinimal(status));
+      if (Boolean(args.json)) return legacyJsonResult(LEGACY_CONTROL_WARNING, status);
+      return legacyTextResult(LEGACY_CONTROL_WARNING, formatIndexStatusUltraMinimal(status));
     }
     await refreshJobsStateFromDisk();
     const status = await getIndexStatus(filename, { probePdf: Boolean(args.probe_pdf) });
-    if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
-    return textResult(formatIndexStatus(status));
+    if (Boolean(args.json)) return legacyJsonResult(LEGACY_CONTROL_WARNING, status);
+    return legacyTextResult(LEGACY_CONTROL_WARNING, formatIndexStatus(status));
 }
 
 async function handle_rebuild_artifact(args = {}, meta = {}) {
@@ -550,19 +574,19 @@ async function handle_rebuild_artifact(args = {}, meta = {}) {
   
     if (background) {
       const job = await startRebuildArtifactJob(filename, artifact, { forceLock, force, chunkSize, chunkOverlap, allowFullRebuild, cascadeDependents });
-      return textResult([
+      return legacyTextResult(LEGACY_CONTROL_WARNING, [
         `Started background artifact rebuild for ${filename}.`,
         `Artifact: ${artifact}`,
         `Job ID: ${job.id}`,
         "",
-        `Poll: job_status(job_id="${job.id}")`,
-        `Check artifacts: index_status(filename="${filename}")`,
+        `Poll: mcp_control(action="job_status", job_id="${job.id}")`,
+        `Check artifacts: mcp_control(action="index_status_lite", filename="${filename}")`,
       ].join("\n"));
     }
   
     const result = await rebuildArtifact(filename, artifact, { forceLock, force, chunkSize, chunkOverlap, allowFullRebuild, cascadeDependents });
     if (result.ok === false) {
-      return textResult([
+      return legacyTextResult(LEGACY_CONTROL_WARNING, [
         `Artifact rebuild did not complete for ${filename}.`,
         `Artifact: ${artifact}`,
         `Error: ${result.error || "unknown"}`,
@@ -573,7 +597,7 @@ async function handle_rebuild_artifact(args = {}, meta = {}) {
       ].filter(Boolean).join("\n"));
     }
     const status = await getIndexStatus(filename);
-    return textResult([
+    return legacyTextResult(LEGACY_CONTROL_WARNING, [
       `Rebuilt artifact for ${filename}.`,
       `Artifact: ${artifact}`,
       `Rebuilt: ${result.rebuilt.join(", ")}`,
@@ -671,7 +695,7 @@ async function handle_index_pdf(args = {}, meta = {}) {
         `Threshold: ${LARGE_PDF_BACKGROUND_PAGE_THRESHOLD} pages`,
         `Job ID: ${job.id}`,
         "",
-        `Poll: job_status(job_id="${job.id}")`,
+        `Poll: mcp_control(action="job_status", job_id="${job.id}")`,
         `Persistent job state: ${safeJobsStatePath()}`,
         `When done, rerun doctor(filename="${filename}") or validate_index(filename="${filename}").`,
         "",
@@ -905,7 +929,7 @@ async function handle_build_figures_index(args = {}, meta = {}) {
   const name = meta.name || "build_figures_index";
     const filename = args.filename;
     const result = await rebuildFigureManifest(filename, { force: Boolean(args.force) });
-    return textResult([
+    return legacyTextResult(LEGACY_FIGURE_WARNING, [
       `Built figures/captions index manifest for ${filename}.`,
       `Compatibility note: build_figures_index is a legacy alias; prefer rebuild_figure_manifest for new clients.`,
       `Path: ${result.manifest_path || safeFiguresIndexPath(filename)}`,
@@ -939,7 +963,7 @@ async function handle_find_figure(args = {}, meta = {}) {
       topK: args.top_k,
       buildIfMissing: Boolean(args.build_if_missing),
     });
-    return textResult(formatFigureList(result, "find"));
+    return legacyTextResult(LEGACY_FIGURE_WARNING, formatFigureList(result, "find"));
 }
 
 
@@ -1096,7 +1120,7 @@ async function handle_get_figure_context(args = {}, meta = {}) {
       includePages: args.include_pages,
       includeLayoutTables: Boolean(args.include_layout_tables),
     });
-    return textResult(formatFigureContext(result));
+    return legacyTextResult(LEGACY_FIGURE_WARNING, formatFigureContext(result));
 }
 
 async function handle_check_pdf_renderers(args = {}, meta = {}) {
@@ -1145,7 +1169,7 @@ async function handle_render_figure_region(args = {}, meta = {}) {
       renderer: args.renderer || "auto",
       includeContext: args.include_context !== false,
     });
-    return textResult(formatRenderFigureRegionResult(result));
+    return legacyTextResult(LEGACY_FIGURE_WARNING, formatRenderFigureRegionResult(result));
 }
 
 async function handle_render_pdf_page(args = {}, meta = {}) {
@@ -1173,7 +1197,7 @@ async function handle_render_figure_page(args = {}, meta = {}) {
       renderer: args.renderer || "auto",
       includeContext: args.include_context !== false,
     });
-    return textResult(formatRenderFigureResult(result));
+    return legacyTextResult(LEGACY_FIGURE_WARNING, formatRenderFigureResult(result));
 }
 
 async function handle_render_figure(args = {}, meta = {}) {
@@ -1186,7 +1210,7 @@ async function handle_render_figure(args = {}, meta = {}) {
       scale: args.scale || (args.dpi ? Number(args.dpi) / 100 : undefined),
       force: Boolean(args.force),
     });
-    return jsonResult(result);
+    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
 }
 
 async function handle_ocr_figure(args = {}, meta = {}) {
@@ -1200,7 +1224,7 @@ async function handle_ocr_figure(args = {}, meta = {}) {
       mode: args.mode === undefined ? undefined : String(args.mode || "").trim(),
       force: Boolean(args.force),
     });
-    return jsonResult(result);
+    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
 }
 
 async function handle_inspect_figure(args = {}, meta = {}) {
@@ -1216,7 +1240,7 @@ async function handle_inspect_figure(args = {}, meta = {}) {
       context_pages: args.context_pages,
       force: Boolean(args.force),
     });
-    return jsonResult(result);
+    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
 }
 
 async function handle_extract_layout_tables_from_pages(args = {}, meta = {}) {

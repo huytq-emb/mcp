@@ -141,16 +141,14 @@ export function figureCandidateCommandLines(filename, figure, options = {}) {
   const includeRender = options.includeRenderCommands !== false;
   const lines = [];
   if (figure?.id) {
-    lines.push(`get_figure_context(filename="${filename}", figure_id="${figureId}", include_pages=1, include_layout_tables=${includeLayout ? "true" : "false"})`);
+    lines.push(`get_figure_context_pack(filename="${filename}", figure_id="${figureId}")`);
     if (includeRender) {
-      lines.push(`render_figure_page(filename="${filename}", figure_id="${figureId}", dpi=180, format="png")`);
-      lines.push(`render_figure_region(filename="${filename}", figure_id="${figureId}", region="auto", zoom=2, dpi=180, format="png")`);
+      lines.push(`open image_path from get_figure_context_pack visually`);
     }
   } else if (page) {
-    lines.push(`get_figure_context(filename="${filename}", page=${page}, query="${query}", include_pages=1, include_layout_tables=${includeLayout ? "true" : "false"})`);
+    lines.push(`search_figures(filename="${filename}", query="${query}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
     if (includeRender) {
-      lines.push(`render_figure_page(filename="${filename}", page=${page}, query="${query}", dpi=180, format="png")`);
-      lines.push(`render_figure_region(filename="${filename}", page=${page}, query="${query}", region="auto", zoom=2, dpi=180, format="png")`);
+      lines.push(`open image_path from get_figure_context_pack visually`);
     }
   }
   if (page) {
@@ -205,14 +203,14 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
 
   const primaryFigure = context?.figure || figures[0] || null;
   const workflow = [
-    `find_figure(filename="${filename}", query="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`,
+    `search_figures(filename="${filename}", query="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", limit=${topK})`,
   ];
   if (primaryFigure) workflow.push(...figureCandidateCommandLines(filename, primaryFigure, { query, includeLayoutTables, includeRenderCommands }));
   else if (page) workflow.push(...figureCandidateCommandLines(filename, null, { page, query, includeLayoutTables, includeRenderCommands }));
   else {
     workflow.push(`list_figures(filename="${filename}", filter="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`);
-    workflow.push(`get_figure_context(filename="${filename}", figure_id="<figure-id>", include_pages=1, include_layout_tables=${includeLayoutTables ? "true" : "false"})`);
-    if (includeRenderCommands) workflow.push(`render_figure_region(filename="${filename}", figure_id="<figure-id>", region="auto", zoom=2, dpi=180, format="png")`);
+    workflow.push(`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
+    if (includeRenderCommands) workflow.push(`open image_path from get_figure_context_pack visually`);
   }
 
   return {
@@ -572,10 +570,10 @@ export async function getVisualEvidence(filename, evidenceId) {
 
 export function buildVisualEvidenceRecommendedTools(filename, entry) {
   const tools = [];
-  if (entry.figureId) tools.push(`get_figure_context(filename="${filename}", figure_id="${entry.figureId}", include_pages=1, include_layout_tables=true)`);
-  else if (entry.page) tools.push(`get_figure_context(filename="${filename}", page=${entry.page}, query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", include_pages=1, include_layout_tables=true)`);
+  if (entry.figureId) tools.push(`get_figure_context_pack(filename="${filename}", figure_id="${entry.figureId}")`);
+  else if (entry.page) tools.push(`search_figures(filename="${filename}", query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
   if (entry.page) tools.push(`read_pdf_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
-  if (entry.page) tools.push(`render_figure_region(filename="${filename}", page=${entry.page}, query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", region="auto", zoom=2, dpi=180, format="png")`);
+  if (entry.page) tools.push(`open image_path from get_figure_context_pack visually`);
   for (const reg of (entry.relatedRegisters || []).slice(0, 3)) {
     tools.push(`verify_register_usage(filename="${filename}", register="${quoteForPromptCall(reg)}", operation="<operation related to visual evidence>", access_type="auto", intent="auto")`);
   }
@@ -836,8 +834,8 @@ export function visualEvidenceVerificationRequirements(entry) {
 
 export function visualEvidenceVerificationSuggestedTools(filename, entry) {
   const tools = [];
-  if (entry.figureId) tools.push(`get_figure_context(filename="${filename}", figure_id="${entry.figureId}", include_pages=1, include_layout_tables=true)`);
-  else if (entry.page) tools.push(`get_figure_context(filename="${filename}", page=${entry.page}, query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", include_pages=1, include_layout_tables=true)`);
+  if (entry.figureId) tools.push(`get_figure_context_pack(filename="${filename}", figure_id="${entry.figureId}")`);
+  else if (entry.page) tools.push(`search_figures(filename="${filename}", query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
   if (entry.page) tools.push(`read_pdf_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
   if (entry.page && /pinmux|pfc|pmc|pin|port|function|selector/i.test(visualEvidenceSearchText(entry))) {
     tools.push(`extract_pinmux_table(filename="${filename}", start_page=${entry.page}, end_page=${entry.page}, filter="${quoteForPromptCall(entry.query || "pin function")}")`);

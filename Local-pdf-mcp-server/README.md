@@ -114,7 +114,7 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 ### Tool call canceled
 
 - Use background mode.
-- Use `mcp_control(action="job_status")`.
+- Use `mcp_control(action="list_jobs")`, then `mcp_control(action="job_status", job_id="...")`.
 - Avoid foreground full rebuilds on large manuals.
 
 ### Large PDF timeout

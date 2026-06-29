@@ -158,7 +158,8 @@ const ALL_TOOL_DEFINITIONS = [
         create_default: { type: "boolean", description: "Create default eval/profile files before checking. Default true." },
         include_profiles: { type: "boolean", description: "Check driver_profiles/*.json and eval/profiles/*.json. Default true." },
         include_fixtures: { type: "boolean", description: "Check eval/fixtures/*.json. Default true." },
-        write_report: { type: "boolean", description: "Save indexes/eval-health-report.json and .txt. Default true." }
+        write_report: { type: "boolean", description: "Save indexes/eval-health-report.json and .txt. Default true." },
+        step40_action: { type: "string", description: "Deprecated migration shim only. Use mcp_control(action=...) instead." }
       },
       additionalProperties: false,
     },

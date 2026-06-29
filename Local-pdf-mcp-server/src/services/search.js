@@ -1055,7 +1055,7 @@ export function buildHybridSearchEvidenceContract(payload) {
       needsVerification.push(makeNeedsVerification({
         item: "OCR-derived figure labels and diagram relationships",
         reason: "Figure OCR is supplemental only and can misread small labels or connector names.",
-        suggestedTools: ["get_figure_context(...)", "render_figure_region(...)", "read_pdf_pages(...) around the figure page"],
+        suggestedTools: ["search_figures(...)", "get_figure_context_pack(...)", "read_pdf_pages(...) around the figure page"],
       }));
     }
   }
@@ -1073,8 +1073,8 @@ export function buildHybridSearchEvidenceContract(payload) {
     ],
     recommendedNextTools: [
       `read_pdf_chunk(filename="${payload.filename}", chunk_id="<chunk-id>")`,
-      hasFigureOcrEvidence ? `get_figure_context(filename="${payload.filename}", figure_id="<figure-id>")` : "",
-      hasFigureOcrEvidence ? `render_figure_region(filename="${payload.filename}", figure_id="<figure-id>")` : "",
+      hasFigureOcrEvidence ? `get_figure_context_pack(filename="${payload.filename}", figure_id="<figure-id>")` : "",
+      hasFigureOcrEvidence ? `open the image_path returned by get_figure_context_pack visually` : "",
       `extract_bitfield_table(filename="${payload.filename}", register="<register>")`,
       `get_cautions_for_register(filename="${payload.filename}", register="<register>")`,
     ],
@@ -1129,7 +1129,7 @@ export function formatHybridSearchResults(payload) {
         `Reasons: ${(result.hybridReasons || []).join(", ") || "figure OCR match"}`,
         "Evidence lines:",
         evidence,
-        `Suggested figure context: get_figure_context(filename="${result.filename}", figure_id="${result.figureUid || result.figure_uid || result.id}")`,
+        `Suggested figure context: get_figure_context_pack(filename="${result.filename}", figure_id="${result.figureUid || result.figure_uid || result.id}")`,
         `Suggested page read: read_pdf_pages(filename="${result.filename}", start_page=${result.page}, end_page=${Math.min(result.page + DEFAULT_PAGE_RANGE - 1, payload.context?.pageCount || result.page + DEFAULT_PAGE_RANGE - 1)})`,
         "Verification: OCR-derived; verify labels against the rendered figure/manual page before using as driver fact.",
         "Preview:",
