@@ -881,7 +881,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "render_figure_region",
     description:
-      "Step 31C: locate a figure/table/diagram by figure_id or page/query, estimate a crop region around/above/below the caption, render the page, crop the region, and optionally zoom it. Use for timing diagrams, clock trees, reset flows, and block diagrams after find_figure/get_figure_context.",
+      "Legacy visual-review crop helper. Prefer get_figure_image or get_figure_context_pack for manifest-backed figure PNG access; use this only when an automatic around/above/below-caption crop is needed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -909,7 +909,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "render_figure_page",
     description:
-      "Step 31B: locate a figure/table/diagram page using figure_id or page/query, then render that page for visual review. Use after find_figure/list_figures/get_figure_context.",
+      "Legacy figure-aware full-page render helper. Prefer get_figure_context_pack for single-figure analysis; use this when the AI agent needs the entire source page image.",
     inputSchema: {
       type: "object",
       properties: {
@@ -929,7 +929,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "render_figure",
     description:
-      "Render an on-demand PNG crop for a figure or explicit PDF page bbox using PyMuPDF. Use this when an AI agent needs the actual figure image for OCR/visual inspection without rebuilding full-manual OCR.",
+      "Low-level render primitive for a figure_id or explicit page+bbox. Prefer get_figure_image for the retrieval-first image access contract; use render_figure for debugging, explicit bbox renders, or compatibility.",
     inputSchema: {
       type: "object",
       properties: {
@@ -943,7 +943,8 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
           maxItems: 4,
           description: "PDF point bbox [x0,y0,x1,y1]. Required when figure_id is not provided."
         },
-        scale: { type: "number", description: "PyMuPDF render scale. Default 2.0." },
+        dpi: { type: "number", description: "Requested render DPI. Default 200. Internally mapped to local renderer scale." },
+        scale: { type: "number", description: "Legacy PyMuPDF render scale. Default 2.0." },
         force: { type: "boolean", description: "If true, bypass the cached PNG render. Default false." }
       },
       required: ["filename"],
@@ -953,7 +954,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "ocr_figure",
     description:
-      "Run optional lazy OCR or local figure parsing over an on-demand rendered hardware-manual figure crop. Text mode preserves legacy PaddleOCR label extraction; structure mode uses document-structure parsing when installed; VL mode is optional and returns warnings when unavailable.",
+      "Advanced/legacy OCR parser. Prefer ocr_figure_for_search for lightweight search indexing. This tool can still run optional local text/structure/VL modes when explicitly requested, but heavy modes are not part of normal figure retrieval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -982,7 +983,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "inspect_figure",
     description:
-      "Build a hardware-manual figure evidence pack with caption/provenance, OCR or local parser labels, optional surrounding text, normalized semantic evidence, and conservative warnings without inventing arrows/connectors.",
+      "Legacy/experimental. Prefer get_figure_context_pack. By default this returns conservative render/context/OCR-label evidence and instructs agents to verify by opening the PNG; it must not run heavy VL unless explicitly requested.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1050,11 +1051,12 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "build_figures_index",
     description:
-      "Step 31A: build or rebuild a persistent .figures.json index from page text/captions. This is a lightweight visual-context index for Figure/Table/Clock tree/Timing/Block diagram captions and nearby text. It does not OCR images; it indexes captions and surrounding text so the agent can locate pages that may require visual inspection.",
+      "Legacy compatibility alias for rebuild_figure_manifest. Builds or rebuilds the lightweight .figures.json retrieval manifest from page text/captions without OCR/VL semantic parsing by default. New clients should call rebuild_figure_manifest.",
     inputSchema: {
       type: "object",
       properties: {
-        filename: { type: "string", description: "PDF filename, for example GPIO.pdf or hardware manual PDF." }
+        filename: { type: "string", description: "PDF filename, for example GPIO.pdf or hardware manual PDF." },
+        force: { type: "boolean", description: "Force rebuild even if a valid manifest exists. Prefer rebuild_figure_manifest.force for new clients." }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -1068,9 +1070,12 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
       type: "object",
       properties: {
         filename: { type: "string", description: "PDF filename." },
-        filter: { type: "string", description: "Optional substring filter across caption/context, for example clock tree, timing, reset, pin function, interrupt." },
-        kind: { type: "string", description: "Optional kind filter: figure, table, clock-tree, timing-diagram, block-diagram, flow-sequence, pinmux, register-table, interrupt, reset, unknown." },
-        top_k: { type: "number", description: `Maximum candidates to list. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+        page: { type: "number", description: "Optional 1-based page filter." },
+        section: { type: "string", description: "Optional section-title filter." },
+        limit: { type: "number", description: `Maximum records to return. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
+        filter: { type: "string", description: "Legacy optional substring filter across caption/context." },
+        kind: { type: "string", description: "Legacy optional kind filter." },
+        top_k: { type: "number", description: `Legacy maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -1079,7 +1084,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "find_figure",
     description:
-      "Step 31A: search figure/table/diagram captions and nearby context. Use this to locate clock trees, timing diagrams, block diagrams, reset flows, interrupt routes, or pinmux overview figures before calling get_figure_context/read_pdf_pages.",
+      "Legacy text-formatted figure search. Prefer search_figures for retrieval-first JSON results ranked across caption, section title, nearby text, cached OCR keywords, and related evidence.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1092,10 +1097,46 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
       additionalProperties: false,
     },
   },
+
+  {
+    name: "search_figures",
+    description: "Search figure manifest records by caption, section title, nearby text, cached OCR keywords, and related evidence. Does not run heavy OCR or VL parsing by default.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      query: { type: "string", description: "Search query." },
+      page: { type: "number", description: "Optional 1-based page filter." },
+      section: { type: "string", description: "Optional section-title filter." },
+      limit: { type: "number", description: `Maximum records. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+    }, required: ["filename", "query"], additionalProperties: false }
+  },
+  {
+    name: "get_figure_image",
+    description: "Ensure a cached PNG exists for a figure and return image_access metadata so the AI agent can open it visually.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested DPI. Default 200." }
+    }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
+  {
+    name: "get_figure_context_pack",
+    description: "Main AI-agent figure retrieval tool: returns rendered image path, image_access, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string" }, figure_id: { type: "string" }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
+    }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
+  {
+    name: "rebuild_figure_manifest",
+    description: "Build or rebuild <filename>.figures.json without heavy OCR/VL semantic parsing by default.",
+    inputSchema: { type: "object", properties: { filename: { type: "string" }, page: { type: "number", description: "Optional page-limited rebuild hint." }, force: { type: "boolean" } }, required: ["filename"], additionalProperties: false }
+  },
+  {
+    name: "ocr_figure_for_search",
+    description: "Optional lightweight OCR for search indexing only. Cache-aware and not semantic truth.",
+    inputSchema: { type: "object", properties: { filename: { type: "string" }, figure_id: { type: "string" }, force: { type: "boolean" } }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
   {
     name: "get_figure_context",
     description:
-      "Step 31A: return caption, nearby text, headings, candidate layout tables, and suggested follow-up reads for a figure/table/diagram. Use figure_id from list_figures/find_figure or pass a page/query. This is not OCR/vision; it gives the agent the best text/layout context around a visual object.",
+      "Legacy text-formatted context helper. Prefer get_figure_context_pack, which returns image_path, image_access, before/after text, related evidence, and an explicit instruction for the AI agent to open the PNG visually.",
     inputSchema: {
       type: "object",
       properties: {

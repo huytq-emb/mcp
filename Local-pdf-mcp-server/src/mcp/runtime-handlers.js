@@ -5,7 +5,7 @@ import { formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.
 import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
-import { buildFiguresIndex, findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures } from "../domains/figures.js";
+import { findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch } from "../domains/figures.js";
 import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../domains/manual-intelligence.js";
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
@@ -18,7 +18,7 @@ import { buildPdfIndex, formatChunkTypeStats, formatRegisterIndexResults, format
 import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob, writeArtifactManifest } from "../services/jobs.js";
 import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth, inspectFigureOnDemand, ocrFigureOnDemand, renderFigureOnDemand } from "../services/ocr.js";
 import { getHybridRuntimeStatus } from "../services/python-worker.js";
-import { getPagesCache, loadPagesCache } from "../services/pdf.js";
+import { loadPagesCache } from "../services/pdf.js";
 import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, loadBitfieldsIndex, searchPdfIndex, searchSectionsIndex } from "../services/search.js";
 import { buildDriverEvidencePack, buildDriverEvidencePackContract, buildDriverTaskPlan, buildDriverTaskPlanEvidenceContract, buildSectionQueries, formatDriverEvidencePack, formatDriverTaskPlan, formatVerifyRegisterUsage, multiQuerySearch, normalizeStringArray, verifyRegisterUsage } from "../workflows/driver-pack.js";
 import { buildManualWorkflowPlan, buildStep407CompatibilityReport, formatEvalHealthReport, formatManualWorkflowPlan, formatStep407CompatibilityReport, formatToolUsage, maybeWriteEvalHealthReport, runEvalHealthCheck } from "../workflows/manual-workflow.js";
@@ -898,22 +898,23 @@ async function handle_list_bitfields(args = {}, meta = {}) {
 async function handle_build_figures_index(args = {}, meta = {}) {
   const name = meta.name || "build_figures_index";
     const filename = args.filename;
-    const pageCache = await getPagesCache(filename);
-    const index = await buildFiguresIndex(filename, pageCache);
+    const result = await rebuildFigureManifest(filename, { force: Boolean(args.force) });
     return textResult([
-      `Built figures/captions index for ${filename}.`,
-      `Path: ${safeFiguresIndexPath(filename)}`,
-      `Pages: ${index.pageCount}`,
-      `Figures/captions: ${index.figureCount}`,
-      `Kind stats: ${JSON.stringify(index.kindStats || {})}`,
+      `Built figures/captions manifest for ${filename}.`,
+      `Compatibility note: build_figures_index is a legacy alias; prefer rebuild_figure_manifest for new clients.`,
+      `Path: ${result.manifest_path || safeFiguresIndexPath(filename)}`,
+      `Pages: ${result.pageCount || 0}`,
+      `Figures/captions: ${result.figureCount || 0}`,
+      `Kind stats: ${JSON.stringify(result.kindStats || {})}`,
       "",
-      `Next: list_figures(filename="${filename}")`,
+      `Next: list_figures(filename="${filename}") or search_figures(filename="${filename}", query="...")`,
     ].join("\n"));
 }
 
 async function handle_list_figures(args = {}, meta = {}) {
   const name = meta.name || "list_figures";
     const filename = args.filename;
+    if (args.page || args.section || args.limit) return jsonResult(await listFigureManifest(filename, { page: args.page, section: args.section, limit: args.limit ?? args.top_k }));
     const result = await listFigures(filename, {
       filter: String(args.filter || "").trim(),
       kind: String(args.kind || "").trim(),
@@ -931,6 +932,32 @@ async function handle_find_figure(args = {}, meta = {}) {
       topK: args.top_k,
     });
     return textResult(formatFigureList(result, "find"));
+}
+
+
+async function handle_search_figures(args = {}, meta = {}) {
+  const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, limit: args.limit ?? args.top_k });
+  return jsonResult(result);
+}
+
+async function handle_get_figure_image(args = {}, meta = {}) {
+  const result = await getFigureImage(args.filename, String(args.figure_id || "").trim(), { dpi: args.dpi });
+  return jsonResult(result);
+}
+
+async function handle_get_figure_context_pack(args = {}, meta = {}) {
+  const result = await getFigureContextPack(args.filename, String(args.figure_id || "").trim(), { include_ocr: Boolean(args.include_ocr), include_tables: args.include_tables !== false, include_cautions: args.include_cautions !== false });
+  return jsonResult(result);
+}
+
+async function handle_rebuild_figure_manifest(args = {}, meta = {}) {
+  const result = await rebuildFigureManifest(args.filename, { page: args.page, force: Boolean(args.force) });
+  return jsonResult(result);
+}
+
+async function handle_ocr_figure_for_search(args = {}, meta = {}) {
+  const result = await ocrFigureForSearch(args.filename, String(args.figure_id || "").trim(), { force: Boolean(args.force) });
+  return jsonResult(result);
 }
 
 async function handle_add_visual_evidence(args = {}, meta = {}) {
@@ -1143,7 +1170,7 @@ async function handle_render_figure(args = {}, meta = {}) {
       figure_id: String(args.figure_id || "").trim(),
       page: args.page,
       bbox: args.bbox,
-      scale: args.scale,
+      scale: args.scale || (args.dpi ? Number(args.dpi) / 100 : undefined),
       force: Boolean(args.force),
     });
     return jsonResult(result);
@@ -1745,6 +1772,11 @@ export function createRuntimeHandlers(_context = null) {
     "build_figures_index": handle_build_figures_index,
     "list_figures": handle_list_figures,
     "find_figure": handle_find_figure,
+    "search_figures": handle_search_figures,
+    "get_figure_image": handle_get_figure_image,
+    "get_figure_context_pack": handle_get_figure_context_pack,
+    "rebuild_figure_manifest": handle_rebuild_figure_manifest,
+    "ocr_figure_for_search": handle_ocr_figure_for_search,
     "add_visual_evidence": handle_add_visual_evidence,
     "list_visual_evidence": handle_list_visual_evidence,
     "get_visual_evidence": handle_get_visual_evidence,
