@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath } from "../core/runtime-helpers.js";
+import crypto from "node:crypto";
+import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath, safeTablesIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION, MAX_RENDER_DPI, MIN_RENDER_DPI } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
@@ -90,6 +91,9 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
     bbox: Array.isArray(figure.bbox) ? figure.bbox : [],
     image_path: img,
     caption: String(figure.caption || figure.title || "").trim(),
+    artifact_type: String(figure.artifact_type || "").trim() || undefined,
+    number: String(figure.number || "").trim(),
+    classificationReasons: Array.isArray(figure.classificationReasons) ? figure.classificationReasons : [],
     section_title: figureSectionTitle(figure),
     nearby_text_preview: figureNearbyPreview(figure),
     ocr_keywords: Array.isArray(figure.ocr_keywords) ? figure.ocr_keywords : [],
@@ -103,13 +107,14 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
     provenance: { sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : String(figure.sourceFingerprint || ""), generatedAt: new Date().toISOString() },
     // Backward-compatible fields used by older tools.
     title: String(figure.title || figure.caption || "").trim(),
+    source: String(figure.source || "").trim() || undefined,
     kind: String(figure.kind || figure.type || "figure").trim() || "figure",
     type: String(figure.type || figure.kind || "Figure").trim() || "Figure",
     headings: Array.isArray(figure.headings) ? figure.headings : [],
     contextLines: Array.isArray(figure.contextLines) ? figure.contextLines : [],
     contextPreview: figureNearbyPreview(figure),
     confidence: Number(figure.confidence || 50),
-    searchText: normalizeForSearch([figure.caption, figure.title, figureSectionTitle(figure), figureNearbyPreview(figure), ...(Array.isArray(figure.ocr_keywords) ? figure.ocr_keywords : [])].join("\n")),
+    searchText: normalizeForSearch([figure.caption, figure.title, figure.kind, figure.artifact_type, figureSectionTitle(figure), figureNearbyPreview(figure), ...(Array.isArray(figure.ocr_keywords) ? figure.ocr_keywords : [])].join("\n")),
   };
 }
 
@@ -129,6 +134,129 @@ async function normalizeFigureManifest(filename, index) {
     figures.push(rec);
   }
   return { ...index, schemaVersion: 1, filename, source, sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "", figureCount: figures.length, figures };
+}
+
+
+function stableShortHash(text = "") {
+  return crypto.createHash("sha1").update(String(text || "")).digest("hex").slice(0, 12);
+}
+
+function tableCaptionId(filename, page, number, lineIndex, sourceFingerprint = "") {
+  const normalizedNumber = normalizeFigureNumber(number || "table").toLowerCase() || "table";
+  const fingerprint = stableShortHash([filename, page, normalizedNumber, lineIndex, sourceFingerprint].join("|"));
+  return `tblcap-p${Number(page || 0)}-${normalizedNumber}-${fingerprint}`.replace(/[^A-Za-z0-9_.-]+/g, "-");
+}
+
+function cleanCaptionTitle(value = "") {
+  return String(value || "").replace(/^[\s:.-]+/, "").replace(/\s+/g, " ").trim();
+}
+
+export function extractTableCaptionsFromPageText(pageText = "", pageNumber = 0, options = {}) {
+  const filename = String(options.filename || "").trim();
+  const sourceFingerprint = String(options.sourceFingerprint || "").trim();
+  const headings = Array.isArray(options.headings) ? options.headings : [];
+  const section_title = String(options.section_title || headings[0] || "").trim();
+  const lines = String(pageText || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const captions = [];
+  const captionRe = /^Table\s+((?:[A-Z]|[A-Z]?\d+)(?:[.\-]\d+)*(?:[A-Z])?)\s*(?:[:.\-]\s*)?(.{0,220})$/i;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = line.match(captionRe);
+    if (!match) continue;
+    const number = match[1];
+    let title = cleanCaptionTitle(match[2] || "");
+    if (title.length < 8 && lines[index + 1] && !captionRe.test(lines[index + 1]) && !/^(Figure|Fig\.?)\s+/i.test(lines[index + 1]) && lines[index + 1].length < 160) {
+      title = cleanCaptionTitle(`${title} ${lines[index + 1]}`);
+    }
+    const contextStart = Math.max(0, index - 4);
+    const contextEnd = Math.min(lines.length, index + 12);
+    const contextLines = lines.slice(contextStart, contextEnd);
+    const caption = `Table ${number}${title ? ` ${title}` : ""}`.replace(/\s+/g, " ").trim();
+    captions.push({
+      table_caption_id: tableCaptionId(filename, pageNumber, number, index, sourceFingerprint),
+      filename,
+      page: pageNumber,
+      number,
+      title,
+      caption,
+      section_title,
+      headings,
+      nearby_text_preview: compactText(contextLines.join("\n"), 1000),
+      contextLines,
+      lineIndex: index,
+      source: "table-caption-regex",
+      sourceFingerprint,
+    });
+  }
+  return captions;
+}
+
+const VISUAL_TABLE_SIGNALS = [
+  { kind: "bit-layout", label: "bit/data layout", patterns: [/\bbit(?:s|\s+position|\s+layout)?\b/i, /\bMSB\b/i, /\bLSB\b/i, /\breserved\s+bit\b/i, /\bpadding\b/i, /\bX\s+cell\b/i, /\bpacked|unpacked|endian\b/i, /\bfield\s+layout\b/i] },
+  { kind: "format-diagram", label: "data/frame/protocol format", patterns: [/\b(?:data|frame|transfer|packet|protocol|word|sample|slot|bus)\s+format\b/i] },
+  { kind: "timing-visual-table", label: "timing/transaction", patterns: [/\btiming|waveform|cycle|setup|hold|strobe|transaction\b/i, /\b(?:read|write)\s+cycle\b/i] },
+  { kind: "layout-table", label: "channel/sample layout", patterns: [/\bchannel|left|right|Lch|Rch|mono|monaural|stereo|sample(?:\s+width)?|pixel|component\b/i] },
+  { kind: "sequence-visual-table", label: "sequence/layout graphic", patterns: [/\bdiagram|layout|sequence|flow|arrow|block|state\s+transition|operation\s+sequence\b/i, /->|→|⇒/i] },
+];
+
+export function classifyVisualTableCaption(caption = {}) {
+  const text = [caption.caption, caption.title, caption.nearby_text_preview, ...(caption.contextLines || [])].join("\n");
+  const reasons = [];
+  const hits = new Map();
+  for (const group of VISUAL_TABLE_SIGNALS) {
+    for (const pattern of group.patterns) {
+      if (pattern.test(text)) {
+        hits.set(group.kind, (hits.get(group.kind) || 0) + 1);
+        reasons.push(`${group.label}: ${pattern.source}`);
+      }
+    }
+  }
+  if (!hits.size) return { artifact_type: "table-caption", kind: "table", confidence: 0, classificationReasons: [] };
+  const captionOnly = [caption.caption, caption.title].join(" ");
+  if (/\b(?:timing|waveform|read\s+cycle|write\s+cycle)\b/i.test(captionOnly)) hits.set("timing-visual-table", (hits.get("timing-visual-table") || 0) + 3);
+  if (/\b(?:sequence|flow|operation\s+sequence|state\s+transition)\b/i.test(captionOnly)) hits.set("sequence-visual-table", (hits.get("sequence-visual-table") || 0) + 3);
+  if (/\b(?:data|frame|transfer|packet|protocol|word|sample|slot|bus)\s+format\b/i.test(captionOnly)) hits.set("format-diagram", (hits.get("format-diagram") || 0) + 2);
+  const priority = ["timing-visual-table", "sequence-visual-table", "bit-layout", "format-diagram", "layout-table"];
+  const kind = priority.map((k) => [k, hits.get(k) || 0]).sort((a, b) => b[1] - a[1] || priority.indexOf(a[0]) - priority.indexOf(b[0]))[0][0] || "visual-table";
+  const score = Math.min(95, 45 + [...hits.values()].reduce((a, b) => a + b, 0) * 10 + (hits.size > 1 ? 10 : 0));
+  return { artifact_type: "visual-table", kind, confidence: score, classificationReasons: [...new Set(reasons)].slice(0, 12) };
+}
+
+export function visualTableRecordFromCaption(filename, caption, ordinal = 0, pageHeadings = []) {
+  const cls = classifyVisualTableCaption(caption);
+  if (cls.artifact_type !== "visual-table") return null;
+  const id = figureIdFor(caption.page, ordinal, "Table", caption.number);
+  const legacyId = legacyFigureIdFor(caption.page, ordinal, "Table", caption.number);
+  const contextText = (caption.contextLines || []).join("\n");
+  return {
+    figure_id: id,
+    id,
+    legacy_ids: [caption.table_caption_id, legacyId].filter((v, i, a) => v && v !== id && a.indexOf(v) === i),
+    aliases: [caption.table_caption_id, legacyId, `Table ${caption.number}`].filter(Boolean),
+    filename,
+    page: caption.page,
+    type: "Table",
+    number: caption.number,
+    title: caption.title,
+    caption: caption.caption,
+    artifact_type: "visual-table",
+    kind: cls.kind,
+    section_title: caption.section_title || pageHeadings[0] || "",
+    headings: caption.headings || pageHeadings || [],
+    nearby_text_preview: caption.nearby_text_preview || compactText(contextText, 1000),
+    contextLines: caption.contextLines || [],
+    bbox: [],
+    image_path: "",
+    render: { status: "missing" },
+    image_access: imageAccess(""),
+    confidence: cls.confidence,
+    classificationReasons: cls.classificationReasons,
+    searchText: normalizeForSearch([caption.caption, caption.title, cls.kind, "visual-table table", caption.section_title, contextText].join("\n")),
+    source: "visual-table-caption",
+    lineIndex: caption.lineIndex,
+    sourceFingerprint: caption.sourceFingerprint,
+  };
 }
 
 function splitTokens(text) {
@@ -275,6 +403,10 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
   };
 }
 
+function resultSourceFingerprint(source) {
+  return source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "";
+}
+
 function computeKindStats(figures = []) {
   return figures.reduce((acc, fig) => {
     const kind = fig.kind || fig.type || "unknown";
@@ -298,7 +430,23 @@ async function buildCaptionOnlyManifest(filename, pageCache = null, options = {}
       headings = [];
     }
     const captions = extractFigureCaptionsFromPageText(page.text || "", page.page);
-    captions.forEach((caption, index) => figures.push(figureFromCaption(filename, caption, index + 1, headings)));
+    captions.forEach((caption, index) => {
+      if (caption.type === "Table") {
+        const tableCaption = extractTableCaptionsFromPageText(caption.caption, page.page, { filename, sourceFingerprint: resultSourceFingerprint(source), headings, section_title: headings[0] || "" })[0] || { ...caption, filename, table_caption_id: tableCaptionId(filename, page.page, caption.number, caption.lineIndex, resultSourceFingerprint(source)), section_title: headings[0] || "", headings, nearby_text_preview: compactText((caption.contextLines || []).join("\n"), 1000), sourceFingerprint: resultSourceFingerprint(source) };
+        const visual = visualTableRecordFromCaption(filename, { ...tableCaption, contextLines: caption.contextLines || tableCaption.contextLines || [], nearby_text_preview: compactText((caption.contextLines || []).join("\n"), 1000) }, index + 1, headings);
+        figures.push(visual || figureFromCaption(filename, caption, index + 1, headings));
+      } else {
+        figures.push(figureFromCaption(filename, caption, index + 1, headings));
+      }
+    });
+    const existingTableKeys = new Set(captions.filter((c) => c.type === "Table").map((c) => `${c.page}:${normalizeFigureNumber(c.number).toLowerCase()}:${c.lineIndex}`));
+    const tableCaptions = extractTableCaptionsFromPageText(page.text || "", page.page, { filename, sourceFingerprint: resultSourceFingerprint(source), headings, section_title: headings[0] || "" });
+    tableCaptions.forEach((caption, index) => {
+      const key = `${caption.page}:${normalizeFigureNumber(caption.number).toLowerCase()}:${caption.lineIndex}`;
+      if (existingTableKeys.has(key)) return;
+      const visual = visualTableRecordFromCaption(filename, caption, captions.length + index + 1, headings);
+      if (visual) figures.push(visual);
+    });
   }
   let result = {
     schemaVersion: FIGURE_INDEX_SCHEMA_VERSION,
@@ -372,7 +520,12 @@ export async function getFiguresIndex(filename, options = {}) {
 
 export function figureMatchesFilter(figure, { filter = "", kind = "" } = {}) {
   const kindFilter = String(kind || "").trim().toLowerCase();
-  if (kindFilter && String(figure.kind || "").toLowerCase() !== kindFilter && String(figure.type || "").toLowerCase() !== kindFilter) return false;
+  if (kindFilter) {
+    const candidates = [figure.kind, figure.type, figure.artifact_type, ...(figure.aliases || [])].map((v) => String(v || "").toLowerCase());
+    if (kindFilter === "table") {
+      if (!candidates.includes("table") && !candidates.includes("visual-table")) return false;
+    } else if (!candidates.includes(kindFilter)) return false;
+  }
   const f = normalizeForSearch(filter || "");
   if (!f) return true;
   return normalizeForSearch([figure.caption, figure.title, figure.kind, figure.contextPreview, ...(figure.headings || [])].join("\n")).includes(f);
@@ -495,26 +648,30 @@ export async function searchFigures(filename, options = {}) {
   const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const page = Number(options.page || 0);
   const section = normalizeForSearch(options.section || "");
+  const kind = String(options.kind || "").trim();
   const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
   const results = (index.figures || [])
     .filter((fig) => !page || Number(fig.page) === page)
     .filter((fig) => !section || normalizeForSearch(fig.section_title || "").includes(section))
+    .filter((fig) => figureMatchesFilter(fig, { kind }))
     .map((fig) => ({ ...fig, match: scoreManifestFigure(fig, query) }))
     .filter((fig) => fig.match.score > 0)
     .sort((a, b) => b.match.score - a.match.score || a.page - b.page)
     .slice(0, limit)
     .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: aiVisibleImagePath(fig.image_path || ""), match_score: fig.match.score, match_reasons: fig.match.reasons, render: fig.render || { status: "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "", next_tool: "get_figure_context_pack" }));
-  return { ok: true, filename, query, next_tool: "get_figure_context_pack", results };
+  return { ok: true, filename, query, kind, next_tool: "get_figure_context_pack", results };
 }
 
 export async function listFigureManifest(filename, options = {}) {
   const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const page = Number(options.page || 0);
   const section = normalizeForSearch(options.section || "");
+  const kind = String(options.kind || "").trim();
   const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
   const results = (index.figures || [])
     .filter((fig) => !page || Number(fig.page) === page)
     .filter((fig) => !section || normalizeForSearch(fig.section_title || "").includes(section))
+    .filter((fig) => figureMatchesFilter(fig, { kind }))
     .sort((a,b) => a.page - b.page || String(a.figure_id || a.id).localeCompare(String(b.figure_id || b.id)))
     .slice(0, limit)
     .map((fig) => ({ figure_id: fig.figure_id || fig.id, page: fig.page, caption: fig.caption, section_title: fig.section_title || "", image_path: aiVisibleImagePath(fig.image_path || ""), render: { status: fig.render?.status || "missing" }, nearby_text_preview: fig.nearby_text_preview || fig.contextPreview || "", next_tool: "get_figure_context_pack" }));
@@ -615,6 +772,35 @@ export async function ocrFigureForSearch(filename, figureId, options = {}) {
     }
   }
   return { ok: Boolean(result.ok), figure_id: canonicalId, image_path: result.image_path || "", ocr: { text_original: text, text_normalized: normalizeForSearch(text), bbox: result.bbox || [], confidence: Number(result.confidence_avg || 0), tokens }, ocr_keywords: tokens, ocr_status: result.ok ? "ready" : "failed", ocr_artifact_path: artifactPath, warnings: result.warnings || [], message: result.message || "" };
+}
+
+export async function tableCoverageReport(filename, options = {}) {
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
+  let pageCache = null;
+  try { pageCache = await getPagesCache(filename, { buildIfMissing: true }); }
+  catch { pageCache = await readJsonCached(safePagesCachePath(filename)); }
+  const source = await getPdfSourceInfo(filename).catch(() => index.source || null);
+  const sourceFp = resultSourceFingerprint(source);
+  const captions = [];
+  for (const page of pageCache?.pages || []) {
+    let headings = [];
+    try { headings = detectHeadings(page.text || ""); } catch { headings = []; }
+    captions.push(...extractTableCaptionsFromPageText(page.text || "", page.page, { filename, sourceFingerprint: sourceFp, headings, section_title: headings[0] || "" }));
+  }
+  const tablesIndex = await readJsonCached(safeTablesIndexPath(filename)).catch(() => null);
+  const structuredTables = Array.isArray(tablesIndex?.tables) ? tablesIndex.tables : [];
+  const visualTables = (index.figures || []).filter((fig) => fig.artifact_type === "visual-table" || fig.source === "visual-table-caption");
+  const sameNumberPage = (item, caption) => Number(item.page || item.pageStart || 0) === Number(caption.page) && normalizeFigureNumber(item.number || item.tableNumber || item.caption || "").toLowerCase().includes(normalizeFigureNumber(caption.number).toLowerCase());
+  const rows = captions.map((caption) => {
+    const structured = structuredTables.find((table) => sameNumberPage(table, caption) || (Number(table.page || table.pageStart || 0) === Number(caption.page) && normalizeForSearch(table.caption || table.title || table.headerText || "").includes(normalizeForSearch(caption.title).slice(0, 30))));
+    const visual = visualTables.find((fig) => Number(fig.page) === Number(caption.page) && normalizeFigureNumber(fig.number).toLowerCase() === normalizeFigureNumber(caption.number).toLowerCase());
+    let status = "caption-only";
+    let reason = "caption-detected-but-not-classified";
+    if (structured) { status = "structured-table"; reason = "accepted-by-structured-table-index"; }
+    else if (visual) { status = "visual-table"; reason = visual.render?.status === "failed" ? "render-missing" : "captioned-visual-table"; }
+    return { caption: caption.caption, page: caption.page, number: caption.number, title: caption.title, structured_table_match: Boolean(structured), visual_table_match: Boolean(visual), status, reason };
+  });
+  return { ok: true, filename, captionCount: captions.length, structuredTableCount: structuredTables.length, visualTableCount: visualTables.length, manifest_path: safeFiguresIndexPath(filename), tables_path: safeTablesIndexPath(filename), rows };
 }
 
 export function buildFigureEvidenceContract(tool, filename, query, figures) {
