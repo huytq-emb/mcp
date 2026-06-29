@@ -31,3 +31,21 @@ Every image-oriented figure response includes an `image_access` object with a lo
 - `ocr_figure_for_search(filename, figure_id, force=false)` optionally runs lightweight OCR for search metadata only.
 
 Legacy `inspect_figure` remains available for compatibility, but new clients should prefer `get_figure_context_pack` and perform visual reasoning in the AI agent.
+
+
+### Canonical vs compatibility figure tools
+
+The preferred retrieval-first tools are `rebuild_figure_manifest`, `list_figures`, `search_figures`, `get_figure_image`, `get_figure_context_pack`, and optional `ocr_figure_for_search`.
+
+Some older visual-review tools remain available for compatibility:
+
+| Prefer | Compatibility / low-level tool | Use only when |
+|---|---|---|
+| `rebuild_figure_manifest` | `build_figures_index` | A legacy client still calls the old artifact name. |
+| `search_figures` | `find_figure` | A legacy text-formatted search result is required. |
+| `get_figure_context_pack` | `get_figure_context`, `inspect_figure` | A legacy text context or experimental parser path is explicitly requested. |
+| `get_figure_image` | `render_figure` | An explicit page+bbox render or render-debug call is needed. |
+| `get_figure_image` / `get_figure_context_pack` | `render_figure_page`, `render_figure_region` | A full-page image or automatic around-caption crop is needed instead of the manifest crop. |
+| `ocr_figure_for_search` | `ocr_figure` | Advanced local OCR/parser modes are explicitly requested for compatibility. |
+
+New AI-agent workflows should avoid legacy semantic-inspection tools unless the user explicitly requests OCR/parser experiments.

@@ -407,7 +407,7 @@ export async function getFigureContext(filename, options = {}) {
 export async function rebuildFigureManifest(filename, options = {}) {
   const pageCache = await getPagesCache(filename, { buildIfMissing: true });
   const index = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force) });
-  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), figureCount: index.figureCount, page: options.page || null, manifest: options.includeManifest ? index : undefined };
+  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), pageCount: index.pageCount || 0, figureCount: index.figureCount, kindStats: index.kindStats || {}, page: options.page || null, manifest: options.includeManifest ? index : undefined };
 }
 
 export async function searchFigures(filename, options = {}) {

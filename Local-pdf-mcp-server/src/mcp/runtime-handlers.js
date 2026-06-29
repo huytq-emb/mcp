@@ -5,7 +5,7 @@ import { formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.
 import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
-import { buildFiguresIndex, findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch } from "../domains/figures.js";
+import { findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch } from "../domains/figures.js";
 import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../domains/manual-intelligence.js";
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
@@ -18,7 +18,7 @@ import { buildPdfIndex, formatChunkTypeStats, formatRegisterIndexResults, format
 import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob, writeArtifactManifest } from "../services/jobs.js";
 import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth, inspectFigureOnDemand, ocrFigureOnDemand, renderFigureOnDemand } from "../services/ocr.js";
 import { getHybridRuntimeStatus } from "../services/python-worker.js";
-import { getPagesCache, loadPagesCache } from "../services/pdf.js";
+import { loadPagesCache } from "../services/pdf.js";
 import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, loadBitfieldsIndex, searchPdfIndex, searchSectionsIndex } from "../services/search.js";
 import { buildDriverEvidencePack, buildDriverEvidencePackContract, buildDriverTaskPlan, buildDriverTaskPlanEvidenceContract, buildSectionQueries, formatDriverEvidencePack, formatDriverTaskPlan, formatVerifyRegisterUsage, multiQuerySearch, normalizeStringArray, verifyRegisterUsage } from "../workflows/driver-pack.js";
 import { buildManualWorkflowPlan, buildStep407CompatibilityReport, formatEvalHealthReport, formatManualWorkflowPlan, formatStep407CompatibilityReport, formatToolUsage, maybeWriteEvalHealthReport, runEvalHealthCheck } from "../workflows/manual-workflow.js";
@@ -898,16 +898,16 @@ async function handle_list_bitfields(args = {}, meta = {}) {
 async function handle_build_figures_index(args = {}, meta = {}) {
   const name = meta.name || "build_figures_index";
     const filename = args.filename;
-    const pageCache = await getPagesCache(filename);
-    const index = await buildFiguresIndex(filename, pageCache, { force: Boolean(args.force) });
+    const result = await rebuildFigureManifest(filename, { force: Boolean(args.force) });
     return textResult([
-      `Built figures/captions index for ${filename}.`,
-      `Path: ${safeFiguresIndexPath(filename)}`,
-      `Pages: ${index.pageCount}`,
-      `Figures/captions: ${index.figureCount}`,
-      `Kind stats: ${JSON.stringify(index.kindStats || {})}`,
+      `Built figures/captions manifest for ${filename}.`,
+      `Compatibility note: build_figures_index is a legacy alias; prefer rebuild_figure_manifest for new clients.`,
+      `Path: ${result.manifest_path || safeFiguresIndexPath(filename)}`,
+      `Pages: ${result.pageCount || 0}`,
+      `Figures/captions: ${result.figureCount || 0}`,
+      `Kind stats: ${JSON.stringify(result.kindStats || {})}`,
       "",
-      `Next: list_figures(filename="${filename}")`,
+      `Next: list_figures(filename="${filename}") or search_figures(filename="${filename}", query="...")`,
     ].join("\n"));
 }
 
