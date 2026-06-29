@@ -5,7 +5,7 @@ import { formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.
 import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
-import { findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch } from "../domains/figures.js";
+import { findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch, tableCoverageReport } from "../domains/figures.js";
 import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../domains/manual-intelligence.js";
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
@@ -938,7 +938,7 @@ async function handle_find_figure(args = {}, meta = {}) {
 
 
 async function handle_search_figures(args = {}, meta = {}) {
-  const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, limit: args.limit ?? args.top_k, buildIfMissing: Boolean(args.build_if_missing) });
+  const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, kind: args.kind, limit: args.limit ?? args.top_k, buildIfMissing: Boolean(args.build_if_missing) });
   return jsonResult(result);
 }
 
@@ -959,6 +959,11 @@ async function handle_rebuild_figure_manifest(args = {}, meta = {}) {
 
 async function handle_ocr_figure_for_search(args = {}, meta = {}) {
   const result = await ocrFigureForSearch(args.filename, String(args.figure_id || "").trim(), { force: Boolean(args.force) });
+  return jsonResult(result);
+}
+
+async function handle_table_coverage_report(args = {}, meta = {}) {
+  const result = await tableCoverageReport(args.filename, { buildIfMissing: Boolean(args.build_if_missing) });
   return jsonResult(result);
 }
 
@@ -1779,6 +1784,7 @@ export function createRuntimeHandlers(_context = null) {
     "get_figure_context_pack": handle_get_figure_context_pack,
     "rebuild_figure_manifest": handle_rebuild_figure_manifest,
     "ocr_figure_for_search": handle_ocr_figure_for_search,
+    "table_coverage_report": handle_table_coverage_report,
     "add_visual_evidence": handle_add_visual_evidence,
     "list_visual_evidence": handle_list_visual_evidence,
     "get_visual_evidence": handle_get_visual_evidence,

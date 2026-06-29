@@ -1108,6 +1108,7 @@ const ALL_TOOL_DEFINITIONS = [
       query: { type: "string", description: "Search query." },
       page: { type: "number", description: "Optional 1-based page filter." },
       section: { type: "string", description: "Optional section-title filter." },
+      kind: { type: "string", description: "Optional kind filter: table, visual-table, bit-layout, format-diagram, timing-visual-table, sequence-visual-table, layout-table, or existing figure kinds." },
       limit: { type: "number", description: `Maximum records. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
       build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
     }, required: ["filename", "query"], additionalProperties: false }
@@ -1130,6 +1131,15 @@ const ALL_TOOL_DEFINITIONS = [
     name: "rebuild_figure_manifest",
     description: "Build or rebuild <filename>.figures.json as a lightweight metadata-only manifest by default. Optional page performs a real page-limited update; no OCR/VL/semantic parsing or batch PNG rendering is run.",
     inputSchema: { type: "object", properties: { filename: { type: "string" }, page: { type: "number", description: "Optional 1-based page-limited rebuild; updates only that page and preserves other manifest entries when present." }, force: { type: "boolean" } }, required: ["filename"], additionalProperties: false }
+  },
+
+  {
+    name: "table_coverage_report",
+    description: "Diagnose captioned table coverage by comparing table captions detected in page text, structured .tables.json entries, and visual-table records in the figure manifest.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      build_if_missing: { type: "boolean", description: "Optional lightweight figure/visual-table manifest build if missing. Default false." }
+    }, required: ["filename"], additionalProperties: false }
   },
   {
     name: "ocr_figure_for_search",
