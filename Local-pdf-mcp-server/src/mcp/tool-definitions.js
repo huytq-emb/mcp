@@ -40,7 +40,7 @@ import { DEFAULT_GOLDEN_PROFILE } from "../eval/golden.js";
 
 // Public MCP definitions are intentionally data-only so health checks can import
 // the catalog without starting the server or loading a PDF.
-export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
+const ALL_TOOL_DEFINITIONS = [
   {
     name: "list_pdfs",
     description:
@@ -1816,6 +1816,18 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
       additionalProperties: false,
     },
   },
+];
+
+const REMOVED_PUBLIC_FIGURE_TOOLS = new Set([
+  "build_figures_index",
+  "find_figure",
+  "get_figure_context",
+  "inspect_figure",
+  "render_figure",
+  "render_figure_page",
+  "render_figure_region",
+  "ocr_figure",
 ]);
 
+export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS.filter((tool) => !REMOVED_PUBLIC_FIGURE_TOOLS.has(tool.name)));
 export const PUBLIC_TOOL_NAMES = Object.freeze(PUBLIC_TOOL_DEFINITIONS.map((tool) => tool.name));
