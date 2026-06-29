@@ -86,7 +86,7 @@ export function resolvePythonInterpreter(options = {}) {
   }
   const venv = path.join(rootDir, ".venv", "Scripts", "python.exe");
   if (realFile(venv)) return { available: true, command: venv, argsPrefix: [], source: "project-venv" };
-  return { available: true, command: "python.exe", argsPrefix: [], source: "system-probe", unverified: true };
+  return { available: true, command: process.platform === "win32" ? "python.exe" : "python3", argsPrefix: [], source: "system-probe", unverified: true };
 }
 
 function appendBounded(current, value, limit) {

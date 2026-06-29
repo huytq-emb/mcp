@@ -900,7 +900,7 @@ async function handle_build_figures_index(args = {}, meta = {}) {
     const filename = args.filename;
     const result = await rebuildFigureManifest(filename, { force: Boolean(args.force) });
     return textResult([
-      `Built figures/captions manifest for ${filename}.`,
+      `Built figures/captions index manifest for ${filename}.`,
       `Compatibility note: build_figures_index is a legacy alias; prefer rebuild_figure_manifest for new clients.`,
       `Path: ${result.manifest_path || safeFiguresIndexPath(filename)}`,
       `Pages: ${result.pageCount || 0}`,

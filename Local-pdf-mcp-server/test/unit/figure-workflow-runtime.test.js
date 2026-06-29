@@ -4,9 +4,10 @@ import path from "node:path";
 import test from "node:test";
 import { activateRuntimePortRegistry, bindRuntimePorts, createRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 import { atomicWriteJson, getPdfSourceInfo, safeFigureLookupIndexPath, safeFiguresIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
-import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureContextPack } from "../../src/domains/figures.js";
+import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack } from "../../src/domains/figures.js";
 
 const filename = "unit-figure-workflow.pdf";
+process.env.RENESAS_MCP_PYTHON ||= "python";
 const pageTexts = {
   1: "Intro section\nFigure 1.1 First block diagram\nThis context describes alpha routing.",
   2: "Timing section\nFigure 2.1\nSecond timing diagram\nThis context describes beta waveform.",
@@ -16,6 +17,15 @@ const pageTexts = {
 async function resetArtifacts() {
   await fs.mkdir(path.dirname(safePdfPath(filename)), { recursive: true });
   await fs.writeFile(safePdfPath(filename), "%PDF-1.4\n% synthetic source for manifest-only tests\n", "utf-8");
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  await promisify(execFile)(process.env.RENESAS_MCP_PYTHON || "python3", ["-c", `import fitz
+doc=fitz.open()
+for i in range(3):
+    page=doc.new_page(width=300,height=300)
+    page.insert_text((36,60), "${filename} page %d" % (i+1))
+    page.draw_rect(fitz.Rect(50, 90, 180, 180))
+doc.save(r"${safePdfPath(filename)}")`]);
   await fs.rm(safeFiguresIndexPath(filename), { force: true }).catch(() => {});
   await fs.rm(safeFigureLookupIndexPath(filename), { force: true }).catch(() => {});
 }
@@ -87,4 +97,55 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.ok(pack.page_text_after.includes("alpha") || pack.page_text_before.includes("alpha"));
   assert.ok(pack.context_anchor.method);
   assert.equal(pack.agent_instruction.includes("Open image_path"), true);
+});
+
+
+test("context pack returns page fallback image when bbox is missing", async () => {
+  await resetArtifacts();
+  wirePorts();
+  const full = await rebuildFigureManifest(filename, { includeManifest: true });
+  const manifest = full.manifest;
+  manifest.figures[0].bbox = [];
+  manifest.figures[0].image_path = "";
+  await atomicWriteJson(safeFiguresIndexPath(filename), manifest);
+
+  const pack = await getFigureContextPack(filename, manifest.figures[0].figure_id);
+  assert.equal(pack.image_access.exists, true);
+  assert.match(pack.image_path, /\.png$/);
+  assert.equal(pack.image_access.mime_type, "image/png");
+  assert.equal(pack.image_access.agent_should_open_as_image, true);
+  assert.equal(pack.render.status, "ready");
+  assert.equal(pack.render.mode, "page_fallback");
+  assert.match(pack.warnings.join("\n"), /bbox.*unavailable|full page/i);
+});
+
+test("figure image crop path still works and reports dimensions", async () => {
+  await resetArtifacts();
+  wirePorts();
+  const full = await rebuildFigureManifest(filename, { includeManifest: true });
+  const manifest = full.manifest;
+  manifest.figures[0].bbox = [40, 80, 200, 200];
+  await atomicWriteJson(safeFiguresIndexPath(filename), manifest);
+  await fs.rm(safeFigureLookupIndexPath(filename), { force: true }).catch(() => {});
+
+  const result = await getFigureImage(filename, manifest.figures[0].figure_id);
+  assert.equal(result.render.mode, "crop");
+  assert.equal(result.image_access.exists, true);
+  assert.ok(result.render.width >= 0);
+  assert.ok(result.render.height >= 0);
+});
+
+test("context pack exposes render, warnings, anchor, and image instruction", async () => {
+  await resetArtifacts();
+  wirePorts();
+  const full = await rebuildFigureManifest(filename, { includeManifest: true });
+  const manifest = full.manifest;
+  manifest.figures[0].bbox = [];
+  await atomicWriteJson(safeFiguresIndexPath(filename), manifest);
+
+  const pack = await getFigureContextPack(filename, manifest.figures[0].figure_id);
+  assert.ok(pack.render);
+  assert.ok(Array.isArray(pack.warnings));
+  assert.ok(pack.context_anchor);
+  assert.ok(pack.agent_instruction.includes("Open image_path"));
 });

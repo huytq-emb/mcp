@@ -1113,14 +1113,14 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "get_figure_image",
-    description: "Render one requested figure PNG on demand if needed and return image_access metadata so the AI agent can open it visually. Does not batch-render.",
+    description: "Render one requested figure PNG on demand if needed and return image_access metadata so the AI agent can open it visually. Renders a cropped figure when bbox is available; falls back to a full-page PNG when bbox is unavailable; always returns render mode and warnings. Does not batch-render.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested DPI. Default 200." }
     }, required: ["filename", "figure_id"], additionalProperties: false }
   },
   {
     name: "get_figure_context_pack",
-    description: "Main AI-agent figure retrieval tool: returns rendered image path, image_access, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually.",
+    description: "Main AI-agent figure retrieval tool: returns a usable PNG whenever possible with image_path/image_access, render status/mode/warnings, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually. The image may be a full-page fallback if the figure bbox is unavailable.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string" }, figure_id: { type: "string" }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
     }, required: ["filename", "figure_id"], additionalProperties: false }

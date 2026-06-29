@@ -515,7 +515,9 @@ async function resolveFigureTarget(filename, args = {}) {
     if (lookupFigure) {
       const bbox = normalizeBbox(lookupFigure.bbox);
       if (!bbox) {
-        return softFailure("FIGURE_BBOX_UNAVAILABLE", `Figure has no usable bbox: ${figureId}`, { filename, figure_id: figureId, page: lookupFigure.page || null, lookup_cache_hit: true });
+        const fallbackPage = Number(lookupFigure.page || 0);
+        if (!Number.isInteger(fallbackPage) || fallbackPage < 1) return softFailure("FIGURE_BBOX_UNAVAILABLE", `Figure has no usable bbox or page: ${figureId}`, { filename, figure_id: figureId, page: lookupFigure.page || null, lookup_cache_hit: true });
+        return { ok: true, filename, figure: lookupFigure, figure_id: lookupFigure.figure_id || lookupFigure.id || figureId, page: fallbackPage, bbox: [], caption: String(lookupFigure.caption || lookupFigure.title || "").trim(), lookup_cache_hit: true, render_mode: "page_fallback", render_reason: "figure_bbox_unavailable", warnings: ["Figure bbox is unavailable; rendered the full page instead of a cropped figure."] };
       }
       return {
         ok: true,
@@ -526,6 +528,7 @@ async function resolveFigureTarget(filename, args = {}) {
         bbox,
         caption: String(lookupFigure.caption || lookupFigure.title || "").trim(),
         lookup_cache_hit: true,
+        render_mode: "crop",
       };
     }
 
@@ -545,7 +548,9 @@ async function resolveFigureTarget(filename, args = {}) {
     await writeFigureLookupIndex(filename, index).catch(() => {});
     const bbox = normalizeBbox(figure.bbox);
     if (!bbox) {
-      return softFailure("FIGURE_BBOX_UNAVAILABLE", `Figure has no usable bbox: ${figureId}`, { filename, figure_id: figureId, page: figure.page || null });
+      const fallbackPage = Number(figure.page || 0);
+      if (!Number.isInteger(fallbackPage) || fallbackPage < 1) return softFailure("FIGURE_BBOX_UNAVAILABLE", `Figure has no usable bbox or page: ${figureId}`, { filename, figure_id: figureId, page: figure.page || null });
+      return { ok: true, filename, figure, figure_id: figure.figure_id || figure.id || figureId, page: fallbackPage, bbox: [], caption: String(figure.caption || figure.title || "").trim(), lookup_cache_hit: false, render_mode: "page_fallback", render_reason: "figure_bbox_unavailable", warnings: ["Figure bbox is unavailable; rendered the full page instead of a cropped figure."] };
     }
     return {
       ok: true,
@@ -556,6 +561,7 @@ async function resolveFigureTarget(filename, args = {}) {
       bbox,
       caption: String(figure.caption || figure.title || "").trim(),
       lookup_cache_hit: false,
+      render_mode: "crop",
     };
   }
 
@@ -568,7 +574,7 @@ async function resolveFigureTarget(filename, args = {}) {
       bbox: Array.isArray(args.bbox) ? args.bbox : null,
     });
   }
-  return { ok: true, filename, figure: null, figure_id: "", page, bbox, caption: "" };
+  return { ok: true, filename, figure: null, figure_id: "", page, bbox, caption: "", render_mode: "crop" };
 }
 
 function renderCachePaths(filename, target, source, scale) {
@@ -577,6 +583,7 @@ function renderCachePaths(filename, target, source, scale) {
     filename,
     page: target.page,
     bbox: target.bbox,
+    mode: target.render_mode || "crop",
     scale,
     source: pdfSourceFingerprint(source),
   });
@@ -1176,6 +1183,8 @@ export async function renderFigureOnDemand(args = {}) {
       caption: target.caption || "",
       bbox: result.bbox || target.bbox,
       scale,
+      render_mode: target.render_mode || result.mode || "crop",
+      render_reason: target.render_reason || result.reason || "",
       image_path: paths.imagePath,
       image_access: {
         local_path: path.resolve(paths.imagePath),
@@ -1185,6 +1194,8 @@ export async function renderFigureOnDemand(args = {}) {
       },
       render: {
         status: "ready",
+        mode: target.render_mode || result.mode || "crop",
+        reason: target.render_reason || result.reason || "",
         dpi: Math.round(scale * 100),
         width: Number(result.width || 0),
         height: Number(result.height || 0),
