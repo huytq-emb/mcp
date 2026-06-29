@@ -172,3 +172,31 @@ test("hidden compatibility handlers warn while remaining unadvertised", async ()
   const ping = await registry.dispatchTool("mcp_server_ping");
   assert.match(ping.content[0].text, /Deprecated compatibility path\. Prefer mcp_control\(action=\.\.\.\)\./);
 });
+
+test("default tool usage catalog hides legacy figure compatibility tools", async () => {
+  const registry = createRuntimeToolRegistry();
+  const result = await registry.dispatchTool("explain_tool_usage", {});
+  const text = result.content[0].text;
+
+  assert.doesNotMatch(text, /\brender_figure\b/);
+  assert.doesNotMatch(text, /\bocr_figure\b/);
+  assert.doesNotMatch(text, /\binspect_figure\b/);
+  assert.doesNotMatch(text, /\bfind_figure\b/);
+  assert.doesNotMatch(text, /\bget_figure_context\b/);
+  assert.doesNotMatch(text, /\bbuild_figures_index\b/);
+  assert.doesNotMatch(text, /\brender_figure_page\b/);
+  assert.doesNotMatch(text, /\brender_figure_region\b/);
+
+  assert.match(text, /\brebuild_figure_manifest\b/);
+  assert.match(text, /\bsearch_figures\b/);
+  assert.match(text, /\bget_figure_context_pack\b/);
+});
+
+test("explicit legacy figure tool usage lookup remains available with compatibility warning", async () => {
+  const registry = createRuntimeToolRegistry();
+  const result = await registry.dispatchTool("explain_tool_usage", { tool_name: "render_figure" });
+  const text = result.content[0].text;
+
+  assert.match(text, /Hidden legacy compatibility path|legacy compatibility|deprecated/i);
+  assert.match(text, /search_figures\s*->\s*get_figure_context_pack/);
+});

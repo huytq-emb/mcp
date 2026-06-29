@@ -195,6 +195,9 @@ export const TOOL_USAGE_CATALOG = {
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
   extract_layout_tables_from_pages: { when: "Wide tables where text extraction may collapse columns.", next: "visual_review_handoff_pack/add_visual_evidence", trust: "layout hint" },
+  rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
+  search_figures: { when: "Find candidate figures by caption/page/search metadata; OCR is optional metadata only.", next: "get_figure_context_pack", trust: "figure retrieval candidate" },
+  get_figure_context_pack: { when: "Collect figure metadata, surrounding text, and image_path for AI visual inspection.", next: "AI agent opens image_path visually", trust: "retrieval pack; visual meaning requires inspection" },
   render_figure: { when: "Hidden legacy compatibility path only; do not advertise in normal workflows.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   ocr_figure: { when: "Hidden legacy compatibility path only; OCR is optional search metadata, not semantic truth.", next: "ocr_figure_for_search only when search keywords need OCR", trust: "deprecated compatibility" },
   inspect_figure: { when: "Hidden legacy compatibility path only; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
@@ -210,6 +213,21 @@ export const TOOL_USAGE_CATALOG = {
   run_eval: { when: "Run regression/smoke cases against a manual.", next: "fix failures or add fixtures", trust: "regression signal" },
 };
 
+const HIDDEN_USAGE_TOOLS = new Set([
+  "build_figures_index",
+  "find_figure",
+  "get_figure_context",
+  "inspect_figure",
+  "render_figure",
+  "render_figure_page",
+  "render_figure_region",
+  "ocr_figure",
+]);
+
+function visibleToolUsageNames() {
+  return Object.keys(TOOL_USAGE_CATALOG).filter((key) => !HIDDEN_USAGE_TOOLS.has(key)).sort();
+}
+
 export function formatToolUsage(toolName = "", task = "") {
   const name = String(toolName || "").trim();
   const lines = ["MCP Tool Usage Guide"];
@@ -217,18 +235,19 @@ export function formatToolUsage(toolName = "", task = "") {
   lines.push("");
   if (name) {
     const entry = TOOL_USAGE_CATALOG[name];
-    if (!entry) return [`MCP Tool Usage Guide`, `Unknown tool: ${name}`, "", `Available tools: ${Object.keys(TOOL_USAGE_CATALOG).sort().join(", ")}`].join("\n");
+    if (!entry) return [`MCP Tool Usage Guide`, `Unknown tool: ${name}`, "", `Available tools: ${visibleToolUsageNames().join(", ")}`].join("\n");
     lines.push(`${name}`);
     lines.push(`- when: ${entry.when}`);
     lines.push(`- next: ${entry.next}`);
     lines.push(`- trust: ${entry.trust}`);
     return lines.join("\n");
   }
-  for (const key of Object.keys(TOOL_USAGE_CATALOG).sort()) {
+  for (const key of visibleToolUsageNames()) {
     const entry = TOOL_USAGE_CATALOG[key];
     lines.push(`- ${key}: ${entry.when} Next: ${entry.next}. Trust: ${entry.trust}.`);
   }
   lines.push("", "Default driver-review flow: plan_manual_workflow -> doctor -> get_module_profile -> build_driver_evidence_pack -> source_review_prompt_pack -> verify_register_usage per source operation -> compare_driver_requirements.");
+  lines.push("Canonical figure flow: rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> AI agent opens image_path visually.");
   return lines.join("\n");
 }
 
