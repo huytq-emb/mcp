@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
+import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION, MAX_RENDER_DPI, MIN_RENDER_DPI } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
 
 
@@ -501,7 +501,7 @@ export async function listFigureManifest(filename, options = {}) {
 }
 
 export async function getFigureImage(filename, figureId, options = {}) {
-  const dpi = Number(options.dpi || 200);
+  const dpi = clampInteger(options.dpi, 200, MIN_RENDER_DPI, MAX_RENDER_DPI);
   const render = await renderFigureOnDemand({ filename, figure_id: figureId, page: options.page, bbox: options.bbox, scale: Math.max(0.25, dpi / 100), force: Boolean(options.force) });
   const access = await imageAccessWithExists(render.image_path || "");
   return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", mode: render.render?.mode || render.render_mode || "crop", reason: render.render?.reason || render.render_reason || "", dpi: Number(render.render?.dpi || dpi || 0), width: Number(render.render?.width || render.width || 0), height: Number(render.render?.height || render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
@@ -554,7 +554,7 @@ export async function getFigureContextPack(filename, figureId, options = {}) {
   const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const figure = (index.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
   if (!figure) throw new Error(`Figure not found: ${figureId}`);
-  const image = await getFigureImage(filename, figure.figure_id || figureId, { dpi: options.dpi || figure.render?.dpi || 200 });
+  const image = await getFigureImage(filename, figure.figure_id || figureId, { dpi: options.dpi ?? figure.render?.dpi ?? 200 });
   const pageData = await extractPdfPages(filename, { startPage: figure.page, endPage: figure.page });
   const text = pageData.pages?.[0]?.text || "";
   const caption = figure.caption || "";
