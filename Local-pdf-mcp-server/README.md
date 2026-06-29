@@ -14,7 +14,7 @@ Normal figure indexing avoids heavy OCR, vision-language, or semantic figure par
 ### Figure workflow
 
 1. `search_figures(filename, query)` to locate candidate figures by caption, section title, nearby text, cached OCR keywords, and related metadata.
-2. `get_figure_context_pack(filename, figure_id)` to get the PNG path, image access metadata, caption, section title, nearby text, and related cached evidence.
+2. `get_figure_context_pack(filename, figure_id, dpi?)` to get the PNG path, image access metadata, caption, section title, nearby text, and related cached evidence.
 3. The AI agent opens `image_path` as an image.
 4. The AI agent analyzes the figure visually using its own multimodal model, with caption and nearby text only as supporting evidence.
 
@@ -25,12 +25,14 @@ Every image-oriented figure response includes an `image_access` object with a lo
 - `list_figures(filename, page?, section?, limit?)` lists records from `<filename>.figures.json` without running heavy OCR/VL.
 - `search_figures(filename, query, page?, section?, limit?)` ranks manifest records using exact technical token matches, captions, section titles, nearby text, cached OCR keywords, and related evidence.
 - `get_figure_image(filename, figure_id, dpi?)` ensures a PNG exists and returns image metadata.
-- `get_figure_context_pack(filename, figure_id, include_ocr=false, include_tables=true, include_cautions=true)` is the primary AI-agent handoff API.
+- `get_figure_context_pack(filename, figure_id, dpi?, include_ocr=false, include_tables=true, include_cautions=true)` is the primary AI-agent handoff API. Optional `dpi` requests figure/page render quality and defaults to 200 when omitted.
 - `render_figure(filename, page?, figure_id?, bbox?, dpi=200, force=false)` renders a figure or explicit bbox without semantic analysis.
 - `rebuild_figure_manifest(filename, page?, force=false)` rebuilds `<filename>.figures.json` without heavy OCR/VL by default.
 - `ocr_figure_for_search(filename, figure_id, force=false)` optionally runs lightweight OCR for search metadata only.
 
-Legacy `inspect_figure` remains available for compatibility, but new clients should prefer `get_figure_context_pack` and perform visual reasoning in the AI agent.
+Legacy `find_figure` remains available for text-formatted search compatibility and supports `build_if_missing=true` for the same lightweight caption-only manifest build used by modern retrieval tools; it does not run OCR/VL/semantic parsing or batch rendering by default. Legacy `inspect_figure` remains available for compatibility, but new clients should prefer `get_figure_context_pack` and perform visual reasoning in the AI agent.
+
+Render integration tests that exercise real Python/PyMuPDF rendering probe for `python3` on non-Windows platforms (or `python` on Windows, unless `RENESAS_MCP_PYTHON` is set) and skip with a clear reason when `import fitz` is unavailable. The default unit workflow does not require OCR/VL, network access, or external Python dependencies.
 
 
 ### Canonical vs compatibility figure tools

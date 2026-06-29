@@ -1092,7 +1092,8 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
         filename: { type: "string", description: "PDF filename." },
         query: { type: "string", description: "Search query, for example clock tree, read write timing, reset sequence, block diagram, interrupt route." },
         kind: { type: "string", description: "Optional kind filter, for example timing-diagram, clock-tree, block-diagram, flow-sequence, table." },
-        top_k: { type: "number", description: `Maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+        top_k: { type: "number", description: `Maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
+        build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
       },
       required: ["filename", "query"],
       additionalProperties: false,
@@ -1122,7 +1123,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
     name: "get_figure_context_pack",
     description: "Main AI-agent figure retrieval tool: returns a usable PNG whenever possible with image_path/image_access, render status/mode/warnings, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually. The image may be a full-page fallback if the figure bbox is unavailable.",
     inputSchema: { type: "object", properties: {
-      filename: { type: "string" }, figure_id: { type: "string" }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
+      filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested render DPI for the figure/page image. Default 200." }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
     }, required: ["filename", "figure_id"], additionalProperties: false }
   },
   {

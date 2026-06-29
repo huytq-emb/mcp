@@ -9,7 +9,7 @@ import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 
 const execFileAsync = promisify(execFile);
-const TOOL_CATALOG_SHA256 = "b05554209a5fadda24dad0827c8ef77593f4c0f2d3747f6ae6891b5c0b48dce3";
+const TOOL_CATALOG_SHA256 = "73523dee9dff295aa34dba7458940836f715ba7ce3e778672cebc80a945577c9";
 
 test("public MCP catalog preserves names and schemas", () => {
   assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);
@@ -20,7 +20,11 @@ test("public MCP catalog preserves names and schemas", () => {
   assert.equal(healthTool.inputSchema.properties.kind.type, "string");
   assert.equal(healthTool.inputSchema.properties.stale_by_source.type, "boolean");
   for (const name of ["render_figure", "ocr_figure", "inspect_figure", "search_figures", "get_figure_image", "get_figure_context_pack", "rebuild_figure_manifest", "ocr_figure_for_search"]) assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
-  assert.match(PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "find_figure").description, /Legacy/i);
+  const findFigureTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "find_figure");
+  assert.match(findFigureTool.description, /Legacy/i);
+  assert.equal(findFigureTool.inputSchema.properties.build_if_missing.type, "boolean");
+  const contextPackTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context_pack");
+  assert.equal(contextPackTool.inputSchema.properties.dpi.type, "number");
   assert.match(PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context").description, /Prefer get_figure_context_pack/i);
   assert.match(PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "build_figures_index").description, /Legacy compatibility alias/i);
 });

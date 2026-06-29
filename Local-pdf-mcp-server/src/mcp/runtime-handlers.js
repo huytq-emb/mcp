@@ -931,6 +931,7 @@ async function handle_find_figure(args = {}, meta = {}) {
       query: String(args.query || "").trim(),
       kind: String(args.kind || "").trim(),
       topK: args.top_k,
+      buildIfMissing: Boolean(args.build_if_missing),
     });
     return textResult(formatFigureList(result, "find"));
 }
@@ -947,7 +948,7 @@ async function handle_get_figure_image(args = {}, meta = {}) {
 }
 
 async function handle_get_figure_context_pack(args = {}, meta = {}) {
-  const result = await getFigureContextPack(args.filename, String(args.figure_id || "").trim(), { include_ocr: Boolean(args.include_ocr), include_tables: args.include_tables !== false, include_cautions: args.include_cautions !== false });
+  const result = await getFigureContextPack(args.filename, String(args.figure_id || "").trim(), { include_ocr: Boolean(args.include_ocr), include_tables: args.include_tables !== false, include_cautions: args.include_cautions !== false, dpi: args.dpi });
   return jsonResult(result);
 }
 

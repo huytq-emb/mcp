@@ -2,30 +2,45 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { activateRuntimePortRegistry, bindRuntimePorts, createRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 import { atomicWriteJson, getPdfSourceInfo, safeFigureLookupIndexPath, safeFiguresIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
-import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack } from "../../src/domains/figures.js";
+import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, findFigure } from "../../src/domains/figures.js";
 
 const filename = "unit-figure-workflow.pdf";
-process.env.RENESAS_MCP_PYTHON ||= "python";
+const execFileAsync = promisify(execFile);
+
+function resolvePythonForTest() {
+  return process.env.RENESAS_MCP_PYTHON || (process.platform === "win32" ? "python" : "python3");
+}
+
+async function hasPyMuPdf() {
+  try {
+    await execFileAsync(resolvePythonForTest(), ["-c", "import fitz"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 const pageTexts = {
   1: "Intro section\nFigure 1.1 First block diagram\nThis context describes alpha routing.",
   2: "Timing section\nFigure 2.1\nSecond timing diagram\nThis context describes beta waveform.",
   3: "Register section\nTable 3.1 Register overview\nThis context describes gamma fields.",
 };
 
-async function resetArtifacts() {
+async function resetArtifacts({ realPdf = false } = {}) {
   await fs.mkdir(path.dirname(safePdfPath(filename)), { recursive: true });
   await fs.writeFile(safePdfPath(filename), "%PDF-1.4\n% synthetic source for manifest-only tests\n", "utf-8");
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  await promisify(execFile)(process.env.RENESAS_MCP_PYTHON || "python3", ["-c", `import fitz
+  if (realPdf) {
+    await execFileAsync(resolvePythonForTest(), ["-c", `import fitz
 doc=fitz.open()
 for i in range(3):
     page=doc.new_page(width=300,height=300)
     page.insert_text((36,60), "${filename} page %d" % (i+1))
     page.draw_rect(fitz.Rect(50, 90, 180, 180))
 doc.save(r"${safePdfPath(filename)}")`]);
+  }
   await fs.rm(safeFiguresIndexPath(filename), { force: true }).catch(() => {});
   await fs.rm(safeFigureLookupIndexPath(filename), { force: true }).catch(() => {});
 }
@@ -76,8 +91,26 @@ test("list/search do not build missing manifests unless explicitly requested", a
   assert.ok(built.figureCount > 0);
 });
 
-test("search uses cached OCR keywords and legacy aliases resolve to canonical context packs", async () => {
+
+test("legacy find_figure can lightweight-build missing manifests when requested", async () => {
   await resetArtifacts();
+  wirePorts();
+  await assert.rejects(() => findFigure(filename, { query: "beta" }), /Run rebuild_figure_manifest/);
+  const built = await findFigure(filename, { query: "beta", buildIfMissing: true });
+  assert.ok(built.results.length > 0);
+  assert.ok(built.index.producer.manifestOnly);
+  assert.equal(built.index.producer.renderImages, false);
+  assert.equal(built.index.producer.runOcr, false);
+  assert.equal(built.index.producer.runVl, false);
+  assert.equal(built.index.producer.runSemantic, false);
+});
+
+test("search uses cached OCR keywords and legacy aliases resolve to canonical context packs", async (t) => {
+  if (!(await hasPyMuPdf())) {
+    t.skip("PyMuPDF/fitz is unavailable; skipping real render integration coverage.");
+    return;
+  }
+  await resetArtifacts({ realPdf: true });
   wirePorts();
   const full = await rebuildFigureManifest(filename, { includeManifest: true });
   const source = await getPdfSourceInfo(filename);
@@ -100,8 +133,12 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
 });
 
 
-test("context pack returns page fallback image when bbox is missing", async () => {
-  await resetArtifacts();
+test("context pack returns page fallback image when bbox is missing", async (t) => {
+  if (!(await hasPyMuPdf())) {
+    t.skip("PyMuPDF/fitz is unavailable; skipping real render integration coverage.");
+    return;
+  }
+  await resetArtifacts({ realPdf: true });
   wirePorts();
   const full = await rebuildFigureManifest(filename, { includeManifest: true });
   const manifest = full.manifest;
@@ -119,8 +156,12 @@ test("context pack returns page fallback image when bbox is missing", async () =
   assert.match(pack.warnings.join("\n"), /bbox.*unavailable|full page/i);
 });
 
-test("figure image crop path still works and reports dimensions", async () => {
-  await resetArtifacts();
+test("figure image crop path still works and reports dimensions", async (t) => {
+  if (!(await hasPyMuPdf())) {
+    t.skip("PyMuPDF/fitz is unavailable; skipping real render integration coverage.");
+    return;
+  }
+  await resetArtifacts({ realPdf: true });
   wirePorts();
   const full = await rebuildFigureManifest(filename, { includeManifest: true });
   const manifest = full.manifest;
@@ -135,8 +176,12 @@ test("figure image crop path still works and reports dimensions", async () => {
   assert.ok(result.render.height >= 0);
 });
 
-test("context pack exposes render, warnings, anchor, and image instruction", async () => {
-  await resetArtifacts();
+test("context pack exposes render, warnings, anchor, and image instruction", async (t) => {
+  if (!(await hasPyMuPdf())) {
+    t.skip("PyMuPDF/fitz is unavailable; skipping real render integration coverage.");
+    return;
+  }
+  await resetArtifacts({ realPdf: true });
   wirePorts();
   const full = await rebuildFigureManifest(filename, { includeManifest: true });
   const manifest = full.manifest;
