@@ -117,6 +117,41 @@ test("mcp_control validates required action arguments and eval_health_check step
   assert.equal(report.notes.some((note) => /supported.*eval_health_check\(step40_action/i.test(note)), false);
 });
 
+test("mcp_control compat_report text uses supported control-plane wording", async () => {
+  const registry = createRuntimeToolRegistry();
+  const compat = await registry.dispatchTool("mcp_control", { action: "compat_report" });
+  const text = compat.content[0].text;
+
+  assert.match(text, /Supported interface: mcp_control\(action=\.\.\.\)/);
+  assert.match(text, /Supported Step 40 actions via mcp_control/);
+  assert.doesNotMatch(text, /Supported Step 40 actions via eval_health_check/);
+});
+
+test("hidden legacy control handlers fail fast when filename is missing", async () => {
+  const registry = createRuntimeToolRegistry();
+
+  await assert.rejects(
+    registry.dispatchTool("rebuild_artifact", { artifact: "pages" }),
+    (error) => /filename is required/.test(error.message) &&
+      /deprecated rebuild_artifact/.test(error.message) &&
+      /mcp_control\(action="rebuild_artifact"/.test(error.message),
+  );
+
+  await assert.rejects(
+    registry.dispatchTool("pdf_index_status_lite", {}),
+    (error) => /filename is required/.test(error.message) &&
+      /deprecated pdf_index_status_lite/.test(error.message) &&
+      /mcp_control\(action="index_status_lite"/.test(error.message),
+  );
+
+  await assert.rejects(
+    registry.dispatchTool("index_status", {}),
+    (error) => /filename is required/.test(error.message) &&
+      /deprecated index_status/.test(error.message) &&
+      /mcp_control\(action="index_status_lite"/.test(error.message),
+  );
+});
+
 test("ultra-lite index status hints recommend mcp_control only", async () => {
   const registry = createRuntimeToolRegistry();
   const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf" });

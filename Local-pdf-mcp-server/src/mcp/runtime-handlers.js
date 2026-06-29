@@ -539,14 +539,21 @@ async function handle_mcp_server_ping(args = {}, meta = {}) {
 
 async function handle_pdf_index_status_lite(args = {}, meta = {}) {
   const name = meta.name || "pdf_index_status_lite";
-    const status = getIndexStatusUltraMinimal(args.filename);
+    const filename = String(args.filename || "").trim();
+    if (!filename) {
+      throw new Error(`filename is required for deprecated ${name}; prefer mcp_control(action="index_status_lite", filename="...")`);
+    }
+    const status = getIndexStatusUltraMinimal(filename);
     if (Boolean(args.json)) return legacyJsonResult(LEGACY_CONTROL_WARNING, status);
     return legacyTextResult(LEGACY_CONTROL_WARNING, formatIndexStatusUltraMinimal(status));
 }
 
 async function handle_index_status(args = {}, meta = {}) {
   const name = meta.name || "index_status";
-    const filename = args.filename;
+    const filename = String(args.filename || "").trim();
+    if (!filename) {
+      throw new Error(`filename is required for deprecated ${name}; prefer mcp_control(action="index_status_lite", filename="...")`);
+    }
     const details = Boolean(args.details);
     if (!details) {
       const status = getIndexStatusUltraMinimal(filename);
@@ -561,7 +568,10 @@ async function handle_index_status(args = {}, meta = {}) {
 
 async function handle_rebuild_artifact(args = {}, meta = {}) {
   const name = meta.name || "rebuild_artifact";
-    const filename = args.filename;
+    const filename = String(args.filename || "").trim();
+    if (!filename) {
+      throw new Error('filename is required for deprecated rebuild_artifact; prefer mcp_control(action="rebuild_artifact", filename="...")');
+    }
     const artifact = normalizeArtifactName(args.artifact);
     const forceLock = Boolean(args.force_lock);
     const force = Boolean(args.force);
