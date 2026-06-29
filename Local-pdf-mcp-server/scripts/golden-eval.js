@@ -39,4 +39,10 @@ if (writeReport) {
   console.log(`Golden report Markdown saved: ${mdPath}`);
 }
 
-if (report.health === "fail") process.exit(1);
+if (report.health === "fail") {
+  if ((report.missingArtifacts || []).length && !(report.failures || []).length) {
+    console.log("Golden eval skipped intentionally: required manual/index artifacts are unavailable in this checkout.");
+    process.exit(0);
+  }
+  process.exit(1);
+}

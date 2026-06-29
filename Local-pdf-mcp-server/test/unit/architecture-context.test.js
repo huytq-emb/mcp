@@ -99,6 +99,24 @@ test("structured registry validates advertised tool arguments before handlers ru
   assert.equal(await registry.dispatchTool("hidden", { extra: "allowed" }), "hidden:allowed");
 });
 
+test("structured registry validates hidden tool arguments when schema is known", async () => {
+  let hiddenCalls = 0;
+  const registry = createToolRegistry({
+    definitions: [{ name: "visible", description: "visible", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    handlers: { visible: async () => "visible" },
+    hiddenDefinitions: [{
+      name: "hidden",
+      description: "hidden compatibility tool",
+      inputSchema: { type: "object", properties: { filename: { type: "string" } }, required: ["filename"], additionalProperties: false },
+    }],
+    hiddenHandlers: { hidden: async (args) => { hiddenCalls += 1; return `hidden:${args.filename}`; } },
+    expectedAdvertisedCount: 1,
+  });
+  assert.equal(await registry.dispatchTool("hidden", { filename: "manual.pdf" }), "hidden:manual.pdf");
+  await assert.rejects(registry.dispatchTool("hidden", { extra: true }), /Invalid arguments for hidden: \/filename/);
+  assert.equal(hiddenCalls, 1);
+});
+
 test("textResult exposes evidence contracts as structured content before truncation", () => {
   const contract = {
     schemaVersion: 1,

@@ -236,3 +236,46 @@ test("context pack exposes render, warnings, anchor, and image instruction", asy
   assert.ok(pack.context_anchor);
   assert.ok(pack.agent_instruction.includes("Open image_path"));
 });
+
+test("cached-or-extracted page text prefers cache and avoids extraction", async () => {
+  const { getCachedOrExtractedPageText } = await import("../../src/domains/figures.js");
+  let extracts = 0;
+  const registry = createRuntimePortRegistry();
+  activateRuntimePortRegistry(registry);
+  bindRuntimePorts({
+    getPagesCache: async () => ({ pages: [{ page: 12, text: "Cached Figure 12.3 DMA Transfer Timing Diagram context" }] }),
+    extractPdfPages: async () => { extracts += 1; return { pages: [{ page: 12, text: "extracted" }] }; },
+  }, registry);
+  const result = await getCachedOrExtractedPageText(filename, 12);
+  assert.equal(result.source, "pages-cache");
+  assert.match(result.text, /Cached Figure/);
+  assert.equal(extracts, 0);
+});
+
+test("cached-or-extracted page text falls back to target single-page extraction", async () => {
+  const { getCachedOrExtractedPageText } = await import("../../src/domains/figures.js");
+  const calls = [];
+  const registry = createRuntimePortRegistry();
+  activateRuntimePortRegistry(registry);
+  bindRuntimePorts({
+    getPagesCache: async () => ({ pages: [{ page: 1, text: "wrong page" }] }),
+    extractPdfPages: async (_filename, range) => { calls.push(range); return { pages: [{ page: 12, text: "Extracted Figure 12.3 timing context" }] }; },
+  }, registry);
+  const result = await getCachedOrExtractedPageText(filename, 12);
+  assert.equal(result.source, "single-page-extraction");
+  assert.deepEqual(calls, [{ startPage: 12, endPage: 12 }]);
+});
+
+test("cached-or-extracted page text unavailable is non-fatal", async () => {
+  const { getCachedOrExtractedPageText } = await import("../../src/domains/figures.js");
+  const registry = createRuntimePortRegistry();
+  activateRuntimePortRegistry(registry);
+  bindRuntimePorts({
+    getPagesCache: async () => { throw new Error("cache failed"); },
+    extractPdfPages: async () => { throw new Error("extract failed"); },
+  }, registry);
+  const result = await getCachedOrExtractedPageText("missing-text.pdf", 12);
+  assert.equal(result.source, "unavailable");
+  assert.equal(result.text, "");
+  assert.equal(result.warning, "page text unavailable");
+});

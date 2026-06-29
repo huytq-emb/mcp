@@ -45,11 +45,12 @@ export function createToolRegistry({
   definitions = [],
   handlers = {},
   hiddenHandlers = {},
+  hiddenDefinitions = [],
   expectedAdvertisedCount,
 } = {}) {
   const ajv = new Ajv({ allErrors: true, strict: false });
   const publicEntries = new Map();
-  const allHandlers = new Map();
+  const allEntries = new Map();
 
   for (const definition of definitions) {
     validateDefinition(definition);
@@ -63,14 +64,23 @@ export function createToolRegistry({
     } catch (error) {
       throw new Error(`Invalid inputSchema for tool ${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    publicEntries.set(name, Object.freeze({ definition, handler, validateArgs, advertised: true }));
-    allHandlers.set(name, handler);
+    const entry = Object.freeze({ definition, handler, validateArgs, advertised: true });
+    publicEntries.set(name, entry);
+    allEntries.set(name, entry);
   }
 
+  const hiddenDefinitionMap = new Map((hiddenDefinitions || []).map((definition) => [String(definition.name), definition]));
   for (const [name, handler] of Object.entries(hiddenHandlers)) {
     if (publicEntries.has(name)) throw new Error(`Hidden tool is also advertised: ${name}`);
     if (typeof handler !== "function") throw new Error(`Missing handler for hidden tool: ${name}`);
-    allHandlers.set(name, handler);
+    const definition = hiddenDefinitionMap.get(String(name));
+    let validateArgs;
+    if (definition?.inputSchema) {
+      validateDefinition(definition);
+      try { validateArgs = ajv.compile(definition.inputSchema); }
+      catch (error) { throw new Error(`Invalid inputSchema for hidden tool ${name}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    allEntries.set(String(name), Object.freeze({ definition, handler, validateArgs, advertised: false }));
   }
 
   if (expectedAdvertisedCount !== undefined && publicEntries.size !== expectedAdvertisedCount) {
@@ -79,23 +89,22 @@ export function createToolRegistry({
 
   return Object.freeze({
     advertisedCount: publicEntries.size,
-    handlerCount: allHandlers.size,
+    handlerCount: allEntries.size,
     definitions: Object.freeze([...publicEntries.values()].map((entry) => entry.definition)),
     advertisedNames: Object.freeze([...publicEntries.keys()]),
     hiddenNames: Object.freeze(Object.keys(hiddenHandlers)),
     has(name) {
-      return allHandlers.has(String(name || ""));
+      return allEntries.has(String(name || ""));
     },
     async dispatchTool(name, args = {}) {
       const normalizedName = String(name || "");
       const normalizedArgs = args === undefined ? {} : args;
-      const entry = publicEntries.get(normalizedName);
-      if (entry && !entry.validateArgs(normalizedArgs)) {
+      const entry = allEntries.get(normalizedName);
+      if (!entry) throw new Error(`Unknown tool: ${normalizedName}`);
+      if (entry.validateArgs && !entry.validateArgs(normalizedArgs)) {
         throw new Error(formatValidationErrors(normalizedName, entry.validateArgs.errors));
       }
-      const handler = allHandlers.get(normalizedName);
-      if (!handler) throw new Error(`Unknown tool: ${normalizedName}`);
-      return handler(normalizedArgs || {}, { name: normalizedName });
+      return entry.handler(normalizedArgs || {}, { name: normalizedName });
     },
   });
 }

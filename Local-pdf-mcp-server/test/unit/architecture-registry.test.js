@@ -34,9 +34,13 @@ test("public MCP catalog preserves names and schemas", () => {
   const digest = createHash("sha256").update(JSON.stringify(PUBLIC_TOOL_DEFINITIONS)).digest("hex");
   assert.match(digest, /^[a-f0-9]{64}$/);
   const healthTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "eval_health_check");
-  assert.equal(healthTool.inputSchema.properties.cascade_dependents.type, "boolean");
-  assert.equal(healthTool.inputSchema.properties.kind.type, "string");
-  assert.equal(healthTool.inputSchema.properties.stale_by_source.type, "boolean");
+  assert.equal(Object.hasOwn(healthTool.inputSchema.properties, "step40_action"), false);
+  assert.doesNotMatch(healthTool.description, /job|artifact|cache control/i);
+  const controlTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "mcp_control");
+  assert.equal(controlTool.inputSchema.required.includes("action"), true);
+  for (const action of ["ping", "compat_report", "index_status_lite", "ocr_health", "rebuild_artifact", "job_status", "list_jobs", "cancel_job", "cleanup_jobs", "cache_status", "cleanup_cache", "figure_cache_status", "cleanup_figure_cache"]) {
+    assert.equal(controlTool.inputSchema.properties.action.enum.includes(action), true, action);
+  }
   for (const name of PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
   for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
   const contextPackTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context_pack");

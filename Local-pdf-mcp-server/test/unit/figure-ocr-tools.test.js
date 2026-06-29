@@ -607,16 +607,16 @@ test("eval_health_check reports and dry-runs figure cache cleanup", async (t) =>
     }));
     assert.equal(render.ok, true);
 
-    const status = parseJsonResult(await registry.dispatchTool("eval_health_check", {
-      step40_action: "cache_status",
+    const status = parseJsonResult(await registry.dispatchTool("mcp_control", {
+      action: "cache_status",
       filename,
       kind: "figure-images",
     }));
     assert.equal(status.ok, true);
     assert.ok(status.kinds["figure-images"].files >= 1);
 
-    const cleanupResult = await registry.dispatchTool("eval_health_check", {
-      step40_action: "cleanup_cache",
+    const cleanupResult = await registry.dispatchTool("mcp_control", {
+      action: "cleanup_cache",
       filename,
       kind: "figure-images",
       max_bytes: 1,
@@ -649,8 +649,8 @@ test("cleanup_cache can select stale cache files by PDF source", async (t) => {
       sourceFingerprint: "size=1;mtimeMs=1",
       figure_id: "stale",
     });
-    const dryRun = parseJsonResult(await registry.dispatchTool("eval_health_check", {
-      step40_action: "cleanup_cache",
+    const dryRun = parseJsonResult(await registry.dispatchTool("mcp_control", {
+      action: "cleanup_cache",
       filename,
       kind: "figure-ocr",
       stale_by_source: true,
@@ -659,8 +659,8 @@ test("cleanup_cache can select stale cache files by PDF source", async (t) => {
     assert.equal(dryRun.selected_files, 1);
     assert.equal(dryRun.files[0].name, `${filename}-stale.json`);
 
-    const confirmed = parseJsonResult(await registry.dispatchTool("eval_health_check", {
-      step40_action: "cleanup_cache",
+    const confirmed = parseJsonResult(await registry.dispatchTool("mcp_control", {
+      action: "cleanup_cache",
       filename,
       kind: "figure-ocr",
       stale_by_source: true,

@@ -158,31 +158,24 @@ const ALL_TOOL_DEFINITIONS = [
         create_default: { type: "boolean", description: "Create default eval/profile files before checking. Default true." },
         include_profiles: { type: "boolean", description: "Check driver_profiles/*.json and eval/profiles/*.json. Default true." },
         include_fixtures: { type: "boolean", description: "Check eval/fixtures/*.json. Default true." },
-        write_report: { type: "boolean", description: "Save indexes/eval-health-report.json and .txt. Default true." },
-        step40_action: {
-          type: "string",
-          enum: ["health", "ping", "compat_report", "index_status_lite", "ocr_health", "rebuild_artifact", "job_status", "list_jobs", "cancel_job", "cleanup_jobs", "cache_status", "cleanup_cache", "figure_cache_status", "cleanup_figure_cache"],
-          description: "Step 40 control-plane action routed through this known-good tool. Use compat_report to see direct-tool compatibility status. Default health preserves the original eval_health_check behavior."
-        },
-        filename: { type: "string", description: "PDF filename for step40_action=index_status_lite, rebuild_artifact, cache_status, cleanup_cache, figure_cache_status, or cleanup_figure_cache." },
-        artifact: { type: "string", description: "Artifact for step40_action=rebuild_artifact, for example pages, tables, registers, bitfields, sequences, cautions, figures, figure_ocr, or chunk-index." },
-        job_id: { type: "string", description: "Job ID for step40_action=job_status or cancel_job." },
-        reason: { type: "string", description: "Optional cancellation reason for step40_action=cancel_job." },
-        statuses: { type: "array", items: { type: "string" }, description: "Statuses for step40_action=cleanup_jobs." },
-        kind: { type: "string", description: "Cache kind for step40_action=cache_status or cleanup_cache, for example all, figure-images, figure-ocr, or page-context." },
-        older_than_hours: { type: "number", description: "Age filter for step40_action=cleanup_jobs, cleanup_cache, or cleanup_figure_cache." },
-        max_bytes: { type: "number", description: "Cache size target for step40_action=cleanup_cache or cleanup_figure_cache; oldest matching files are selected until total cache bytes are under this value." },
-        stale_by_source: { type: "boolean", description: "For cleanup_cache/cleanup_figure_cache with filename, select cache files whose stored PDF source fingerprint no longer matches the current PDF." },
-        confirm: { type: "boolean", description: "Required true for step40_action=cleanup_cache or cleanup_figure_cache to delete files. Without confirm, cleanup runs as dry-run." },
-        include_running: { type: "boolean", description: "Allow cleanup of queued/running jobs when step40_action=cleanup_jobs. Default false." },
-        json: { type: "boolean", description: "Return raw JSON for status-oriented step40 actions. Default false." },
-        force_lock: { type: "boolean", description: "Remove stale lock before rebuild_artifact. Default false." },
-        force: { type: "boolean", description: "Force rebuild for cacheable artifacts such as figure_ocr. Default false." },
-        chunk_size: { type: "number", description: "Chunk size for rebuild_artifact." },
-        chunk_overlap: { type: "number", description: "Chunk overlap for rebuild_artifact." },
-        allow_full_rebuild: { type: "boolean", description: "Allow dependent full rebuild when requested artifact needs missing base artifacts. Default true." },
-        cascade_dependents: { type: "boolean", description: "Rebuild stale dependent artifacts after the selected artifact. Default false." }
+        write_report: { type: "boolean", description: "Save indexes/eval-health-report.json and .txt. Default true." }
       },
+      additionalProperties: false,
+    },
+  },
+
+  {
+    name: "mcp_control",
+    description:
+      "Control-plane utility for MCP server ping, lightweight index status, detached artifact rebuild jobs, job polling/cancel/cleanup, and cache status/cleanup. Use this instead of routing control actions through eval_health_check.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["ping", "compat_report", "index_status_lite", "ocr_health", "rebuild_artifact", "job_status", "list_jobs", "cancel_job", "cleanup_jobs", "cache_status", "cleanup_cache", "figure_cache_status", "cleanup_figure_cache"] },
+        filename: { type: "string" }, artifact: { type: "string" }, job_id: { type: "string" }, reason: { type: "string" },
+        statuses: { type: "array", items: { type: "string" } }, kind: { type: "string" }, older_than_hours: { type: "number" }, max_bytes: { type: "number" }, stale_by_source: { type: "boolean" }, confirm: { type: "boolean" }, include_running: { type: "boolean" }, json: { type: "boolean" }, force_lock: { type: "boolean" }, force: { type: "boolean" }, chunk_size: { type: "number" }, chunk_overlap: { type: "number" }, allow_full_rebuild: { type: "boolean" }, cascade_dependents: { type: "boolean" }
+      },
+      required: ["action"],
       additionalProperties: false,
     },
   },
@@ -1839,5 +1832,6 @@ const REMOVED_PUBLIC_FIGURE_TOOLS = new Set([
   "ocr_figure",
 ]);
 
+export const HIDDEN_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS.filter((tool) => REMOVED_PUBLIC_FIGURE_TOOLS.has(tool.name)));
 export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS.filter((tool) => !REMOVED_PUBLIC_FIGURE_TOOLS.has(tool.name)));
 export const PUBLIC_TOOL_NAMES = Object.freeze(PUBLIC_TOOL_DEFINITIONS.map((tool) => tool.name));
