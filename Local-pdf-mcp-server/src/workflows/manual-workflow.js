@@ -271,7 +271,7 @@ export function formatStep407CompatibilityReport(report) {
     `Mode: ${report.mode}`,
     `Supported interface: ${report.supportedInterface}`,
     "",
-    "Supported Step 40 actions via eval_health_check:",
+    `Supported Step 40 actions via ${report.supportedInterface}:`,
     ...report.supportedActions.map((a) => `- ${a}`),
     "",
     "Hidden/deprecated direct tool names:",
