@@ -258,7 +258,7 @@ export async function buildFiguresWithPython(filename, options = {}) {
       allowedRoots: [DOCUMENTS_DIR, INDEX_DIR, RENDERS_DIR],
       inputs: { filename, pdfPath: safePdfPath(filename) },
       outputs: { artifactPath: tempPath, rendersRoot: RENDERS_DIR, cancelPath },
-      options: optionsForWorker(options),
+      options: { ...optionsForWorker(options), manifestOnly: Boolean(options.manifestOnly), renderImages: options.renderImages === true, runOcr: options.runOcr === true, runVl: options.runVl === true, runSemantic: options.runSemantic === true },
     }, {
       timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
       onProgress: options.onProgress,
@@ -437,14 +437,15 @@ function safeCachePath(cacheName, filename, key, ext) {
 }
 
 function figureIdentifiers(figure = {}) {
-  return [figure.id, figure.figureUid, figure.figure_uid].map((item) => String(item || "").trim()).filter(Boolean);
+  return [figure.figure_id, figure.id, figure.figureUid, figure.figure_uid, ...(figure.legacy_ids || []), ...(figure.aliases || [])].map((item) => String(item || "").trim()).filter(Boolean);
 }
 
 function figureLookupEntry(figure = {}) {
   const ids = figureIdentifiers(figure);
-  const id = ids[0] || "";
+  const id = figure.figure_id || ids[0] || "";
   return {
     id,
+    figure_id: id,
     figureUid: figure.figureUid || figure.figure_uid || id,
     figure_uid: figure.figure_uid || figure.figureUid || id,
     page: Number(figure.page || 0),
@@ -520,7 +521,7 @@ async function resolveFigureTarget(filename, args = {}) {
         ok: true,
         filename,
         figure: lookupFigure,
-        figure_id: figureId,
+        figure_id: lookupFigure.figure_id || lookupFigure.id || figureId,
         page: Number(lookupFigure.page || 0),
         bbox,
         caption: String(lookupFigure.caption || lookupFigure.title || "").trim(),
@@ -550,7 +551,7 @@ async function resolveFigureTarget(filename, args = {}) {
       ok: true,
       filename,
       figure,
-      figure_id: figureId,
+      figure_id: figure.figure_id || figure.id || figureId,
       page: Number(figure.page || 0),
       bbox,
       caption: String(figure.caption || figure.title || "").trim(),

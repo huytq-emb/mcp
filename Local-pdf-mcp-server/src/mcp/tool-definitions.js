@@ -1065,7 +1065,7 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   {
     name: "list_figures",
     description:
-      "Step 31A: list Figure/Table/diagram/caption candidates from the persistent .figures.json index. Use for discovering timing diagrams, clock trees, block diagrams, flowcharts, and key table captions before reading pages visually/textually.",
+      "List Figure/Table/diagram/caption candidates from the persistent .figures.json manifest. Does not rebuild by default; if missing, run rebuild_figure_manifest first (or explicitly set build_if_missing for a lightweight caption-only build).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1075,7 +1075,8 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
         limit: { type: "number", description: `Maximum records to return. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
         filter: { type: "string", description: "Legacy optional substring filter across caption/context." },
         kind: { type: "string", description: "Legacy optional kind filter." },
-        top_k: { type: "number", description: `Legacy maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+        top_k: { type: "number", description: `Legacy maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
+        build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -1100,18 +1101,19 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
 
   {
     name: "search_figures",
-    description: "Search figure manifest records by caption, section title, nearby text, cached OCR keywords, and related evidence. Does not run heavy OCR or VL parsing by default.",
+    description: "Search existing figure manifest records by caption, section title, nearby text, cached OCR keywords, and related evidence. Does not rebuild, render, OCR, or run VL by default; run rebuild_figure_manifest first if missing.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string", description: "PDF filename." },
       query: { type: "string", description: "Search query." },
       page: { type: "number", description: "Optional 1-based page filter." },
       section: { type: "string", description: "Optional section-title filter." },
-      limit: { type: "number", description: `Maximum records. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` }
+      limit: { type: "number", description: `Maximum records. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
+      build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
     }, required: ["filename", "query"], additionalProperties: false }
   },
   {
     name: "get_figure_image",
-    description: "Ensure a cached PNG exists for a figure and return image_access metadata so the AI agent can open it visually.",
+    description: "Render one requested figure PNG on demand if needed and return image_access metadata so the AI agent can open it visually. Does not batch-render.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested DPI. Default 200." }
     }, required: ["filename", "figure_id"], additionalProperties: false }
@@ -1125,12 +1127,12 @@ export const PUBLIC_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "rebuild_figure_manifest",
-    description: "Build or rebuild <filename>.figures.json without heavy OCR/VL semantic parsing by default.",
-    inputSchema: { type: "object", properties: { filename: { type: "string" }, page: { type: "number", description: "Optional page-limited rebuild hint." }, force: { type: "boolean" } }, required: ["filename"], additionalProperties: false }
+    description: "Build or rebuild <filename>.figures.json as a lightweight metadata-only manifest by default. Optional page performs a real page-limited update; no OCR/VL/semantic parsing or batch PNG rendering is run.",
+    inputSchema: { type: "object", properties: { filename: { type: "string" }, page: { type: "number", description: "Optional 1-based page-limited rebuild; updates only that page and preserves other manifest entries when present." }, force: { type: "boolean" } }, required: ["filename"], additionalProperties: false }
   },
   {
     name: "ocr_figure_for_search",
-    description: "Optional lightweight OCR for search indexing only. Cache-aware and not semantic truth.",
+    description: "Optional OCR for search indexing only. Updates cached OCR keywords in the figure manifest so later search_figures calls can match them; does not perform semantic figure understanding.",
     inputSchema: { type: "object", properties: { filename: { type: "string" }, figure_id: { type: "string" }, force: { type: "boolean" } }, required: ["filename", "figure_id"], additionalProperties: false }
   },
   {

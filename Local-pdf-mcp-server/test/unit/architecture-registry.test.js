@@ -9,7 +9,7 @@ import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 
 const execFileAsync = promisify(execFile);
-const TOOL_CATALOG_SHA256 = "d68bd3ce598a2993992e083fc8406d11d0394e76c926860ab433a2b9d0eb55b9";
+const TOOL_CATALOG_SHA256 = "b12971fbaed55811c589686006a79192c53ecb80220c9b29350ef15a5ab796f1";
 
 test("public MCP catalog preserves names and schemas", () => {
   assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);

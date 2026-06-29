@@ -914,11 +914,12 @@ async function handle_build_figures_index(args = {}, meta = {}) {
 async function handle_list_figures(args = {}, meta = {}) {
   const name = meta.name || "list_figures";
     const filename = args.filename;
-    if (args.page || args.section || args.limit) return jsonResult(await listFigureManifest(filename, { page: args.page, section: args.section, limit: args.limit ?? args.top_k }));
+    if (args.page || args.section || args.limit) return jsonResult(await listFigureManifest(filename, { page: args.page, section: args.section, limit: args.limit ?? args.top_k, buildIfMissing: Boolean(args.build_if_missing) }));
     const result = await listFigures(filename, {
       filter: String(args.filter || "").trim(),
       kind: String(args.kind || "").trim(),
       topK: args.top_k,
+      buildIfMissing: Boolean(args.build_if_missing),
     });
     return textResult(formatFigureList(result, "list"));
 }
@@ -936,7 +937,7 @@ async function handle_find_figure(args = {}, meta = {}) {
 
 
 async function handle_search_figures(args = {}, meta = {}) {
-  const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, limit: args.limit ?? args.top_k });
+  const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, limit: args.limit ?? args.top_k, buildIfMissing: Boolean(args.build_if_missing) });
   return jsonResult(result);
 }
 

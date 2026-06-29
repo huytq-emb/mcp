@@ -21,8 +21,18 @@ const scoreSimpleText = createRuntimePort("scoreSimpleText");
 
 const FIGURE_AGENT_INSTRUCTION = "Open image_path as an image and analyze the figure visually. Use the text context only as supporting evidence.";
 
+function canonicalFigureId(page, ordinal) {
+  return `p${Number(page || 0)}_f${String(Math.max(1, Number(ordinal || 1))).padStart(3, "0")}`;
+}
+
+function legacyFigureIds(figure = {}) {
+  return [figure.figure_id, figure.id, figure.figureUid, figure.figure_uid, ...(figure.legacy_ids || []), ...(figure.aliases || [])]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
 function figureId(figure = {}, index = 0) {
-  return String(figure.figure_id || figure.id || figure.figureUid || figure.figure_uid || `p${String(figure.page || 0).padStart(4, "0")}_f${index + 1}`).trim();
+  return String(figure.figure_id || canonicalFigureId(figure.page || 0, index + 1)).trim();
 }
 
 function figureSectionTitle(figure = {}) {
@@ -45,13 +55,17 @@ async function imageAccessWithExists(localPath = "") {
 }
 
 function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) {
-  const id = figureId(figure, index);
+  const canonical = /^p\d+_f\d{3}$/.test(String(figure.figure_id || "")) ? String(figure.figure_id) : canonicalFigureId(figure.page || 0, index + 1);
+  const aliases = [...new Set(legacyFigureIds(figure).filter((alias) => alias && alias !== canonical))];
+  const id = canonical;
   const img = String(figure.image_path || figure.renderPath || figure.render_path || "");
   return {
     schemaVersion: 1,
     filename,
     figure_id: id,
     id,
+    legacy_ids: aliases,
+    aliases,
     page: Number(figure.page || 0),
     bbox: Array.isArray(figure.bbox) ? figure.bbox : [],
     image_path: img,
@@ -74,7 +88,7 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
     contextLines: Array.isArray(figure.contextLines) ? figure.contextLines : [],
     contextPreview: figureNearbyPreview(figure),
     confidence: Number(figure.confidence || 50),
-    searchText: normalizeForSearch([figure.caption, figure.title, figureSectionTitle(figure), figureNearbyPreview(figure)].join("\n")),
+    searchText: normalizeForSearch([figure.caption, figure.title, figureSectionTitle(figure), figureNearbyPreview(figure), ...(Array.isArray(figure.ocr_keywords) ? figure.ocr_keywords : [])].join("\n")),
   };
 }
 
@@ -145,10 +159,14 @@ export function normalizeFigureNumber(value = "") {
   return String(value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "");
 }
 
-export function figureIdFor(page, ordinal, type, number) {
+export function legacyFigureIdFor(page, ordinal, type, number) {
   const prefix = /^table$/i.test(type) ? "tbl" : "fig";
   const num = normalizeFigureNumber(number);
   return `${prefix}-p${page}-${num || ordinal}`.replace(/[^A-Za-z0-9_.-]+/g, "-");
+}
+
+export function figureIdFor(page, ordinal, type, number) {
+  return canonicalFigureId(page, ordinal);
 }
 
 export function extractFigureCaptionsFromPageText(pageText = "", pageNumber = 0) {
@@ -206,6 +224,7 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
   const contextText = (caption.contextLines || []).join("\n");
   const kind = classifyFigureKind(caption.type, caption.caption, contextText);
   const id = figureIdFor(caption.page, ordinal, caption.type, caption.number);
+  const legacyId = legacyFigureIdFor(caption.page, ordinal, caption.type, caption.number);
   const confidence = Math.min(100,
     50 +
     (caption.source === "caption-regex" ? 25 : 8) +
@@ -215,6 +234,9 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
 
   return {
     id,
+    figure_id: id,
+    legacy_ids: legacyId && legacyId !== id ? [legacyId] : [],
+    aliases: legacyId && legacyId !== id ? [legacyId] : [],
     filename,
     page: caption.page,
     type: caption.type,
@@ -232,58 +254,64 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
   };
 }
 
-export async function buildFiguresIndex(filename, pageCache = null, options = {}) {
-  try {
-    const pythonIndex = await buildFiguresWithPython(filename, { force: Boolean(options.force) });
-    const normalizedPython = await normalizeFigureManifest(filename, pythonIndex);
-    await atomicWriteJson(safeFiguresIndexPath(filename), normalizedPython).catch(() => {});
-    await ensureFigureLookupIndex(filename, normalizedPython, { force: true }).catch(() => {});
-    return normalizedPython;
-  } catch {
-    // Python figure-region extraction is preferred, but figures remain
-    // optional-advisory. Fall back to native caption indexing when the worker
-    // is unavailable so the rest of the MCP pipeline stays usable.
-  }
+function computeKindStats(figures = []) {
+  return figures.reduce((acc, fig) => {
+    const kind = fig.kind || fig.type || "unknown";
+    acc[kind] = (acc[kind] || 0) + 1;
+    return acc;
+  }, {});
+}
 
-  const cache = pageCache || await getPagesCache(filename);
+async function buildCaptionOnlyManifest(filename, pageCache = null, options = {}) {
+  const cache = pageCache || await getPagesCache(filename, { buildIfMissing: true });
   const source = await getPdfSourceInfo(filename);
+  const requestedPage = Number(options.page || 0);
+  const pages = (cache.pages || []).filter((page) => !requestedPage || Number(page.page) === requestedPage);
   const figures = [];
-
-  for (const page of cache.pages || []) {
+  for (const page of pages) {
     const headings = detectHeadings(page.text || "");
     const captions = extractFigureCaptionsFromPageText(page.text || "", page.page);
     captions.forEach((caption, index) => figures.push(figureFromCaption(filename, caption, index + 1, headings)));
   }
-
-  const byId = new Map();
-  for (const figure of figures) {
-    let id = figure.id;
-    let suffix = 2;
-    while (byId.has(id)) {
-      id = `${figure.id}-${suffix}`;
-      suffix += 1;
-    }
-    byId.set(id, { ...figure, id });
-  }
-
   let result = {
     schemaVersion: FIGURE_INDEX_SCHEMA_VERSION,
     serverVersion: SERVER_VERSION,
     filename,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     source,
+    sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "",
     pageCount: cache.pageCount,
-    figureCount: byId.size,
-    kindStats: [...byId.values()].reduce((acc, fig) => {
-      acc[fig.kind] = (acc[fig.kind] || 0) + 1;
-      return acc;
-    }, {}),
-    figures: [...byId.values()],
+    partial: Boolean(requestedPage),
+    pagesIndexed: requestedPage ? [requestedPage] : (cache.pages || []).map((p) => Number(p.page || 0)).filter(Boolean),
+    producer: { engine: "native-caption", manifestOnly: true, renderImages: false, runOcr: false, runVl: false, runSemantic: false },
+    figures,
   };
-
   result = await normalizeFigureManifest(filename, result);
-  await atomicWriteJson(safeFiguresIndexPath(filename), result);
-  await ensureFigureLookupIndex(filename, result, { force: true }).catch(() => {});
+  result.figureCount = result.figures.length;
+  result.kindStats = computeKindStats(result.figures);
+  return result;
+}
+
+export async function buildFiguresIndex(filename, pageCache = null, options = {}) {
+  if (options.usePython === true) {
+    try {
+      const pythonIndex = await buildFiguresWithPython(filename, { force: Boolean(options.force), manifestOnly: true, renderImages: false, runOcr: false, runVl: false, runSemantic: false });
+      const normalizedPython = await normalizeFigureManifest(filename, pythonIndex);
+      normalizedPython.producer = { ...(normalizedPython.producer || {}), manifestOnly: true, renderImages: false, runOcr: false, runVl: false, runSemantic: false };
+      await atomicWriteJson(safeFiguresIndexPath(filename), normalizedPython).catch(() => {});
+      await ensureFigureLookupIndex(filename, normalizedPython, { force: true }).catch(() => {});
+      return normalizedPython;
+    } catch {
+      // Explicit Python extraction failed; fall back to metadata-only captions.
+    }
+  }
+
+  const result = await buildCaptionOnlyManifest(filename, pageCache, options);
+  if (!options.page) {
+    await atomicWriteJson(safeFiguresIndexPath(filename), result);
+    await ensureFigureLookupIndex(filename, result, { force: true }).catch(() => {});
+  }
   return result;
 }
 
@@ -311,8 +339,8 @@ export async function loadFiguresIndex(filename) {
 export async function getFiguresIndex(filename, options = {}) {
   const existing = await loadFiguresIndex(filename);
   if (existing) return existing;
-  if (options.buildIfMissing === true) return buildFiguresIndex(filename);
-  throw new Error(`Figures/captions index not found for ${filename}. Run build_figures_index or index_pdf/start_index_pdf first.`);
+  if (options.buildIfMissing === true) return buildFiguresIndex(filename, null, { force: false });
+  throw new Error(`Figures manifest not found for ${filename}. Run rebuild_figure_manifest(filename="${filename}") first.`);
 }
 
 export function figureMatchesFilter(figure, { filter = "", kind = "" } = {}) {
@@ -330,7 +358,7 @@ export function scoreFigureCandidate(figure, query = "") {
 }
 
 export async function listFigures(filename, options = {}) {
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const filter = String(options.filter || "").trim();
   const kind = String(options.kind || "").trim();
   const topK = clampInteger(options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
@@ -347,7 +375,7 @@ export async function listFigures(filename, options = {}) {
 export async function findFigure(filename, options = {}) {
   const query = String(options.query || "").trim();
   if (!query) throw new Error("query is required");
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const kind = String(options.kind || "").trim();
   const topK = clampInteger(options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
   const results = (index.figures || [])
@@ -360,14 +388,14 @@ export async function findFigure(filename, options = {}) {
 }
 
 export async function getFigureContext(filename, options = {}) {
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const figureId = String(options.figureId || "").trim();
   const page = Number(options.page || 0);
   const query = String(options.query || "").trim();
   const includePages = clampInteger(options.includePages, 0, 0, 2);
   let figure = null;
 
-  if (figureId) figure = (index.figures || []).find((item) => item.id === figureId);
+  if (figureId) figure = (index.figures || []).find((item) => [item.figure_id, item.id, ...(item.legacy_ids || []), ...(item.aliases || [])].filter(Boolean).includes(figureId));
   if (!figure && page) {
     const pageFigures = (index.figures || []).filter((item) => Number(item.page) === page);
     if (query) figure = pageFigures.map((item) => ({ ...item, matchScore: scoreFigureCandidate(item, query) })).sort((a, b) => b.matchScore - a.matchScore)[0] || null;
@@ -405,15 +433,33 @@ export async function getFigureContext(filename, options = {}) {
 
 
 export async function rebuildFigureManifest(filename, options = {}) {
+  const page = Number(options.page || 0);
   const pageCache = await getPagesCache(filename, { buildIfMissing: true });
-  const index = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force) });
-  return { ok: true, filename, manifest_path: safeFiguresIndexPath(filename), pageCount: index.pageCount || 0, figureCount: index.figureCount, kindStats: index.kindStats || {}, page: options.page || null, manifest: options.includeManifest ? index : undefined };
+  if (page) {
+    const existing = await loadFiguresIndex(filename).catch(() => null);
+    const pageIndex = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force), page });
+    let merged;
+    if (existing) {
+      const preserved = (existing.figures || []).filter((fig) => Number(fig.page) !== page);
+      merged = { ...existing, updatedAt: new Date().toISOString(), partial: Boolean(existing.partial), pagesIndexed: [...new Set([...(existing.pagesIndexed || []), page])], figures: [...preserved, ...(pageIndex.figures || [])].sort((a, b) => a.page - b.page || String(a.figure_id || a.id).localeCompare(String(b.figure_id || b.id))) };
+      merged.figureCount = merged.figures.length;
+      merged.kindStats = computeKindStats(merged.figures);
+      merged = await normalizeFigureManifest(filename, merged);
+    } else {
+      merged = { ...pageIndex, partial: true, pagesIndexed: [page] };
+    }
+    await atomicWriteJson(safeFiguresIndexPath(filename), merged);
+    await ensureFigureLookupIndex(filename, merged, { force: true }).catch(() => {});
+    return { ok: true, filename, mode: "page-limited", page, manifest_path: safeFiguresIndexPath(filename), pageCount: merged.pageCount || 0, figureCount: merged.figureCount, updatedPageFigureCount: (pageIndex.figures || []).length, kindStats: merged.kindStats || {}, partial: Boolean(merged.partial), manifest: options.includeManifest ? merged : undefined };
+  }
+  const index = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force), usePython: Boolean(options.usePython) });
+  return { ok: true, filename, mode: "full", page: null, manifest_path: safeFiguresIndexPath(filename), pageCount: index.pageCount || 0, figureCount: index.figureCount, updatedPageFigureCount: null, kindStats: index.kindStats || {}, partial: false, manifest: options.includeManifest ? index : undefined };
 }
 
 export async function searchFigures(filename, options = {}) {
   const query = String(options.query || "").trim();
   if (!query) throw new Error("query is required");
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const page = Number(options.page || 0);
   const section = normalizeForSearch(options.section || "");
   const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
@@ -429,7 +475,7 @@ export async function searchFigures(filename, options = {}) {
 }
 
 export async function listFigureManifest(filename, options = {}) {
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const page = Number(options.page || 0);
   const section = normalizeForSearch(options.section || "");
   const limit = clampInteger(options.limit ?? options.topK, DEFAULT_FIGURE_TOP_K, 1, MAX_FIGURE_TOP_K);
@@ -449,30 +495,88 @@ export async function getFigureImage(filename, figureId, options = {}) {
   return { figure_id: render.figure_id || figureId || "", page: render.page || 0, bbox: render.bbox || [], caption: render.caption || "", image_path: render.image_path || "", image_access: access, render: { status: render.ok ? "ready" : "failed", dpi, width: Number(render.width || 0), height: Number(render.height || 0), mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: Boolean(render.ok), warnings: render.warnings || [], message: render.message || "" };
 }
 
+function normalizeAnchorText(text = "") {
+  return normalizeForSearch(String(text || "").replace(/[‐‑‒–—―]/g, "-")).replace(/\s+/g, " ").trim();
+}
+
+function normalizedOffset(haystack = "", needle = "") {
+  const normalizedNeedle = normalizeAnchorText(needle);
+  if (!normalizedNeedle) return -1;
+  const chars = [];
+  const offsets = [];
+  for (let i = 0; i < haystack.length; i += 1) {
+    const c = normalizeAnchorText(haystack[i]);
+    if (!c) continue;
+    chars.push(c);
+    offsets.push(i);
+  }
+  const pos = chars.join("").indexOf(normalizedNeedle.replace(/\s+/g, ""));
+  return pos >= 0 ? offsets[pos] : -1;
+}
+
+function anchorPageContext(text = "", figure = {}) {
+  const caption = figure.caption || figure.title || "";
+  let pos = caption ? text.indexOf(caption) : -1;
+  if (pos >= 0) return { offset: pos, length: caption.length, method: "exact_caption", confidence: "high" };
+  pos = normalizedOffset(text, caption);
+  if (pos >= 0) return { offset: pos, length: caption.length, method: "normalized_caption", confidence: "high" };
+  const num = figure.number ? String(figure.number) : (String(caption).match(/\b(?:Figure|Fig\.?|Table)\s+([A-Za-z]?\d+(?:[.-]\d+)*)/i)?.[0] || "");
+  pos = num ? normalizedOffset(text, num) : -1;
+  if (pos >= 0) return { offset: pos, length: String(num).length, method: "figure_number", confidence: "medium" };
+  for (const line of figure.contextLines || []) {
+    if (String(line).trim().length < 8) continue;
+    pos = normalizedOffset(text, line);
+    if (pos >= 0) return { offset: pos, length: String(line).length, method: "context_line", confidence: "medium" };
+  }
+  const keywords = splitTokens([caption, figure.section_title, figure.kind].join(" ")).filter((t) => t.length >= 4);
+  for (const kw of keywords) {
+    pos = normalizeAnchorText(text).indexOf(kw);
+    if (pos >= 0) return { offset: Math.min(text.length, pos), length: kw.length, method: "keyword", confidence: "low" };
+  }
+  return { offset: Math.floor(text.length / 2), length: 0, method: "fallback", confidence: "low" };
+}
+
 export async function getFigureContextPack(filename, figureId, options = {}) {
-  const index = await getFiguresIndex(filename, { buildIfMissing: true });
-  const figure = (index.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid].filter(Boolean).includes(figureId));
+  const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
+  const figure = (index.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
   if (!figure) throw new Error(`Figure not found: ${figureId}`);
-  const image = await getFigureImage(filename, figureId, { dpi: options.dpi || figure.render?.dpi || 200 });
+  const image = await getFigureImage(filename, figure.figure_id || figureId, { dpi: options.dpi || figure.render?.dpi || 200 });
   const pageData = await extractPdfPages(filename, { startPage: figure.page, endPage: figure.page });
   const text = pageData.pages?.[0]?.text || "";
   const caption = figure.caption || "";
-  const pos = caption ? text.indexOf(caption) : -1;
-  const before = pos >= 0 ? text.slice(Math.max(0, pos - 2500), pos) : text.slice(0, 2500);
-  const after = pos >= 0 ? text.slice(pos + caption.length, pos + caption.length + 2500) : text.slice(2500, 5000);
+  const anchor = anchorPageContext(text, figure);
+  const before = text.slice(Math.max(0, anchor.offset - 2500), anchor.offset);
+  const afterStart = Math.min(text.length, anchor.offset + Math.max(anchor.length || 0, caption.length || 0));
+  const after = text.slice(afterStart, afterStart + 2500);
   let ocr_text = [];
   if (options.include_ocr) {
     const ocrIndex = await loadFigureOcrIndex(filename).catch(() => null);
-    const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid].filter(Boolean).includes(figureId));
+    const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
     if (cached) ocr_text = cached.ocr_text || cached.items || [];
   }
-  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, agent_instruction: FIGURE_AGENT_INSTRUCTION };
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, agent_instruction: FIGURE_AGENT_INSTRUCTION };
 }
 
 export async function ocrFigureForSearch(filename, figureId, options = {}) {
   const result = await ocrFigureOnDemand({ filename, figure_id: figureId, engine: "auto", mode: "text", force: Boolean(options.force) });
   const text = result.plain_text || (result.ocr_text || []).map((i) => i.text || "").join(" ");
-  return { ok: Boolean(result.ok), figure_id: figureId, image_path: result.image_path || "", ocr: { text_original: text, text_normalized: normalizeForSearch(text), bbox: result.bbox || [], confidence: Number(result.confidence_avg || 0), tokens: splitTokens(text) }, warnings: result.warnings || [], message: result.message || "" };
+  const tokens = [...new Set(splitTokens(text))].slice(0, 200);
+  let canonicalId = figureId;
+  let artifactPath = "";
+  if (result.ok) {
+    const index = await getFiguresIndex(filename, { buildIfMissing: false });
+    const pos = (index.figures || []).findIndex((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
+    if (pos >= 0) {
+      canonicalId = index.figures[pos].figure_id || index.figures[pos].id || figureId;
+      artifactPath = path.join(path.dirname(safeFiguresIndexPath(filename)), `${filename}.${canonicalId}.ocr.txt`);
+      await fs.writeFile(artifactPath, text, "utf-8").catch(() => {});
+      index.figures[pos] = { ...index.figures[pos], ocr_keywords: tokens, ocr_status: "ready", ocr_updated_at: new Date().toISOString(), ocr_artifact_path: artifactPath };
+      index.updatedAt = new Date().toISOString();
+      await atomicWriteJson(safeFiguresIndexPath(filename), index);
+      await ensureFigureLookupIndex(filename, index, { force: true }).catch(() => {});
+    }
+  }
+  return { ok: Boolean(result.ok), figure_id: canonicalId, image_path: result.image_path || "", ocr: { text_original: text, text_normalized: normalizeForSearch(text), bbox: result.bbox || [], confidence: Number(result.confidence_avg || 0), tokens }, ocr_keywords: tokens, ocr_status: result.ok ? "ready" : "failed", ocr_artifact_path: artifactPath, warnings: result.warnings || [], message: result.message || "" };
 }
 
 export function buildFigureEvidenceContract(tool, filename, query, figures) {
