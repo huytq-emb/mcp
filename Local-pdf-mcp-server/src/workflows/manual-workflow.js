@@ -239,8 +239,10 @@ export function buildStep407CompatibilityReport() {
     serverVersion: SERVER_VERSION,
     createdAt: nowIso(),
     mode: STEP40_COMPAT_MODE,
-    health: "PASS_WITH_COMPATIBILITY_WORKAROUND",
-    supportedInterface: "eval_health_check(step40_action=...)",
+    health: "PASS",
+    supportedInterface: "mcp_control(action=...)",
+    deprecatedInterface: "eval_health_check(step40_action=...)",
+    evalHealthRole: "eval_health_check is for eval/static health only",
     supportedActions: STEP40_CONTROL_ACTIONS,
     hiddenDirectTools: [
       "mcp_server_ping",
@@ -253,11 +255,11 @@ export function buildStep407CompatibilityReport() {
     stillAvailableLegacyHandlers: true,
     notes: STEP40_DIRECT_TOOL_COMPAT_NOTES,
     recommendedCalls: [
-      'eval_health_check(step40_action="ping")',
-      'eval_health_check(step40_action="index_status_lite", filename="<manual>.pdf")',
-      'eval_health_check(step40_action="rebuild_artifact", filename="<manual>.pdf", artifact="pages")',
-      'eval_health_check(step40_action="job_status", job_id="<job_id>")',
-      'eval_health_check(step40_action="list_jobs")'
+      'mcp_control(action="ping")',
+      'mcp_control(action="index_status_lite", filename="<manual>.pdf")',
+      'mcp_control(action="rebuild_artifact", filename="<manual>.pdf", artifact="pages")',
+      'mcp_control(action="job_status", job_id="<job_id>")',
+      'mcp_control(action="list_jobs")'
     ]
   };
 }
@@ -327,12 +329,12 @@ export async function runEvalHealthCheck(options = {}) {
   const ocrHealth = await getOcrHealth({ timeoutMs: 10_000 });
   const pymupdfVersion = ocrHealth.python?.versions?.pymupdf || ocrHealth.versions?.pymupdf || "";
   const renderCapable = ocrHealth.python?.ok !== false && Boolean(pymupdfVersion);
-  add("figure_ocr_tools", missingFigureOcrTools.length || !renderCapable ? "fail" : "pass", [
+  add("figure_ocr_tools", missingFigureOcrTools.length ? "fail" : "pass", [
     missingFigureOcrTools.length ? `missing_tools=${missingFigureOcrTools.join(",")}` : "tools=render_figure,ocr_figure,inspect_figure",
     renderCapable ? `pymupdf=${pymupdfVersion}` : "pymupdf=unavailable",
     ocrHealth.ocr?.available ? `ocr=${ocrHealth.ocr.engine || "paddleocr"} available` : `ocr=optional-missing (${ocrHealth.ocr?.hint || "install requirements-ocr.txt"})`,
   ].join("; "));
-  add("step40.7 compatibility mode", "pass", `mode=${STEP40_COMPAT_MODE}; supported=eval_health_check(step40_action=...); hidden_direct_tools=6`);
+  add("step40.7 compatibility mode", "pass", `mode=${STEP40_COMPAT_MODE}; supported=mcp_control(action=...); deprecated=eval_health_check(step40_action=...); hidden_direct_tools=6`);
   const summary = { total: checks.length, pass: checks.filter((c) => c.status === "pass").length, fail: checks.filter((c) => c.status === "fail").length };
   return { schemaVersion: "step39.eval-health.v1", serverVersion: SERVER_VERSION, createdAt: new Date().toISOString(), health: summary.fail ? "fail" : "pass", summary, extractionRuntime, checks };
 }

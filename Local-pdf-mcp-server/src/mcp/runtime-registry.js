@@ -1,4 +1,4 @@
-import { PUBLIC_TOOL_DEFINITIONS } from "./tool-definitions.js";
+import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "./tool-definitions.js";
 import {
   HIDDEN_COMPATIBILITY_TOOL_NAMES,
   createToolRegistry,
@@ -17,6 +17,7 @@ export function createRuntimeToolRegistry(options = {}) {
     definitions: PUBLIC_TOOL_DEFINITIONS,
     handlers,
     hiddenHandlers,
+    hiddenDefinitions: HIDDEN_TOOL_DEFINITIONS,
     expectedAdvertisedCount: PUBLIC_TOOL_DEFINITIONS.length,
   });
 }

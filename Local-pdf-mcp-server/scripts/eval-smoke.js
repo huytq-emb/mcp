@@ -21,7 +21,11 @@ function readJson(filePath, label) {
 const pdfs = fs.existsSync(documentsDir)
   ? fs.readdirSync(documentsDir).filter((file) => file.toLowerCase().endsWith(".pdf"))
   : [];
-if (!pdfs.length) failures.push("No PDF fixture found in documents/");
+let pdfMode = "real-pdf";
+if (!pdfs.length) {
+  const fixtureFiles = fs.existsSync(fixturesDir) ? fs.readdirSync(fixturesDir).filter((file) => file.endsWith(".json")) : [];
+  pdfMode = fixtureFiles.length ? "fixture/mock" : "skip-no-pdf";
+}
 
 const manualCases = readJson(path.join(evalDir, "manual-cases.json"), "eval/manual-cases.json");
 if (manualCases && !Array.isArray(manualCases.cases)) failures.push("eval/manual-cases.json must contain cases[]");
@@ -45,4 +49,5 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`Eval smoke: PASS (pdfs=${pdfs.length})`);
+if (pdfMode === "skip-no-pdf") console.log("No PDF fixture available; eval smoke skipped intentionally");
+console.log(`Eval smoke: PASS (mode=${pdfMode}, pdfs=${pdfs.length})`);

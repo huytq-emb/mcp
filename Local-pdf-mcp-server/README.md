@@ -1,56 +1,143 @@
 # Local PDF MCP Server
 
-## Figure retrieval architecture
+Local MCP server for AI agents working from PDF hardware manuals during Linux driver development.
 
-The MCP server does **not** attempt to fully understand engineering figures. It finds relevant figures in PDF manuals, renders them to cached PNG files, and returns surrounding textual context and searchable metadata.
+## What this server does
 
-```text
-MCP server = figure retrieval + canonical PNG cache + context pack
-AI agent   = visual reasoning / figure understanding
-```
+- Provides local PDF hardware-manual retrieval and evidence extraction.
+- Produces searchable text/page/register/bitfield/sequence/caution/table/figure evidence.
+- Returns local PNG paths for figures so the AI agent can inspect images visually.
+- Does not require network access after dependencies are installed.
+- Does not require Docker.
+- Optional Python/PyMuPDF/OCR can improve rendering and extraction paths, but is not required for the default unit/static workflow.
 
-Normal figure indexing avoids heavy OCR, vision-language, or semantic figure parsing. Optional OCR is available only to improve search/indexing, and OCR output should be treated as supporting text rather than final semantic truth.
-
-### Figure workflow
-
-1. `search_figures(filename, query)` to locate candidate figures by caption, section title, nearby text, cached OCR keywords, and related metadata.
-2. `get_figure_context_pack(filename, figure_id, dpi?)` to get the PNG path, image access metadata, caption, section title, nearby text, and related cached evidence.
-3. The AI agent opens `image_path` as an image.
-4. The AI agent analyzes the figure visually using its own multimodal model, with caption and nearby text only as supporting evidence.
-
-Canonical figure images are stored under `indexes/cache/figure-images`. Legacy `render/` or `renders/` folders are ignored by the AI-agent figure workflow, and their paths are not returned as AI-usable `image_path` values. AI agents should use `search_figures` followed by `get_figure_context_pack`.
-
-Every image-oriented figure response includes an `image_access` object with a local path, MIME type `image/png`, existence flag, and `agent_should_open_as_image: true`.
-
-### Figure tools
-
-- `list_figures(filename, page?, section?, limit?)` lists records from `<filename>.figures.json` without running heavy OCR/VL.
-- `search_figures(filename, query, page?, section?, limit?)` ranks manifest records using exact technical token matches, captions, section titles, nearby text, cached OCR keywords, and related evidence.
-- `get_figure_image(filename, figure_id, dpi?)` ensures a PNG exists and returns image metadata.
-- `get_figure_context_pack(filename, figure_id, dpi?, include_ocr=false, include_tables=true, include_cautions=true)` is the primary AI-agent handoff API. Optional `dpi` requests figure/page render quality and defaults to 200 when omitted.
-- `rebuild_figure_manifest(filename, page?, force=false)` rebuilds `<filename>.figures.json` without heavy OCR/VL by default.
-- `ocr_figure_for_search(filename, figure_id, force=false)` optionally runs lightweight OCR for search metadata only.
-
-Render integration tests that exercise real Python/PyMuPDF rendering probe for `python3` on non-Windows platforms (or `python` on Windows, unless `RENESAS_MCP_PYTHON` is set) and skip with a clear reason when `import fitz` is unavailable. The default unit workflow does not require OCR/VL, network access, or external Python dependencies.
-
-
-### Public figure toolset
-
-The advertised MCP figure tools are limited to:
+## Directory layout
 
 ```text
-rebuild_figure_manifest
-list_figures
-search_figures
-get_figure_image
-get_figure_context_pack
-ocr_figure_for_search
+Local-pdf-mcp-server/
+documents/                         PDF manuals go here
+indexes/                           generated indexes/artifacts/cache/job state
+indexes/cache/figure-images/       canonical figure PNG cache
+src/                               implementation
+docs/                              workflow docs
+python_worker/                     optional Python worker
+.venv/                             optional local Python virtual environment
 ```
 
-The public workflow is:
+## Windows setup
+
+```powershell
+cd Local-pdf-mcp-server
+npm install
+npm run check
+npm run startup-smoke
+npm run health
+```
+
+If PowerShell blocks `npm.ps1`, call `npm.cmd` directly:
+
+```powershell
+npm.cmd install
+npm.cmd run check
+npm.cmd run startup-smoke
+npm.cmd run health
+```
+
+Put PDFs under `documents/`. Generated artifacts, caches, and job state go under `indexes/`. The server should work without network access after dependencies are installed.
+
+## Optional Python/PyMuPDF setup
+
+Python/PyMuPDF is optional. It is useful for high-quality rendering, figure image extraction, and optional Python extraction paths. It is not required for basic unit/static tests. PaddleOCR is not required for normal workflow, and OCR unavailable is not fatal.
+
+Relevant environment variables:
+
+- `RENESAS_MCP_PYTHON`
+- `RENESAS_MCP_ROOT`
+- `PDF_MANUAL_MCP_ROOT`
+- `RENESAS_MCP_EXTRACTION_ENGINE`
+- `RENESAS_MCP_PYTHON_OPERATIONS`
+
+## MCP client config example
+
+```json
+{
+  "mcpServers": {
+    "local-pdf-mcp-server": {
+      "command": "node",
+      "args": [
+        "C:\\path\\to\\mcp\\Local-pdf-mcp-server\\index.js"
+      ],
+      "env": {
+        "RENESAS_MCP_ROOT": "C:\\path\\to\\mcp\\Local-pdf-mcp-server"
+      }
+    }
+  }
+}
+```
+
+## AI agent workflow
+
+See [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md) for the canonical AI-agent workflow. In short, keep manual facts, visual observations, source-code findings, and engineering inference separate.
+
+## First commands after adding a PDF
 
 ```text
-rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> open image_path visually
+list_pdfs
+pdf_info(filename="...")
+doctor(filename="...")
+index_pdf(filename="...", mode="background")
+mcp_control(action="list_jobs")
+mcp_control(action="job_status", job_id="...")
+validate_index(filename="...")
 ```
 
-Legacy figure tools such as `build_figures_index`, `find_figure`, `get_figure_context`, `inspect_figure`, `render_figure`, `render_figure_page`, `render_figure_region`, and `ocr_figure` are not advertised to MCP clients by default.
+## Figure commands
+
+Canonical retrieval-first figure workflow:
+
+```text
+rebuild_figure_manifest(filename="...")
+search_figures(filename="...", query="timing diagram")
+get_figure_context_pack(filename="...", figure_id="...")
+```
+
+The AI agent must open `image_path` visually. Caption, page text, and OCR text are supporting evidence only. Optional OCR can improve search metadata:
+
+```text
+ocr_figure_for_search(filename="...", figure_id="...")
+```
+
+OCR is optional and should not be required for normal figure retrieval. OCR/VL/semantic parser output is not final semantic truth.
+
+## Troubleshooting
+
+### Tool call canceled
+
+- Use background mode.
+- Use `mcp_control(action="job_status")`.
+- Avoid foreground full rebuilds on large manuals.
+
+### Large PDF timeout
+
+- Use `index_pdf(filename="...", mode="background")` or `mcp_control(action="rebuild_artifact", filename="...", artifact="...")`.
+- Poll with `mcp_control(action="job_status", job_id="...")`.
+
+### Stale lock
+
+- Run `doctor(filename="...")` and `validate_index(filename="...")` first.
+- Use `force_lock` only if no indexing worker is running.
+
+### Missing figures manifest
+
+- Run `rebuild_figure_manifest(filename="...")`.
+
+### `image_path` exists=false
+
+- Run `get_figure_image(filename="...", figure_id="...")`.
+- Confirm optional renderer/Python availability.
+- Treat visual evidence as unavailable if still missing.
+
+### OCR unavailable
+
+- Not fatal.
+- Normal figure workflow still works without OCR.

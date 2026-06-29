@@ -54,38 +54,36 @@ async function handle_explain_tool_usage(args = {}, meta = {}) {
     return textResult(formatToolUsage(String(args.tool_name || "").trim(), String(args.task || "").trim()));
 }
 
-async function handle_eval_health_check(args = {}, meta = {}) {
-  const name = meta.name || "eval_health_check";
-    const step40Action = String(args.step40_action || "health").trim().toLowerCase();
-    if (step40Action && step40Action !== "health") {
-      // Step 40.6: route status/job actions through eval_health_check because
-      // some VS Code AI-agent MCP clients keep cancelling newly-added tool
-      // names even when older tools are callable. This reuses the known-good
-      // eval_health_check transport path and avoids adding more tool names.
-      if (step40Action === "ping") {
+async function handle_mcp_control(args = {}, meta = {}) {
+  const name = meta.name || "mcp_control";
+    const action = String(args.action || "").trim().toLowerCase();
+    if (action) {
+      // Keep all control-plane actions behind the single public mcp_control tool
+      // instead of advertising separate direct Step 40 tools.
+      if (action === "ping") {
         return textResult([
-          "MCP server ping via eval_health_check: OK",
+          "MCP control ping: OK",
           `Server version: ${SERVER_VERSION}`,
           `Generated: ${nowIso()}`,
-          "Transport: eval_health_check(step40_action=ping)",
+          "Transport: mcp_control(action=\"ping\")",
         ].join("\n"));
       }
-      if (step40Action === "compat_report") {
+      if (action === "compat_report") {
         const report = buildStep407CompatibilityReport();
         if (Boolean(args.json)) return textResult(JSON.stringify(report, null, 2));
         return textResult(formatStep407CompatibilityReport(report));
       }
-      if (step40Action === "index_status_lite") {
+      if (action === "index_status_lite") {
         const status = getIndexStatusUltraMinimal(args.filename);
         if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
         return textResult(formatIndexStatusUltraMinimal(status));
       }
-      if (step40Action === "ocr_health") {
+      if (action === "ocr_health") {
         const status = await getOcrHealth({ force: true });
         if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
         return textResult(formatOcrHealthReport(status));
       }
-      if (step40Action === "rebuild_artifact") {
+      if (action === "rebuild_artifact") {
         const filename = args.filename;
         const artifact = normalizeArtifactName(args.artifact || "pages");
         const job = await startRebuildArtifactJob(filename, artifact, {
@@ -101,31 +99,31 @@ async function handle_eval_health_check(args = {}, meta = {}) {
           `Artifact: ${artifact}`,
           `Job ID: ${job.id}`,
           `Status: ${job.status}`,
-          `Mode: detached-worker via eval_health_check`,
+          `Mode: detached-worker via mcp_control`,
           "",
-          `Poll via: eval_health_check(step40_action="job_status", job_id="${job.id}")`,
-          `List via: eval_health_check(step40_action="list_jobs")`,
+          `Poll via: mcp_control(action="job_status", job_id="${job.id}")`,
+          `List via: mcp_control(action="list_jobs")`,
           `Persistent job state: ${safeJobsStatePath()}`,
         ].join("\n"));
       }
-      if (step40Action === "job_status") {
+      if (action === "job_status") {
         await refreshJobsStateFromDisk();
         const jobId = String(args.job_id || "").trim();
         const job = jobs.get(jobId);
         return textResult(formatJobStatus(job));
       }
-      if (step40Action === "list_jobs") {
+      if (action === "list_jobs") {
         await refreshJobsStateFromDisk();
         return textResult(formatJobsList());
       }
-      if (step40Action === "cancel_job") {
+      if (action === "cancel_job") {
         const jobId = String(args.job_id || "").trim();
         if (!jobId) throw new Error("job_id is required");
         const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
         if (!job) return textResult(`Job not found: ${jobId}`);
         return textResult(formatJobStatus(job));
       }
-      if (step40Action === "cleanup_jobs") {
+      if (action === "cleanup_jobs") {
         const statuses = Array.isArray(args.statuses) ? args.statuses.map(String) : undefined;
         const olderThanHours = Number(args.older_than_hours || 0);
         const removed = cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
@@ -137,33 +135,41 @@ async function handle_eval_health_check(args = {}, meta = {}) {
           `Persistent job state: ${safeJobsStatePath()}`,
         ].join("\n"));
       }
-      if (step40Action === "cache_status") {
+      if (action === "cache_status") {
         const status = await getCacheStatus(args);
         return jsonResult(status);
       }
-      if (step40Action === "cleanup_cache") {
+      if (action === "cleanup_cache") {
         const status = await cleanupCache(args);
         return jsonResult(status);
       }
-      if (step40Action === "figure_cache_status") {
+      if (action === "figure_cache_status") {
         const status = await getFigureCacheStatus(args);
         return jsonResult(status);
       }
-      if (step40Action === "cleanup_figure_cache") {
+      if (action === "cleanup_figure_cache") {
         const status = await cleanupFigureCache(args);
         return jsonResult(status);
       }
-      throw new Error(`Unknown eval_health_check step40_action: ${args.step40_action}`);
+      throw new Error(`Unknown mcp_control action: ${args.action}`);
     }
   
-    const report = await runEvalHealthCheck(args);
-    const writeReport = args.write_report === undefined ? true : Boolean(args.write_report);
-    const reportPaths = await maybeWriteEvalHealthReport(report, writeReport);
-    return textResult([
-      formatEvalHealthReport(report),
-      reportPaths.length ? "" : null,
-      ...reportPaths.map((p) => `Eval health report saved: ${p}`),
-    ].filter(Boolean).join("\n"));
+    throw new Error("mcp_control action is required");
+}
+
+async function handle_eval_health_check(args = {}, meta = {}) {
+  const name = meta.name || "eval_health_check";
+  if (Object.prototype.hasOwnProperty.call(args, "step40_action")) {
+    return textResult("Deprecated: use mcp_control(action=...) instead.");
+  }
+  const report = await runEvalHealthCheck(args);
+  const writeReport = args.write_report === undefined ? true : Boolean(args.write_report);
+  const reportPaths = await maybeWriteEvalHealthReport(report, writeReport);
+  return textResult([
+    formatEvalHealthReport(report),
+    reportPaths.length ? "" : null,
+    ...reportPaths.map((p) => `Eval health report saved: ${p}`),
+  ].filter(Boolean).join("\n"));
 }
 
 async function handle_list_eval_cases(args = {}, meta = {}) {
@@ -1753,6 +1759,7 @@ export function createRuntimeHandlers(_context = null) {
     "plan_manual_workflow": handle_plan_manual_workflow,
     "explain_tool_usage": handle_explain_tool_usage,
     "eval_health_check": handle_eval_health_check,
+    "mcp_control": handle_mcp_control,
     "list_eval_cases": handle_list_eval_cases,
     "run_eval": handle_run_eval,
     "doctor": handle_doctor_or_validate_index,

@@ -731,25 +731,60 @@ function anchorPageContext(text = "", figure = {}) {
   return { offset: Math.floor(text.length / 2), length: 0, method: "fallback", confidence: "low" };
 }
 
+function pageTextFromCache(cache, pageNumber) {
+  const page = (cache?.pages || []).find((p) => Number(p.page || p.pageNumber || p.number) === Number(pageNumber));
+  return page ? String(page.text || page.content || "") : "";
+}
+
+function isRuntimePortNotWired(error) {
+  return /Runtime port .*not wired|not wired/i.test(String(error?.message || error || ""));
+}
+
+export async function getCachedOrExtractedPageText(filename, pageNumber) {
+  const warnings = [];
+  try {
+    const cache = await getPagesCache(filename, { buildIfMissing: false });
+    const text = pageTextFromCache(cache, pageNumber);
+    if (text) return { text, source: "pages-cache", warning: "" };
+  } catch (error) {
+    if (!isRuntimePortNotWired(error)) warnings.push(`pages cache unavailable: ${String(error?.message || error).slice(0, 120)}`);
+    try {
+      const cache = await readJsonCached(safePagesCachePath(filename));
+      const text = pageTextFromCache(cache, pageNumber);
+      if (text) return { text, source: "pages-cache", warning: "" };
+    } catch (readError) {
+      if (!isRuntimePortNotWired(error)) warnings.push(`pages cache file unavailable: ${String(readError?.message || readError).slice(0, 120)}`);
+    }
+  }
+  try {
+    const pageData = await extractPdfPages(filename, { startPage: pageNumber, endPage: pageNumber });
+    const text = String(pageData.pages?.[0]?.text || "");
+    if (text) return { text, source: "single-page-extraction", warning: "" };
+  } catch (error) {
+    warnings.push(`single-page extraction unavailable: ${String(error?.message || error).slice(0, 120)}`);
+  }
+  return { text: "", source: "unavailable", warning: "page text unavailable", warnings };
+}
+
 export async function getFigureContextPack(filename, figureId, options = {}) {
   const index = await getFiguresIndex(filename, { buildIfMissing: Boolean(options.buildIfMissing) });
   const figure = (index.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
   if (!figure) throw new Error(`Figure not found: ${figureId}`);
   const image = await getFigureImage(filename, figure.figure_id || figureId, { dpi: options.dpi ?? figure.render?.dpi ?? 200 });
-  const pageData = await extractPdfPages(filename, { startPage: figure.page, endPage: figure.page });
-  const text = pageData.pages?.[0]?.text || "";
+  const pageText = await getCachedOrExtractedPageText(filename, figure.page);
+  const text = pageText.text || "";
   const caption = figure.caption || "";
-  const anchor = anchorPageContext(text, figure);
-  const before = text.slice(Math.max(0, anchor.offset - 2500), anchor.offset);
+  const anchor = text ? anchorPageContext(text, figure) : { offset: 0, length: 0, method: "unavailable", confidence: "low" };
+  const before = text ? text.slice(Math.max(0, anchor.offset - 2500), anchor.offset) : "";
   const afterStart = Math.min(text.length, anchor.offset + Math.max(anchor.length || 0, caption.length || 0));
-  const after = text.slice(afterStart, afterStart + 2500);
+  const after = text ? text.slice(afterStart, afterStart + 2500) : "";
   let ocr_text = [];
   if (options.include_ocr) {
     const ocrIndex = await loadFigureOcrIndex(filename).catch(() => null);
     const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
     if (cached) ocr_text = cached.ocr_text || cached.items || [];
   }
-  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: image.warnings || [], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} The image may be a full-page fallback because the exact figure bbox was unavailable.` : FIGURE_AGENT_INSTRUCTION };
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: [...(image.warnings || []), ...(pageText.warning ? [pageText.warning] : []), ...((pageText.warnings || []).filter((w) => w && !String(w).includes("not wired")).slice(0, 2))], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} The image may be a full-page fallback because the exact figure bbox was unavailable.` : FIGURE_AGENT_INSTRUCTION };
 }
 
 export async function ocrFigureForSearch(filename, figureId, options = {}) {
