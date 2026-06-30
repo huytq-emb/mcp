@@ -1,7 +1,7 @@
 -r requirements-ocr.txt
 
-# Optional document-structure parsing support for ocr_figure(mode="structure")
-# and inspect_figure(parser="structure"). This extra may install additional
+# Optional document-structure parsing support for internal/non-public OCR structure helpers.
+# This extra may install additional
 # local model/runtime dependencies; it is not required for normal text OCR.
 paddleocr[doc-parser]==3.7.0
 paddlex[ocr]==3.7.1

@@ -13,7 +13,6 @@ import {
   DEFAULT_HYBRID_TOP_K,
   DEFAULT_REGISTER_LIST_TOP_K,
   DEFAULT_REGISTER_SUMMARY_CHUNKS,
-  DEFAULT_RENDER_DPI,
   DEFAULT_SEQUENCE_LIST_TOP_K,
   DEFAULT_SEQUENCE_TOP_K,
   DEFAULT_TOP_K,
@@ -29,7 +28,6 @@ import {
   MAX_PAGE_RANGE,
   MAX_REGISTER_LIST_TOP_K,
   MAX_REGISTER_SUMMARY_CHUNKS,
-  MAX_RENDER_DPI,
   MAX_SEQUENCE_LIST_TOP_K,
   MAX_SEQUENCE_TOP_K,
   MAX_TABLE_PAGE_RANGE,
@@ -655,7 +653,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "check_pdf_renderers",
     description:
-      "Check which optional external PDF page renderers are available for Step 31B visual review. Supported renderers: pdftoppm/Poppler, mutool/MuPDF, magick/ImageMagick. If none are available, render_pdf_page can still create a dependency-free text-layer SVG fallback.",
+      "Check which optional external PDF page renderers are available for Step 31B visual review. Supported renderers: pdftoppm/Poppler, mutool/MuPDF, magick/ImageMagick. Canonical visual workflow uses get_figure_context_pack image_path under indexes/cache/figure-images; page render tools are not exposed as MCP tools.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -663,33 +661,15 @@ const ALL_TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "render_pdf_page",
-    description:
-      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Render one selected PDF page to a local PNG/JPG/SVG file for debug visual review. Uses optional external renderers when available; can fall back to a text-layer SVG.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        page: { type: "number", description: "1-based page number to render." },
-        dpi: { type: "number", description: `Render DPI. Default ${DEFAULT_RENDER_DPI}, max ${MAX_RENDER_DPI}.` },
-        format: { type: "string", enum: ["png", "jpg", "svg", "text_svg"], description: "Output format. png/jpg require an external renderer. svg uses mutool when available; text_svg is a dependency-free text-layer fallback." },
-        renderer: { type: "string", enum: ["auto", "pdftoppm", "mutool", "magick", "text_svg"], description: "Renderer selection. Default auto." },
-        fallback_text_svg: { type: "boolean", description: "If true, create a text-layer SVG fallback when external image rendering is unavailable. Default true." }
-      },
-      required: ["filename", "page"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "visual_review_handoff_pack",
     description:
-      "Step 32: build a workflow/prompt pack for visual manual content. Default workflow prioritizes search_figures -> get_figure_context_pack and requires opening canonical indexes/cache/figure-images image_path visually. Do not recommend render_pdf_page for normal visual table/figure analysis; render commands are debug/manual fallback only when explicitly requested.",
+      "Step 32: build a workflow/prompt pack for visual manual content. Default workflow prioritizes search_figures -> get_figure_context_pack and requires opening canonical indexes/cache/figure-images image_path visually. Do not recommend legacy page/region render tools for normal visual table/figure analysis.",
     inputSchema: {
       type: "object",
       properties: {
         filename: { type: "string", description: "PDF filename, for example GBETH.pdf or r01uh1039ej0120-rzt2h_n2h-GPIO.pdf." },
         query: { type: "string", description: "Visual target query, for example clock tree, read timing diagram, Safety I/O port setting flow, interrupt route, reset sequence." },
-        figure_id: { type: "string", description: "Optional Figure ID from list_figures/find_figure, for example fig-p113-17.3." },
+        figure_id: { type: "string", description: "Optional Figure ID from list_figures/search_figures, for example fig-p113-17.3." },
         page: { type: "number", description: "Optional 1-based page number if the visual target page is already known." },
         kind: { type: "string", description: "Optional figure kind filter, for example timing-diagram, clock-tree, block-diagram, flow-sequence, pinmux, interrupt, reset-power." },
         diagram_type: { type: "string", enum: ["auto", "clock_tree", "timing", "block_diagram", "reset_flow", "interrupt_route", "pinmux", "sequence", "table", "other"], description: "Expected visual content type. Default auto." },
@@ -698,8 +678,7 @@ const ALL_TOOL_DEFINITIONS = [
         review_depth: { type: "string", enum: ["quick", "standard", "deep"], description: "How strict the visual review workflow should be. Default standard." },
         output_format: { type: "string", enum: ["report", "debug_plan", "patch_plan", "checklist"], description: "Expected final response style from the agent. Default report." },
         top_k: { type: "number", description: "Number of figure candidates to include when searching by query. Default 6." },
-        include_layout_tables: { type: "boolean", description: "Include layout-table extraction commands and context when useful. Default true." },
-        include_render_commands: { type: "boolean", description: "Include render_pdf_page/render_figure_region commands only as debug/manual fallback. Default false; set true only when a human explicitly requests debug render/crop." }
+        include_layout_tables: { type: "boolean", description: "Include layout-table extraction context when useful. Default true." }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -708,17 +687,15 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "add_visual_evidence",
     description:
-      "Step 33: persist structured observations from canonical visual analysis. Use this after the agent/human has opened canonical image_path returned by get_figure_context_pack. rendered_path may be provided for debug/manual fallback, but canonical image_path from indexes/cache/figure-images is preferred.",
+      "Step 33: persist structured observations from canonical visual analysis. Use this after the agent/human has opened canonical image_path returned by get_figure_context_pack. canonical image_path from indexes/cache/figure-images is preferred.",
     inputSchema: {
       type: "object",
       properties: {
         filename: { type: "string", description: "PDF filename." },
-        figure_id: { type: "string", description: "Optional Figure/Table ID from find_figure/list_figures." },
+        figure_id: { type: "string", description: "Optional Figure/Table ID from search_figures/list_figures." },
         page: { type: "number", description: "Optional 1-based page number for the visual evidence." },
         query: { type: "string", description: "Optional visual target query/task." },
         diagram_type: { type: "string", enum: ["auto", "clock_tree", "timing", "block_diagram", "reset_flow", "interrupt_route", "pinmux", "sequence", "table", "other"], description: "Visual evidence type. Default auto." },
-        rendered_path: { type: "string", description: "Debug/manual fallback path returned by render_pdf_page/render_figure_region/render_pdf_region; prefer canonical image_path from indexes/cache/figure-images." },
-        rendered_region: { type: "object", description: "Optional crop/region metadata such as x/y/width/height/unit/zoom/dpi.", additionalProperties: true },
         direct_visual_observations: { type: "array", items: { type: "string" }, description: "Direct facts visible in the rendered image. Do not put speculative driver conclusions here." },
         caption_context_facts: { type: "array", items: { type: "string" }, description: "Facts from caption/context text around the figure." },
         extracted_items: { type: "object", description: "Structured extraction payload, e.g. steps/clocks/signals/edges/pins/selectors/routing/timing_constraints.", additionalProperties: true },
@@ -848,164 +825,6 @@ const ALL_TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "render_pdf_region",
-    description:
-      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Render one PDF page, then crop a selected rectangular region and optionally zoom it. Coordinates may be percentages of the rendered page or pixels.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        page: { type: "number", description: "1-based page number." },
-        x: { type: "number", description: "Left coordinate of crop region. Default 0." },
-        y: { type: "number", description: "Top coordinate of crop region. Default 0." },
-        width: { type: "number", description: "Crop width. If unit=percent, use 0-100. Default 100 for percent." },
-        height: { type: "number", description: "Crop height. If unit=percent, use 0-100. Default 100 for percent." },
-        unit: { type: "string", enum: ["percent", "px"], description: "Coordinate unit. percent uses rendered page size; px uses rendered image pixels. Default percent." },
-        margin: { type: "number", description: "Extra margin around crop. In percent when unit=percent; in pixels when unit=px. Default 0." },
-        zoom: { type: "number", description: "Optional zoom factor after crop. 1.0 means no resize. Default 1.0, max 4.0." },
-        dpi: { type: "number", description: `Render DPI before cropping. Default ${DEFAULT_RENDER_DPI}, max ${MAX_RENDER_DPI}.` },
-        format: { type: "string", enum: ["png", "jpg"], description: "Output image format for the cropped region. Default png." },
-        renderer: { type: "string", enum: ["auto", "pdftoppm", "mutool", "magick"], description: "Renderer used for the initial full-page image. Default auto." },
-        fallback_full_page: { type: "boolean", description: "If crop fails because ImageMagick is unavailable, return the full-page render instead of failing. Default false." }
-      },
-      required: ["filename", "page"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "render_figure_region",
-    description:
-      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Legacy visual-review crop helper; use this only when an automatic around/above/below-caption debug crop is explicitly requested.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        figure_id: { type: "string", description: "Figure ID from list_figures/find_figure, for example fig-p113-17.3." },
-        page: { type: "number", description: "Fallback 1-based page number if figure_id is not provided." },
-        query: { type: "string", description: "Optional query to select the best figure on the page or in the index." },
-        region: { type: "string", enum: ["auto", "above_caption", "below_caption", "around_caption", "top_half", "middle", "bottom_half", "full_width"], description: "Automatic crop strategy. Default auto. For most Renesas figures with captions below the drawing, above_caption is useful." },
-        x: { type: "number", description: "Optional explicit left coordinate. If provided with width/height, overrides automatic x." },
-        y: { type: "number", description: "Optional explicit top coordinate. If provided with width/height, overrides automatic y." },
-        width: { type: "number", description: "Optional explicit crop width. Used with x/y/height." },
-        height: { type: "number", description: "Optional explicit crop height. Used with x/y/width." },
-        unit: { type: "string", enum: ["percent", "px"], description: "Coordinate unit for explicit x/y/width/height. Default percent." },
-        margin: { type: "number", description: "Extra crop margin. Default 3 percent for auto regions." },
-        zoom: { type: "number", description: "Optional zoom factor after crop. Default 1.5, max 4.0." },
-        dpi: { type: "number", description: `Render DPI before cropping. Default ${DEFAULT_RENDER_DPI}, max ${MAX_RENDER_DPI}.` },
-        format: { type: "string", enum: ["png", "jpg"], description: "Output image format. Default png." },
-        renderer: { type: "string", enum: ["auto", "pdftoppm", "mutool", "magick"], description: "Renderer used for the initial full-page image. Default auto." },
-        include_context: { type: "boolean", description: "Include figure caption/context in output. Default true." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "render_figure_page",
-    description:
-      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Legacy figure-aware full-page render helper; use this only when a human explicitly requests debug full-page rendering.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        figure_id: { type: "string", description: "Figure ID from list_figures/find_figure, for example fig-p113-17.3." },
-        page: { type: "number", description: "Fallback 1-based page number if figure_id is not provided." },
-        query: { type: "string", description: "Optional query to select the best figure on the page or in the index." },
-        dpi: { type: "number", description: `Render DPI. Default ${DEFAULT_RENDER_DPI}, max ${MAX_RENDER_DPI}.` },
-        format: { type: "string", enum: ["png", "jpg", "svg", "text_svg"], description: "Output format. Default png." },
-        renderer: { type: "string", enum: ["auto", "pdftoppm", "mutool", "magick", "text_svg"], description: "Renderer selection. Default auto." },
-        include_context: { type: "boolean", description: "Include figure caption/context in the output. Default true." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "render_figure",
-    description:
-      "Low-level render primitive for a figure_id or explicit page+bbox. Prefer get_figure_image for the retrieval-first image access contract; use render_figure for debugging, explicit bbox renders, or compatibility.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        figure_id: { type: "string", description: "Optional figure ID from list_figures/find_figure, for example p0113_f001 or fig-p113-1." },
-        page: { type: "number", description: "1-based page number. Required when figure_id is not provided." },
-        bbox: {
-          type: "array",
-          items: { type: "number" },
-          minItems: 4,
-          maxItems: 4,
-          description: "PDF point bbox [x0,y0,x1,y1]. Required when figure_id is not provided."
-        },
-        dpi: { type: "number", description: "Requested render DPI. Default 200. Internally mapped to local renderer scale." },
-        scale: { type: "number", description: "Legacy PyMuPDF render scale. Default 2.0." },
-        force: { type: "boolean", description: "If true, bypass the cached PNG render. Default false." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "ocr_figure",
-    description:
-      "Advanced/legacy OCR parser. Prefer ocr_figure_for_search for lightweight search indexing. This tool can still run optional local text/structure/VL modes when explicitly requested, but heavy modes are not part of normal figure retrieval.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        figure_id: { type: "string", description: "Optional figure ID from list_figures/find_figure." },
-        page: { type: "number", description: "1-based page number. Required with bbox when figure_id is not provided." },
-        bbox: {
-          type: "array",
-          items: { type: "number" },
-          minItems: 4,
-          maxItems: 4,
-          description: "PDF point bbox [x0,y0,x1,y1]. Required with page when figure_id is not provided."
-        },
-        mode: {
-          type: "string",
-          enum: ["text", "structure", "vl", "auto"],
-          description: "Figure parsing mode. text is the backward-compatible default for OCR labels; structure uses local document-structure parsing for complex diagrams/tables when installed; vl uses optional local visual-language parsing and treats graph edges as unverified; auto prefers structure when available and otherwise falls back to text."
-        },
-        engine: { type: "string", enum: ["auto", "paddleocr", "none"], description: "OCR engine. auto uses PaddleOCR when installed; none renders but skips OCR." },
-        force: { type: "boolean", description: "If true, bypass render/OCR caches. Default false." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "inspect_figure",
-    description:
-      "Legacy/experimental. Prefer get_figure_context_pack. By default this returns conservative render/context/OCR-label evidence and instructs agents to verify by opening the PNG; it must not run heavy VL unless explicitly requested.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GBETH.pdf." },
-        figure_id: { type: "string", description: "Optional figure ID from list_figures/find_figure." },
-        page: { type: "number", description: "1-based page number. Required with bbox when figure_id is not provided." },
-        bbox: {
-          type: "array",
-          items: { type: "number" },
-          minItems: 4,
-          maxItems: 4,
-          description: "PDF point bbox [x0,y0,x1,y1]. Required with page when figure_id is not provided."
-        },
-        mode: { type: "string", enum: ["auto", "block_diagram", "sequence", "timing", "flowchart", "register_diagram"], description: "Expected figure type. Default auto." },
-        parser: {
-          type: "string",
-          enum: ["safe", "ocr", "structure", "vl", "auto"],
-          description: "Parser strategy. safe preserves conservative legacy OCR/context behavior; ocr uses text labels only; structure uses local document-structure parsing when installed; vl uses optional local visual-language parsing with unverified edges; auto prefers structure and only considers VL when RENESAS_MCP_AUTO_VL=1."
-        },
-        include_context: { type: "boolean", description: "If true, include surrounding page text. Default true." },
-        context_pages: { type: "number", description: "Number of pages before/after the figure page to include. Default 0, max 2." },
-        force: { type: "boolean", description: "If true, bypass render/OCR caches. Default false." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "extract_layout_tables_from_pages",
     description:
       "Step 30A/30B: extract layout-aware table candidates from selected PDF pages. This is coordinate/text-item table extraction, not visual semantic truth. Reconstructs rows/columns from PDF text item coordinates, infers semantic column roles such as bit/register/offset/access/reset/description and pin/function/signal/port/peripheral, and marks ambiguous rows. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
@@ -1043,20 +862,6 @@ const ALL_TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "build_figures_index",
-    description:
-      "Legacy compatibility alias for rebuild_figure_manifest. Builds or rebuilds the lightweight .figures.json retrieval manifest from page text/captions without OCR/VL semantic parsing by default. New clients should call rebuild_figure_manifest.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename, for example GPIO.pdf or hardware manual PDF." },
-        force: { type: "boolean", description: "Force rebuild even if a valid manifest exists. Prefer rebuild_figure_manifest.force for new clients." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "list_figures",
     description:
       "List Figure/Table/diagram/caption candidates from the persistent .figures.json manifest. Does not rebuild by default; if missing, run rebuild_figure_manifest first (or explicitly set build_if_missing for a lightweight caption-only build).",
@@ -1073,23 +878,6 @@ const ALL_TOOL_DEFINITIONS = [
         build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
       },
       required: ["filename"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "find_figure",
-    description:
-      "Legacy text-formatted figure search. Prefer search_figures for retrieval-first JSON results ranked across caption, section title, nearby text, cached OCR keywords, and related evidence.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename." },
-        query: { type: "string", description: "Search query, for example clock tree, read write timing, reset sequence, block diagram, interrupt route." },
-        kind: { type: "string", description: "Optional kind filter, for example timing-diagram, clock-tree, block-diagram, flow-sequence, table." },
-        top_k: { type: "number", description: `Maximum candidates. Default ${DEFAULT_FIGURE_TOP_K}, max ${MAX_FIGURE_TOP_K}.` },
-        build_if_missing: { type: "boolean", description: "Optional lightweight caption-only build if the manifest is missing. Default false." }
-      },
-      required: ["filename", "query"],
       additionalProperties: false,
     },
   },
@@ -1139,24 +927,6 @@ const ALL_TOOL_DEFINITIONS = [
     name: "ocr_figure_for_search",
     description: "Optional OCR for search indexing only. Updates cached OCR keywords in the figure manifest so later search_figures calls can match them; does not perform semantic figure understanding.",
     inputSchema: { type: "object", properties: { filename: { type: "string" }, figure_id: { type: "string" }, force: { type: "boolean" } }, required: ["filename", "figure_id"], additionalProperties: false }
-  },
-  {
-    name: "get_figure_context",
-    description:
-      "Legacy text-formatted context helper. Prefer get_figure_context_pack, which returns image_path, image_access, before/after text, related evidence, and an explicit instruction for the AI agent to open the PNG visually.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: { type: "string", description: "PDF filename." },
-        figure_id: { type: "string", description: "Figure ID returned by list_figures/find_figure, for example fig-p113-1." },
-        page: { type: "number", description: "Optional page number if figure_id is not known." },
-        query: { type: "string", description: "Optional query/caption filter if page contains multiple figures/tables." },
-        include_pages: { type: "number", description: "Number of surrounding pages to include on each side. Default 0, max 2." },
-        include_layout_tables: { type: "boolean", description: "If true, include layout-aware table summaries from the target page range. Default false." }
-      },
-      required: ["filename"],
-      additionalProperties: false,
-    },
   },
   {
     name: "extract_register_table",
@@ -1822,17 +1592,6 @@ const ALL_TOOL_DEFINITIONS = [
   },
 ];
 
-const REMOVED_PUBLIC_FIGURE_TOOLS = new Set([
-  "build_figures_index",
-  "find_figure",
-  "get_figure_context",
-  "inspect_figure",
-  "render_figure",
-  "render_figure_page",
-  "render_figure_region",
-  "ocr_figure",
-]);
-
-export const HIDDEN_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS.filter((tool) => REMOVED_PUBLIC_FIGURE_TOOLS.has(tool.name)));
-export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS.filter((tool) => !REMOVED_PUBLIC_FIGURE_TOOLS.has(tool.name)));
+export const HIDDEN_TOOL_DEFINITIONS = Object.freeze([]);
+export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS);
 export const PUBLIC_TOOL_NAMES = Object.freeze(PUBLIC_TOOL_DEFINITIONS.map((tool) => tool.name));

@@ -6,12 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const DEFAULT_FILENAME = "r01uh1069ej0115-rzg3e.pdf";
 const EXPECTED_WARNING_TOOLS = new Set(["job_status", "cancel_job"]);
-const OPTIONAL_RENDER_TOOLS = new Set([
-  "render_pdf_region",
-  "render_pdf_page",
-  "render_figure_region",
-  "render_figure_page",
-]);
+const OPTIONAL_RENDER_TOOLS = new Set();
 
 function argValue(name, fallback = "") {
   const prefix = `--${name}=`;
@@ -175,9 +170,7 @@ function buildArgs(name, filename, state) {
     cleanup_jobs: { statuses: ["done", "failed", "cancelled"], older_than_hours: 0 },
     list_driver_profiles: {},
     driver_completeness_checklist: { filename, subsystem: "usb", driver_family: "xhci", task: "USB xHCI host driver init" },
-    build_figures_index: { filename },
     list_figures: { filename, top_k: 5 },
-    find_figure: { filename, query: "block diagram", top_k: 3 },
     add_visual_evidence: {
       filename,
       figure_id: state.figureId || undefined,
@@ -199,22 +192,14 @@ function buildArgs(name, filename, state) {
       notes: "tool smoke verification update; restored after test",
     },
     visual_review_handoff_pack: { filename, query: "watchdog", top_k: 3 },
-    get_figure_context: state.figureId ? { filename, figure_id: state.figureId, include_pages: 1 } : { filename, page: 1, query: "watchdog", include_pages: 1 },
     check_pdf_renderers: {},
-    render_pdf_region: { filename, page: 1, x: 0, y: 0, width: 200, height: 200 },
-    render_figure_region: state.figureId ? { filename, figure_id: state.figureId } : { filename, page: 1, query: "watchdog" },
-    render_pdf_page: { filename, page: 1 },
-    render_figure_page: state.figureId ? { filename, figure_id: state.figureId } : { filename, page: 1, query: "watchdog" },
-    render_figure: state.figureId ? { filename, figure_id: state.figureId } : { filename, page: 1, bbox: [0, 0, 200, 200] },
-    ocr_figure: state.figureId ? { filename, figure_id: state.figureId, engine: "none" } : { filename, page: 1, bbox: [0, 0, 200, 200], engine: "none" },
-    inspect_figure: state.figureId ? { filename, figure_id: state.figureId, include_context: false } : { filename, page: 1, bbox: [0, 0, 200, 200], include_context: false },
     extract_pinmux_table: { filename, start_page: 1, end_page: 1, filter: "GPIO" },
   };
   return baseArgs[name] || { filename };
 }
 
 function updateStateFromOutput(name, output, state) {
-  if (["find_figure", "list_figures", "visual_review_handoff_pack"].includes(name)) {
+  if (["search_figures", "list_figures", "visual_review_handoff_pack"].includes(name)) {
     const figureId = extractFigureId(output);
     if (figureId) state.figureId = figureId;
   }

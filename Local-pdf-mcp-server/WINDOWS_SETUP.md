@@ -278,12 +278,12 @@ Expected OCR health shape includes:
 
 `available=true` means the package/export check passed. It does not guarantee
 that model inference has already succeeded. Run `ocr:prewarm` or a real
-`ocr_figure`/`inspect_figure` smoke test to verify model availability.
+`ocr_figure_for_search` and canonical figure-image tests to verify model availability.
 Actual responses use normal JSON booleans (`true` or `false`).
 
 `modelCount` may be `0` until you run `ocr:prewarm` or copy model files.
 
-By default, `inspect_figure(parser="auto")` avoids selecting PaddleOCR-VL
+By default, the canonical figure workflow avoids selecting PaddleOCR-VL
 because VL can be slow or model-cache sensitive on Windows. To allow auto mode
 to select VL for timing/sequence/flowchart figures when PP-Structure is not
 available, set:

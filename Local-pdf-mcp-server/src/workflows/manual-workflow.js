@@ -117,7 +117,7 @@ export async function buildManualWorkflowPlan(options = {}) {
       calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate visual artifacts only; this does not provide visual semantics."));
       calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Main visual-semantics entry point. Open image_path visually; must not answer from text extraction only. OCR/page text is locator/supporting evidence only, not semantic truth."));
       calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
-      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true, include_render_commands: false }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Open image_path visually."));
+      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Open image_path visually."));
       calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<evidence_id_from_add_visual_evidence_or_visual_evidence_verification_queue>", status: "verified", verification_note: "<manual/text/register evidence used to verify the visual observation>" }, "Driver-critical table/figure evidence should be verified before use; OCR/page text may support but not replace visual review."));
     }
 
@@ -198,20 +198,10 @@ export const TOOL_USAGE_CATALOG = {
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
   extract_layout_tables_from_pages: { when: "Coordinate/text-item table extraction, not visual semantic truth. Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json.", next: "search_figures -> get_figure_context_pack for visual/captioned tables", trust: "locator/supporting only for visual content" },
-  render_pdf_page: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
-  render_pdf_region: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
   rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
   search_figures: { when: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables live in .figures.json. This locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then open returned image_path visually", trust: "locator only" },
   get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "AI agent opens image_path visually before semantic claims", trust: "image_path is semantic truth source after visual open" },
-  build_figures_index: { when: "Hidden legacy compatibility alias for rebuild_figure_manifest; do not advertise in normal workflows.", next: "rebuild_figure_manifest -> search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  find_figure: { when: "Hidden legacy compatibility alias for text-formatted figure search; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  get_figure_context: { when: "Hidden legacy compatibility alias for text-formatted figure context; prefer context packs with image_path/image_access.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  render_figure: { when: "Hidden legacy compatibility path only; do not advertise in normal workflows.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  render_figure_page: { when: "Hidden legacy compatibility path only; prefer retrieval-first figure workflow before rendering whole pages.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  render_figure_region: { when: "Hidden legacy compatibility path only; prefer manifest-backed figure images/context packs.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  ocr_figure: { when: "Hidden legacy compatibility path only; OCR is optional search metadata, not semantic truth.", next: "ocr_figure_for_search only when search keywords need OCR", trust: "deprecated compatibility" },
-  inspect_figure: { when: "Hidden legacy compatibility path only; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack; render commands are debug/manual fallback only when explicitly requested.", next: "open canonical image_path, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
+  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack and canonical image_path review.", next: "open canonical image_path, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
   verify_visual_evidence: { when: "Mark visual/table evidence as verified/rejected/needs_verification.", next: "driver_completeness_checklist/source_review_prompt_pack", trust: "verified visual evidence if status=verified" },
   driver_completeness_checklist: { when: "Create subsystem/profile checklist for source review.", next: "source_review_prompt_pack", trust: "review contract" },
   build_driver_evidence_pack: { when: "Collect module-level manual anchors for driver review/debug.", next: "source_review_prompt_pack", trust: "evidence pack" },
@@ -223,18 +213,7 @@ export const TOOL_USAGE_CATALOG = {
   run_eval: { when: "Run regression/smoke cases against a manual.", next: "fix failures or add fixtures", trust: "regression signal" },
 };
 
-const HIDDEN_USAGE_TOOLS = new Set([
-  "build_figures_index",
-  "find_figure",
-  "get_figure_context",
-  "inspect_figure",
-  "render_figure",
-  "render_figure_page",
-  "render_figure_region",
-  "render_pdf_page",
-  "render_pdf_region",
-  "ocr_figure",
-]);
+const HIDDEN_USAGE_TOOLS = new Set();
 
 function visibleToolUsageNames() {
   return Object.keys(TOOL_USAGE_CATALOG).filter((key) => !HIDDEN_USAGE_TOOLS.has(key)).sort();
@@ -355,13 +334,13 @@ export async function runEvalHealthCheck(options = {}) {
   try { pkg = JSON.parse(await fs.readFile(path.join(__dirname, "package.json"), "utf-8")); add("package.json", "pass", `test=${pkg.scripts?.test || "missing"}`); } catch (e) { add("package.json", "fail", e.message); }
   const extractionRuntime = await getHybridRuntimeStatus();
   add("hybrid extraction runtime", extractionRuntime.pythonReady || extractionRuntime.mode === "auto" ? "pass" : "fail", extractionRuntime.pythonReady ? `engine=python; version=${extractionRuntime.versions?.python || "unknown"}` : `engine=node-fallback; ${extractionRuntime.reason || "Python unavailable"}`);
-  const figureOcrToolNames = ["render_figure", "ocr_figure", "inspect_figure"];
-  const missingFigureOcrTools = figureOcrToolNames.filter((name) => !toolNames.includes(name) || !handlersSource.includes(`"${name}": handle_`));
+  const canonicalFigureToolNames = ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "get_figure_image", "ocr_figure_for_search"];
+  const missingFigureTools = canonicalFigureToolNames.filter((name) => !toolNames.includes(name) || !handlersSource.includes(`"${name}": handle_`));
   const ocrHealth = await getOcrHealth({ timeoutMs: 10_000 });
   const pymupdfVersion = ocrHealth.python?.versions?.pymupdf || ocrHealth.versions?.pymupdf || "";
   const renderCapable = ocrHealth.python?.ok !== false && Boolean(pymupdfVersion);
-  add("figure_ocr_tools", missingFigureOcrTools.length ? "fail" : "pass", [
-    missingFigureOcrTools.length ? `missing_tools=${missingFigureOcrTools.join(",")}` : "tools=render_figure,ocr_figure,inspect_figure",
+  add("canonical_figure_tools", missingFigureTools.length ? "fail" : "pass", [
+    missingFigureTools.length ? `missing_tools=${missingFigureTools.join(",")}` : "tools=rebuild_figure_manifest,search_figures,get_figure_context_pack,get_figure_image,ocr_figure_for_search",
     renderCapable ? `pymupdf=${pymupdfVersion}` : "pymupdf=unavailable",
     ocrHealth.ocr?.available ? `ocr=${ocrHealth.ocr.engine || "paddleocr"} available` : `ocr=optional-missing (${ocrHealth.ocr?.hint || "install requirements-ocr.txt"})`,
   ].join("; "));

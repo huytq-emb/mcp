@@ -5,11 +5,11 @@ import { formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.
 import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
-import { findFigure, formatFigureContext, formatFigureList, getFigureContext, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch, tableCoverageReport } from "../domains/figures.js";
+import { formatFigureList, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch, tableCoverageReport } from "../domains/figures.js";
 import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../domains/manual-intelligence.js";
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
-import { detectPdfRenderers, formatRegionRenderResult, formatRenderFigureRegionResult, formatRenderFigureResult, formatRenderResult, formatRendererAvailability, renderFigurePage, renderFigureRegion, renderPdfPage, renderPdfRegion } from "../domains/rendering.js";
+import { detectPdfRenderers, formatRendererAvailability } from "../domains/rendering.js";
 import { detectVisualSemanticIntent, withVisualSemanticGuard } from "../core/visual-guard.js";
 import { addVisualEvidence, buildVisualEvidenceReport, buildVisualEvidenceVerificationQueue, buildVisualReviewHandoffPack, formatAddVisualEvidence, formatGetVisualEvidence, formatListVisualEvidence, formatVerifyVisualEvidence, formatVisualEvidenceReport, formatVisualEvidenceVerificationQueue, formatVisualReviewHandoffPack, getVisualEvidence, listVisualEvidence, updateVisualEvidenceVerification } from "../domains/visual-evidence.js";
 import { DEFAULT_GOLDEN_PROFILE } from "../eval/golden.js";
@@ -17,7 +17,7 @@ import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalC
 import { doctorPdfs, formatDoctorReport, maybeWriteDoctorReports } from "../services/doctor.js";
 import { buildPdfIndex, formatChunkTypeStats, formatRegisterIndexResults, formatRegisterListResults, getChunkTypeStats, isIndexUsable, listRegistersFromIndex, loadPdfIndex, loadRegistersIndex, loadSectionsIndex, looksLikeRegisterSymbol, searchRegistersIndex } from "../services/indexing.js";
 import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob, writeArtifactManifest } from "../services/jobs.js";
-import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth, inspectFigureOnDemand, ocrFigureOnDemand, renderFigureOnDemand } from "../services/ocr.js";
+import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth } from "../services/ocr.js";
 import { getHybridRuntimeStatus } from "../services/python-worker.js";
 import { loadPagesCache } from "../services/pdf.js";
 import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, loadBitfieldsIndex, searchPdfIndex, searchSectionsIndex } from "../services/search.js";
@@ -30,7 +30,6 @@ const extractPdfPages = createRuntimePort("extractPdfPages");
 const getPdfPageCount = createRuntimePort("getPdfPageCount");
 
 const LEGACY_CONTROL_WARNING = "Deprecated compatibility path. Prefer mcp_control(action=...).";
-const LEGACY_FIGURE_WARNING = "Deprecated compatibility path. Prefer search_figures -> get_figure_context_pack.";
 
 function requireStringArg(args, key, action) {
   const value = String(args?.[key] || "").trim();
@@ -938,22 +937,6 @@ async function handle_list_bitfields(args = {}, meta = {}) {
     }));
 }
 
-async function handle_build_figures_index(args = {}, meta = {}) {
-  const name = meta.name || "build_figures_index";
-    const filename = args.filename;
-    const result = await rebuildFigureManifest(filename, { force: Boolean(args.force) });
-    return legacyTextResult(LEGACY_FIGURE_WARNING, [
-      `Built figures/captions index manifest for ${filename}.`,
-      `Compatibility note: build_figures_index is a legacy alias; prefer rebuild_figure_manifest for new clients.`,
-      `Path: ${result.manifest_path || safeFiguresIndexPath(filename)}`,
-      `Pages: ${result.pageCount || 0}`,
-      `Figures/captions: ${result.figureCount || 0}`,
-      `Kind stats: ${JSON.stringify(result.kindStats || {})}`,
-      "",
-      `Next: list_figures(filename="${filename}") or search_figures(filename="${filename}", query="...")`,
-    ].join("\n"));
-}
-
 async function handle_list_figures(args = {}, meta = {}) {
   const name = meta.name || "list_figures";
     const filename = args.filename;
@@ -967,19 +950,6 @@ async function handle_list_figures(args = {}, meta = {}) {
     return textResult(formatFigureList(result, "list"));
 }
 
-async function handle_find_figure(args = {}, meta = {}) {
-  const name = meta.name || "find_figure";
-    const filename = args.filename;
-    const result = await findFigure(filename, {
-      query: String(args.query || "").trim(),
-      kind: String(args.kind || "").trim(),
-      topK: args.top_k,
-      buildIfMissing: Boolean(args.build_if_missing),
-    });
-    return legacyTextResult(LEGACY_FIGURE_WARNING, formatFigureList(result, "find"));
-}
-
-
 async function handle_search_figures(args = {}, meta = {}) {
   const result = await searchFigures(args.filename, { query: args.query, page: args.page, section: args.section, kind: args.kind, limit: args.limit ?? args.top_k, buildIfMissing: Boolean(args.build_if_missing) });
   return jsonResult(result);
@@ -991,7 +961,12 @@ async function handle_get_figure_image(args = {}, meta = {}) {
 }
 
 async function handle_get_figure_context_pack(args = {}, meta = {}) {
-  const result = await getFigureContextPack(args.filename, String(args.figure_id || "").trim(), { include_ocr: Boolean(args.include_ocr), include_tables: args.include_tables !== false, include_cautions: args.include_cautions !== false, dpi: args.dpi });
+  const result = await getFigureContextPack(args.filename, String(args.figure_id || "").trim(), {
+    include_ocr: Boolean(args.include_ocr),
+    include_tables: args.include_tables !== false,
+    include_cautions: args.include_cautions !== false,
+    dpi: args.dpi,
+  });
   return jsonResult(result);
 }
 
@@ -1118,142 +1093,14 @@ async function handle_visual_review_handoff_pack(args = {}, meta = {}) {
       outputFormat: String(args.output_format || "report").trim(),
       topK: args.top_k,
       includeLayoutTables: args.include_layout_tables !== false,
-      includeRenderCommands: args.include_render_commands === true,
     });
     return textResult(formatVisualReviewHandoffPack(pack));
-}
-
-async function handle_get_figure_context(args = {}, meta = {}) {
-  const name = meta.name || "get_figure_context";
-    const filename = args.filename;
-    const result = await getFigureContext(filename, {
-      figureId: String(args.figure_id || "").trim(),
-      page: args.page,
-      query: String(args.query || "").trim(),
-      includePages: args.include_pages,
-      includeLayoutTables: Boolean(args.include_layout_tables),
-    });
-    return legacyTextResult(LEGACY_FIGURE_WARNING, formatFigureContext(result));
 }
 
 async function handle_check_pdf_renderers(args = {}, meta = {}) {
   const name = meta.name || "check_pdf_renderers";
     const availability = await detectPdfRenderers();
     return textResult(formatRendererAvailability(availability));
-}
-
-async function handle_render_pdf_region(args = {}, meta = {}) {
-  const name = meta.name || "render_pdf_region";
-    const filename = args.filename;
-    const result = await renderPdfRegion(filename, {
-      page: args.page,
-      x: args.x,
-      y: args.y,
-      width: args.width,
-      height: args.height,
-      unit: args.unit || "percent",
-      margin: args.margin,
-      zoom: args.zoom,
-      dpi: args.dpi,
-      format: args.format || "png",
-      renderer: args.renderer || "auto",
-      fallbackFullPage: Boolean(args.fallback_full_page),
-    });
-    return textResult(formatRegionRenderResult(result));
-}
-
-async function handle_render_figure_region(args = {}, meta = {}) {
-  const name = meta.name || "render_figure_region";
-    const filename = args.filename;
-    const result = await renderFigureRegion(filename, {
-      figureId: String(args.figure_id || "").trim(),
-      page: args.page,
-      query: String(args.query || "").trim(),
-      region: String(args.region || "auto").trim(),
-      x: args.x,
-      y: args.y,
-      width: args.width,
-      height: args.height,
-      unit: args.unit || "percent",
-      margin: args.margin,
-      zoom: args.zoom,
-      dpi: args.dpi,
-      format: args.format || "png",
-      renderer: args.renderer || "auto",
-      includeContext: args.include_context !== false,
-    });
-    return legacyTextResult(LEGACY_FIGURE_WARNING, formatRenderFigureRegionResult(result));
-}
-
-async function handle_render_pdf_page(args = {}, meta = {}) {
-  const name = meta.name || "render_pdf_page";
-    const filename = args.filename;
-    const result = await renderPdfPage(filename, {
-      page: args.page,
-      dpi: args.dpi,
-      format: args.format || "png",
-      renderer: args.renderer || "auto",
-      fallbackTextSvg: args.fallback_text_svg !== false,
-    });
-    return textResult(formatRenderResult(result));
-}
-
-async function handle_render_figure_page(args = {}, meta = {}) {
-  const name = meta.name || "render_figure_page";
-    const filename = args.filename;
-    const result = await renderFigurePage(filename, {
-      figureId: String(args.figure_id || "").trim(),
-      page: args.page,
-      query: String(args.query || "").trim(),
-      dpi: args.dpi,
-      format: args.format || "png",
-      renderer: args.renderer || "auto",
-      includeContext: args.include_context !== false,
-    });
-    return legacyTextResult(LEGACY_FIGURE_WARNING, formatRenderFigureResult(result));
-}
-
-async function handle_render_figure(args = {}, meta = {}) {
-  const name = meta.name || "render_figure";
-    const result = await renderFigureOnDemand({
-      filename: args.filename,
-      figure_id: String(args.figure_id || "").trim(),
-      page: args.page,
-      bbox: args.bbox,
-      scale: args.scale || (args.dpi ? Number(args.dpi) / 100 : undefined),
-      force: Boolean(args.force),
-    });
-    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
-}
-
-async function handle_ocr_figure(args = {}, meta = {}) {
-  const name = meta.name || "ocr_figure";
-    const result = await ocrFigureOnDemand({
-      filename: args.filename,
-      figure_id: String(args.figure_id || "").trim(),
-      page: args.page,
-      bbox: args.bbox,
-      engine: String(args.engine || "auto").trim(),
-      mode: args.mode === undefined ? undefined : String(args.mode || "").trim(),
-      force: Boolean(args.force),
-    });
-    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
-}
-
-async function handle_inspect_figure(args = {}, meta = {}) {
-  const name = meta.name || "inspect_figure";
-    const result = await inspectFigureOnDemand({
-      filename: args.filename,
-      figure_id: String(args.figure_id || "").trim(),
-      page: args.page,
-      bbox: args.bbox,
-      mode: String(args.mode || "auto").trim(),
-      parser: args.parser === undefined ? undefined : String(args.parser || "").trim(),
-      include_context: args.include_context,
-      context_pages: args.context_pages,
-      force: Boolean(args.force),
-    });
-    return legacyJsonResult(LEGACY_FIGURE_WARNING, result);
 }
 
 async function handle_extract_layout_tables_from_pages(args = {}, meta = {}) {
@@ -1822,9 +1669,7 @@ export function createRuntimeHandlers(_context = null) {
     "list_registers": handle_list_registers,
     "find_bitfield": handle_find_bitfield,
     "list_bitfields": handle_list_bitfields,
-    "build_figures_index": handle_build_figures_index,
     "list_figures": handle_list_figures,
-    "find_figure": handle_find_figure,
     "search_figures": handle_search_figures,
     "get_figure_image": handle_get_figure_image,
     "get_figure_context_pack": handle_get_figure_context_pack,
@@ -1838,15 +1683,7 @@ export function createRuntimeHandlers(_context = null) {
     "visual_evidence_verification_queue": handle_visual_evidence_verification_queue,
     "verify_visual_evidence": handle_verify_visual_evidence,
     "visual_review_handoff_pack": handle_visual_review_handoff_pack,
-    "get_figure_context": handle_get_figure_context,
     "check_pdf_renderers": handle_check_pdf_renderers,
-    "render_pdf_region": handle_render_pdf_region,
-    "render_figure_region": handle_render_figure_region,
-    "render_pdf_page": handle_render_pdf_page,
-    "render_figure_page": handle_render_figure_page,
-    "render_figure": handle_render_figure,
-    "ocr_figure": handle_ocr_figure,
-    "inspect_figure": handle_inspect_figure,
     "extract_layout_tables_from_pages": handle_extract_layout_tables_from_pages,
     "extract_tables_from_pages": handle_extract_tables_from_pages,
     "extract_pinmux_table": handle_extract_pinmux_table,

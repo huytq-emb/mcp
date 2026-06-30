@@ -601,7 +601,7 @@ export async function getFigureContext(filename, options = {}) {
     const found = await findFigure(filename, { query, topK: 1 });
     figure = found.results[0] || null;
   }
-  if (!figure) throw new Error("Figure/table context not found. Provide figure_id from list_figures/find_figure, or pass page/query.");
+  if (!figure) throw new Error("Figure/table context not found. Provide figure_id from search_figures/list_figures, or pass page/query.");
 
   const pageCount = index.pageCount || await getPdfPageCount(filename);
   const startPage = Math.max(1, figure.page - includePages);
@@ -887,7 +887,7 @@ export function formatFigureList(result, mode = "list") {
   if (!rows.length) {
     lines.push("No figure/table candidates found.");
     lines.push("Suggested: search_pdf(filename=..., query=\"Figure clock tree timing diagram block diagram\") or read relevant section pages.");
-    return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract(mode === "find" ? "find_figure" : "list_figures", result.index.filename, result.query || result.filter || "", []));
+    return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract(mode === "find" ? "search_figures" : "list_figures", result.index.filename, result.query || result.filter || "", []));
   }
 
   lines.push("| # | ID | Page | Kind | Caption | Score/Conf | Context |");
@@ -901,7 +901,7 @@ export function formatFigureList(result, mode = "list") {
     lines.push(`- get_figure_context_pack(filename="${result.index.filename}", figure_id="${figure.id}")`);
   }
 
-  return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract(mode === "find" ? "find_figure" : "list_figures", result.index.filename, result.query || result.filter || "", rows));
+  return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract(mode === "find" ? "search_figures" : "list_figures", result.index.filename, result.query || result.filter || "", rows));
 }
 
 export function formatFigureContext(result) {
