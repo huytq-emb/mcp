@@ -286,7 +286,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "start_index_pdf",
     description:
-      "Start PDF indexing as a background job. Use this for large manuals (500/800/1000+ pages) to avoid MCP client request timeout. Poll job_status until status is done or failed.",
+      `Start PDF indexing as a background job. Use this for large manuals (500/800/1000+ pages) to avoid MCP client request timeout. Poll with mcp_control(action="job_status", job_id="...") or direct job_status(job_id="...") if using the public helper.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -303,7 +303,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "job_status",
     description:
-      "Get status/progress for a background job started by start_index_pdf or auto-background index_pdf.",
+      `Direct public helper for job polling; preferred control-plane form is mcp_control(action="job_status", job_id="...").`,
     inputSchema: {
       type: "object",
       properties: {
@@ -316,7 +316,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "list_jobs",
     description:
-      "List recent background jobs and their status.",
+      `Direct public helper for job listing; preferred control-plane form is mcp_control(action="list_jobs").`,
     inputSchema: {
       type: "object",
       properties: {},

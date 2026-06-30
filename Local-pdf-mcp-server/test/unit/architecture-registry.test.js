@@ -7,6 +7,8 @@ import test from "node:test";
 import { PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
+import { createAppContext } from "../../src/core/app-context.js";
+import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
 
 const execFileAsync = promisify(execFile);
 const REMOVED_PUBLIC_FIGURE_TOOLS = [
@@ -45,6 +47,20 @@ test("public MCP catalog preserves names and schemas", () => {
   for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
   const contextPackTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context_pack");
   assert.equal(contextPackTool.inputSchema.properties.dpi.type, "number");
+});
+
+
+test("public job helper descriptions point agents to mcp_control as preferred control plane", () => {
+  const startIndex = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "start_index_pdf");
+  const jobStatus = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "job_status");
+  const listJobs = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "list_jobs");
+
+  assert.match(startIndex.description, /mcp_control\(action="job_status"/);
+  assert.match(startIndex.description, /direct job_status/);
+  assert.match(jobStatus.description, /Direct public helper/);
+  assert.match(jobStatus.description, /preferred control-plane/);
+  assert.match(listJobs.description, /Direct public helper/);
+  assert.match(listJobs.description, /mcp_control\(action="list_jobs"/);
 });
 
 test("runtime registry covers advertised and hidden compatibility handlers", async () => {
@@ -210,4 +226,33 @@ test("explicit legacy figure tool usage lookup remains available with compatibil
       assert.match(text, /search_figures\s*->\s*get_figure_context_pack/);
     }
   }
+});
+
+test("plan_manual_workflow recommends canonical figure flow for visual tasks", async () => {
+  const context = createAppContext();
+  wireRuntimePorts(context);
+  const registry = createRuntimeToolRegistry({ context });
+  const result = await registry.dispatchTool("plan_manual_workflow", {
+    filename: "manual.pdf",
+    task: "analyze timing diagram / figure",
+    include_visual: true,
+    include_eval: false,
+  });
+  const text = result.content[0].text;
+
+  assert.match(text, /rebuild_figure_manifest/);
+  assert.match(text, /search_figures/);
+  assert.match(text, /get_figure_context_pack/);
+  assert.match(text, /image_path/);
+  assert.match(text, /include_ocr":false/);
+  assert.match(text, /<figure_id_from_search_figures>/);
+  assert.doesNotMatch(text, /\bfind_figure\b/);
+  assert.doesNotMatch(text, /\bget_figure_context\b/);
+  assert.doesNotMatch(text, /\brender_figure\b/);
+  assert.doesNotMatch(text, /\bocr_figure\b/);
+
+  const rebuildIndex = text.indexOf("rebuild_figure_manifest");
+  const searchIndex = text.indexOf("search_figures");
+  const contextIndex = text.indexOf("get_figure_context_pack");
+  assert.ok(rebuildIndex >= 0 && rebuildIndex < searchIndex && searchIndex < contextIndex);
 });
