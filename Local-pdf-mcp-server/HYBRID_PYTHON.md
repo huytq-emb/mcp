@@ -146,7 +146,7 @@ The default OCR flow is:
 
 1. `figures.extract` detects image/vector regions with PyMuPDF, filters small
    icons/logos, captures nearby native captions, and renders only the clipped
-   figure region to `renders/<pdf>/page_0001_figure_001.png`.
+   canonical figure image to `indexes/cache/figure-images/<pdf>/...png`.
 2. `figure_ocr.build` runs PaddleOCR only over entries in
    `indexes/<pdf>.figures.json`.
 3. OCR text is stored separately in `indexes/<pdf>.figure_ocr.json` with
@@ -184,7 +184,7 @@ On-demand MCP tools:
 
 ```json
 {
-  "tool": "render_figure",
+  "tool": "get_figure_image",
   "arguments": {
     "filename": "r01uh1069ej0115-rzg3e.pdf",
     "page": 123,
@@ -196,7 +196,7 @@ On-demand MCP tools:
 
 ```json
 {
-  "tool": "ocr_figure",
+  "tool": "ocr_figure_for_search",
   "arguments": {
     "filename": "r01uh1069ej0115-rzg3e.pdf",
     "figure_id": "p0123_f002",
@@ -206,7 +206,7 @@ On-demand MCP tools:
 }
 ```
 
-`ocr_figure.mode` values:
+Internal OCR parser mode values:
 
 - `text`: backward-compatible PaddleOCR text labels and confidence values.
 - `structure`: local document-structure parsing for tables, register diagrams,
@@ -242,7 +242,7 @@ On-demand MCP tools:
 - `auto`: choose a local parser from the requested figure type and installed
   capabilities.
 
-`render_figure` and `ocr_figure` cache results under `indexes/cache/` using the
+Canonical `get_figure_image` and `ocr_figure_for_search` cache results under `indexes/cache/` using the
 PDF filename, page, bbox, scale, engine, and source PDF size/mtime. Pass
 `force=true` to bypass the cache. `inspect_figure` returns an evidence pack with
 caption/provenance, rendered image path, OCR labels with bbox/confidence,

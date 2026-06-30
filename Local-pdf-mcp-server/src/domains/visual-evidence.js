@@ -50,14 +50,14 @@ export function visualReviewDepthRules(depth) {
   if (d === "quick") {
     return [
       "Find the most likely figure/table page and inspect caption/context first.",
-      "Open canonical image_path from get_figure_context_pack for the top candidate; render/crop only as debug/manual fallback when explicitly requested.",
+      "Open canonical image_path from get_figure_context_pack for the top candidate.",
       "Extract only the facts needed for the current task and mark the rest as needsVerification.",
     ];
   }
   if (d === "deep") {
     return [
       "Search figure captions, nearby section text, and layout tables for all relevant visual candidates.",
-      "For each important candidate, use search_figures -> get_figure_context_pack and open canonical image_path; render/crop only as debug/manual fallback when explicitly requested.",
+      "For each important candidate, use search_figures -> get_figure_context_pack and open canonical image_path.",
       "Separate facts read directly from visual evidence from inferences based on caption/context.",
       "Cross-check visual evidence against register/bitfield/sequence/caution tools before proposing a patch.",
       "If the diagram is ambiguous, do not guess from text; request canonical-image review or a debug/manual fallback crop only when explicitly requested.",
@@ -104,7 +104,7 @@ export function buildVisualReviewExtractionSchema(diagramType) {
     canonical_image_files: ["<canonical image_path from get_figure_context_pack>"],
     direct_visual_observations: ["<facts visible in the rendered figure/diagram>"],
     caption_context_facts: ["<facts from caption or nearby text>"],
-    manual_text_cross_checks: ["<read_pdf_pages/get_figure_context/extract_layout_tables evidence>"],
+    manual_text_cross_checks: ["<read_pdf_pages/get_figure_context_pack/extract_layout_tables evidence>"],
     source_implications: ["<what this means for driver/DTS/source review>"],
     needs_verification: ["<ambiguities or facts not proven visually/manual-textually>"],
   };
@@ -209,7 +209,6 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
     workflow.push(`list_figures(filename="${filename}", filter="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`);
     workflow.push(`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
     workflow.push(`open canonical image_path from get_figure_context_pack visually`);
-    if (includeRenderCommands) workflow.push(`debug/manual fallback only: render commands may be requested only after canonical image_path is unavailable or a human explicitly asks for debug render/crop`);
   }
 
   return {
@@ -232,7 +231,7 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
     extractionSchema: buildVisualReviewExtractionSchema(diagramType),
     approvalRules: [
       "Do not infer driver behavior solely from text/OCR/render fallback; open canonical image_path and cross-check with manual text/register/bitfield/sequence/caution evidence.",
-      "When a visual edge/arrow/timing relation is unclear, first use the canonical image_path from get_figure_context_pack; render/crop commands are debug/manual fallback only when explicitly requested.",
+      "When a visual edge/arrow/timing relation is unclear, use the canonical image_path from get_figure_context_pack and record uncertainties for manual review.",
       "Separate direct visual observations from caption/context text and from engineering inference.",
       "For code or DTS changes, map each visual fact to source impact and list remaining needsVerification.",
     ],
@@ -262,7 +261,7 @@ export function buildVisualReviewHandoffContract(pack) {
   const needsVerification = [makeNeedsVerification({
     item: "Visual content opened from canonical image_path",
     reason: "The pack creates the canonical image_path workflow. The agent/user must inspect visual content opened from canonical image_path and record direct visual observations; debug/manual fallback render is only for explicit requests.",
-    suggestedTools: pack.workflow.filter((line) => /render_figure|render_pdf|get_figure|read_pdf|extract_layout/.test(line)).slice(0, 8),
+    suggestedTools: pack.workflow.filter((line) => /get_figure_context_pack|read_pdf|extract_layout/.test(line)).slice(0, 8),
   })];
 
   return makeEvidenceContract({
@@ -804,7 +803,7 @@ export function visualEvidenceVerificationRequirements(entry) {
   ].filter(Boolean).join(" "));
 
   const requirements = [];
-  requirements.push("Confirm the figure/table caption and surrounding manual text with get_figure_context or read_pdf_pages.");
+  requirements.push("Confirm the figure/table caption and surrounding manual text with get_figure_context_pack or read_pdf_pages.");
 
   if (/register|bit|field|w1c|w0c|clear|reserved|status|control/.test(text) || (entry.relatedRegisters || []).length) {
     requirements.push("Verify affected register/bitfield semantics with verify_register_usage or extract_bitfield_table.");

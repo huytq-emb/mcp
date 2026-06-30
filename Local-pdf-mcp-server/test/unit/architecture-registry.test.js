@@ -20,6 +20,8 @@ const REMOVED_PUBLIC_FIGURE_TOOLS = [
   "render_figure_page",
   "render_figure_region",
   "ocr_figure",
+  "render_pdf_page",
+  "render_pdf_region",
 ];
 
 const PUBLIC_FIGURE_TOOLS = [
@@ -179,14 +181,14 @@ test("ultra-lite index status hints recommend mcp_control only", async () => {
   assert.doesNotMatch(text, /\brebuild_artifact\(\.\.\./);
 });
 
-test("hidden compatibility handlers warn while remaining unadvertised", async () => {
+test("removed legacy visual/render tools are absent from public and hidden runtime registries", async () => {
   const registry = createRuntimeToolRegistry();
   for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) {
-    assert.equal(registry.has(name), true, name);
     assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+    assert.equal(HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name), false, name);
+    assert.equal(registry.has(name), false, name);
+    await assert.rejects(() => registry.dispatchTool(name, { filename: "manual.pdf" }), /Unknown tool/);
   }
-  const ping = await registry.dispatchTool("mcp_server_ping");
-  assert.match(ping.content[0].text, /Deprecated compatibility path\. Prefer mcp_control\(action=\.\.\.\)\./);
 });
 
 test("default tool usage catalog hides legacy figure compatibility tools", async () => {
@@ -208,26 +210,14 @@ test("default tool usage catalog hides legacy figure compatibility tools", async
   assert.match(text, /\bget_figure_context_pack\b/);
 });
 
-test("explicit legacy figure tool usage lookup remains available with compatibility warning", async () => {
+test("explicit removed legacy visual tool usage lookup returns unknown", async () => {
   const registry = createRuntimeToolRegistry();
-
   for (const toolName of REMOVED_PUBLIC_FIGURE_TOOLS) {
     const result = await registry.dispatchTool("explain_tool_usage", { tool_name: toolName });
-    const text = result.content[0].text;
-
-    assert.doesNotMatch(text, /Unknown tool/);
-    assert.match(text, new RegExp(`\\b${toolName}\\b`));
-    assert.match(text, /Hidden legacy compatibility path|legacy compatibility|deprecated/i);
-    if (toolName === "build_figures_index") {
-      assert.match(text, /rebuild_figure_manifest\s*->\s*search_figures\s*->\s*get_figure_context_pack/);
-    } else if (toolName === "ocr_figure") {
-      assert.match(text, /ocr_figure_for_search/);
-    } else {
-      assert.match(text, /search_figures\s*->\s*get_figure_context_pack/);
-    }
+    assert.match(result.content[0].text, new RegExp(`Unknown tool: ${toolName}`));
+    assert.doesNotMatch(result.content[0].text, /Debug\/compatibility only|deprecated compatibility/i);
   }
 });
-
 test("plan_manual_workflow recommends canonical figure flow for visual tasks", async () => {
   const context = createAppContext();
   wireRuntimePorts(context);
@@ -248,7 +238,6 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
   assert.match(text, /"include_layout_tables":true/);
-  assert.match(text, /"include_render_commands":false/);
   assert.match(text, /Open image_path visually/);
   assert.match(text, /must not answer from text extraction only/i);
   assert.match(text, /"verification_note":/);
@@ -298,17 +287,6 @@ test("default tool usage catalog does not advertise render tools as normal visua
   }
 
   const explicit = await registry.dispatchTool("explain_tool_usage", { tool_name: "render_pdf_page" });
-  assert.match(explicit.content[0].text, /Debug\/compatibility only/);
-  assert.match(explicit.content[0].text, /Prefer search_figures -> get_figure_context_pack/);
-});
-
-test("public render tool descriptions are debug-only and point to canonical visual workflow", () => {
-  for (const name of ["render_pdf_page", "render_pdf_region"]) {
-    const tool = PUBLIC_TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
-    assert.ok(tool, name);
-    assert.match(tool.description, /^Debug\/compatibility only/);
-    assert.match(tool.description, /Do not use for normal figure\/table analysis/);
-    assert.match(tool.description, /get_figure_context_pack/);
-    assert.match(tool.description, /indexes\/cache\/figure-images/);
-  }
+  assert.match(explicit.content[0].text, /Unknown tool: render_pdf_page/);
+  assert.doesNotMatch(explicit.content[0].text, /Debug\/compatibility only|Prefer search_figures/);
 });
