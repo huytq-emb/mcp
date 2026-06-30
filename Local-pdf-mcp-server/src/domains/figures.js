@@ -22,24 +22,25 @@ const scoreSimpleText = createRuntimePort("scoreSimpleText");
 
 const FIGURE_AGENT_INSTRUCTION = [
   "image_path is only a locator; it is not visual evidence by itself.",
-  "Call get_figure_image with this filename/figure_id to load actual image content before semantic visual analysis.",
-  "Open/inspect the returned image content before making claims about figure/table/bit-layout/timing/data-format semantics.",
+  "Call get_figure_image with this filename/figure_id to locate canonical image access; default metadata mode does not expose pixels.",
+  "If image content is returned by the client, inspect pixels; otherwise open/attach the canonical local image before making claims about figure/table/bit-layout/timing/data-format semantics.",
   "Do not infer visual semantics from page_text_before/page_text_after/OCR/text extraction.",
-  "If get_figure_image cannot return image content, report that visual analysis is unavailable instead of guessing from text."
+  "If the response is metadata-only, the model has not seen pixels yet; do not provide visual semantic analysis until the image is opened/attached by an image-capable client."
 ].join(" ");
 
 const VISUAL_CONTRACT = Object.freeze({
   requires_visual_open: true,
-  requires_image_transport: true,
-  semantic_truth_source: "image_content",
-  locator_source: "image_path",
+  semantic_truth_source: "image_pixels",
+  image_path_role: "locator_only",
   canonical_image_required: true,
   expected_image_path_root: "indexes/cache/figure-images",
-  required_next_tool_for_pixels: "get_figure_image",
+  required_next_tool: "get_figure_image",
+  image_transport_modes: ["metadata", "mcp_image"],
+  default_transport: "metadata",
   text_context_role: "locator_support_only",
   ocr_context_role: "search_support_only",
   must_not_answer_from_text_only: true,
-  must_not_claim_visual_analysis_without_image_content: true,
+  must_not_claim_visual_observation_from_path_only: true,
   forbidden_semantic_sources: ["page_text_before", "page_text_after", "ocr_text", "read_pdf_pages text", "search_pdf text", "renders/", "image_path string without loaded image content"]
 });
 
@@ -705,7 +706,7 @@ export async function getFigureImage(filename, figureId, options = {}) {
     const safeImagePath = aiVisibleImagePath(options.image_path);
     if (!safeImagePath) throw new Error("non-canonical image_path rejected: get_figure_image only accepts paths under indexes/cache/figure-images and never renders/");
     const access = await imageAccessWithExists(safeImagePath);
-    return { figure_id: figureId || "", page: Number(options.page || 0), bbox: options.bbox || [], caption: "", image_path: safeImagePath, image_access: access, render: { status: access.exists ? "ready" : "missing", mode: "canonical_cache", reason: "image_path", dpi, width: 0, height: 0, mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: access.exists, warnings: access.exists ? [] : ["Canonical image_path exists=false; actual image content cannot be transported until the file exists."], message: "" };
+    return { figure_id: figureId || "", page: Number(options.page || 0), bbox: options.bbox || [], caption: "", image_path: safeImagePath, image_access: access, render: { status: access.exists ? "ready" : "missing", mode: "canonical_cache", reason: "image_path", dpi, width: 0, height: 0, mtimeMs: access.exists ? Math.round((await fs.stat(access.local_path)).mtimeMs) : 0 }, ok: access.exists, warnings: access.exists ? [] : ["Canonical image_path exists=false; image pixels cannot be opened or transported until the file exists."], message: "" };
   }
   const render = await renderFigureOnDemand({ filename, figure_id: figureId, page: options.page, bbox: options.bbox, scale: Math.max(0.25, dpi / 100), force: Boolean(options.force) });
   const safeImagePath = aiVisibleImagePath(render.image_path || "");
@@ -811,7 +812,7 @@ export async function getFigureContextPack(filename, figureId, options = {}) {
     const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
     if (cached) ocr_text = cached.ocr_text || cached.items || [];
   }
-  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, visual_contract: { ...VISUAL_CONTRACT }, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: [...(image.warnings || []), ...(image.image_path ? [] : ["Canonical figure image_path under indexes/cache/figure-images is unavailable; visual semantic analysis must not be guessed from text context."]), ...(pageText.warning ? [pageText.warning] : []), ...((pageText.warnings || []).filter((w) => w && !String(w).includes("not wired")).slice(0, 2))], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} image_path is a locator only. Before semantic visual analysis, call get_figure_image(filename="${filename}", figure_id="${figure.figure_id || figureId}") to retrieve actual image content, then inspect the returned image pixels. The image may be a full-page fallback because the exact figure bbox was unavailable.` : `${FIGURE_AGENT_INSTRUCTION} image_path is a locator only. Before semantic visual analysis, call get_figure_image(filename="${filename}", figure_id="${figure.figure_id || figureId}") to retrieve actual image content, then inspect the returned image pixels.` };
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, visual_contract: { ...VISUAL_CONTRACT }, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: [...(image.warnings || []), ...(image.image_path ? [] : ["Canonical figure image_path under indexes/cache/figure-images is unavailable; visual semantic analysis must not be guessed from text context."]), ...(pageText.warning ? [pageText.warning] : []), ...((pageText.warnings || []).filter((w) => w && !String(w).includes("not wired")).slice(0, 2))], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} image_path is a locator only. Before semantic visual analysis, call get_figure_image(filename="${filename}", figure_id="${figure.figure_id || figureId}") to retrieve image access metadata. If the response is metadata-only, open/attach the canonical local image before visual semantic analysis; if image content is returned by the client, inspect pixels. The image may be a full-page fallback because the exact figure bbox was unavailable.` : `${FIGURE_AGENT_INSTRUCTION} image_path is a locator only. Before semantic visual analysis, call get_figure_image(filename="${filename}", figure_id="${figure.figure_id || figureId}") to retrieve image access metadata. If the response is metadata-only, open/attach the canonical local image before visual semantic analysis; if image content is returned by the client, inspect pixels.` };
 }
 
 export async function ocrFigureForSearch(filename, figureId, options = {}) {

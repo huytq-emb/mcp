@@ -116,9 +116,9 @@ export async function buildManualWorkflowPlan(options = {}) {
       calls.push(workflowCall("rebuild_figure_manifest", { filename }, "Build/update canonical figure manifest before visual retrieval."));
       calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate visual artifacts only; this does not provide visual semantics."));
       calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Get locator/support context. image_path alone is only a locator; do not claim visual analysis from text extraction only."));
-      calls.push(workflowCall("get_figure_image", { filename, figure_id: "<figure_id_from_search_figures>" }, "Load the canonical image as actual image content for visual model inspection; image_path alone is only a locator. Do not claim visual analysis until inspecting returned image content."));
+      calls.push(workflowCall("get_figure_image", { filename, figure_id: "<figure_id_from_search_figures>" }, "Load canonical image metadata by default; if image content is returned by the client, inspect pixels; otherwise open/attach canonical local image. Do not claim visual observation from path only."));
       calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
-      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Call get_figure_image and inspect actual image content."));
+      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Call get_figure_image; if metadata-only, open/attach canonical image before semantic claims."));
       calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<evidence_id_from_add_visual_evidence_or_visual_evidence_verification_queue>", status: "verified", verification_note: "<manual/text/register evidence used to verify the visual observation>" }, "Driver-critical table/figure evidence should be verified before use; OCR/page text may support but not replace visual review."));
     }
 
@@ -143,7 +143,7 @@ export async function buildManualWorkflowPlan(options = {}) {
   const gates = [
     "Do not produce driver-critical conclusions from search_pdf alone; use register/bitfield/sequence/caution evidence.",
     "Every source-code readl/writel/regmap operation that affects hardware state must be checked with verify_register_usage when possible.",
-    "For figures/visual tables/bit layouts/timing/data formats, use rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> get_figure_image. Do not claim visual analysis from image_path string alone. The agent must inspect actual image content returned by get_figure_image.",
+    "For figures/visual tables/bit layouts/timing/data formats, use rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> get_figure_image. Do not claim visual analysis from image_path string alone. The agent must inspect pixels returned by an image-capable client or open/attach the canonical image after metadata-only get_figure_image.",
     "MCP does not read the source repo; source observations must come from the VS Code agent and be passed back into compare_driver_requirements.",
   ];
 
@@ -200,9 +200,9 @@ export const TOOL_USAGE_CATALOG = {
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
   extract_layout_tables_from_pages: { when: "Coordinate/text-item table extraction, not visual semantic truth. Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json.", next: "search_figures -> get_figure_context_pack -> get_figure_image for visual/captioned tables", trust: "locator/supporting only for visual content" },
   rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
-  search_figures: { when: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables live in .figures.json. This locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then get_figure_image for actual image content", trust: "locator only" },
-  get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "call get_figure_image; inspect returned actual image content before semantic claims", trust: "image_content is semantic truth; image_path is locator only" },
-  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack -> get_figure_image actual image-content review.", next: "call get_figure_image, inspect actual image content, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
+  search_figures: { when: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables live in .figures.json. This locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then get_figure_image for metadata or opt-in image content", trust: "locator only" },
+  get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "call get_figure_image; if metadata-only, open/attach canonical image before semantic claims", trust: "image_content is semantic truth; image_path is locator only" },
+  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack -> get_figure_image metadata-first image review.", next: "call get_figure_image, if image content is returned by the client, inspect pixels; otherwise open/attach the canonical image, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
   verify_visual_evidence: { when: "Mark visual/table evidence as verified/rejected/needs_verification.", next: "driver_completeness_checklist/source_review_prompt_pack", trust: "verified visual evidence if status=verified" },
   driver_completeness_checklist: { when: "Create subsystem/profile checklist for source review.", next: "source_review_prompt_pack", trust: "review contract" },
   build_driver_evidence_pack: { when: "Collect module-level manual anchors for driver review/debug.", next: "source_review_prompt_pack", trust: "evidence pack" },
@@ -239,7 +239,7 @@ export function formatToolUsage(toolName = "", task = "") {
     lines.push(`- ${key}: ${entry.when} Next: ${entry.next}. Trust: ${entry.trust}.`);
   }
   lines.push("", "Default driver-review flow: plan_manual_workflow -> doctor -> get_module_profile -> build_driver_evidence_pack -> source_review_prompt_pack -> verify_register_usage per source operation -> compare_driver_requirements.");
-  lines.push("Canonical figure/visual-table flow: rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> get_figure_image -> AI agent inspects returned actual image content visually. image_path is a locator only.");
+  lines.push("Canonical figure/visual-table flow: rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> get_figure_image -> if image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is a locator only; do not claim visual observation from path only.");
   lines.push("Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json; text extraction is locator/supporting only for visual semantics.");
   return lines.join("\n");
 }

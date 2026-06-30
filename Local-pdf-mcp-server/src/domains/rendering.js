@@ -408,7 +408,7 @@ export function formatRenderResult(result) {
   if (result.renderer === "text_svg") {
     lines.push("Important: this is a text-layer SVG fallback. It preserves text positions but does not render actual diagrams/images/vector paths. Install Poppler pdftoppm or MuPDF mutool for real visual rendering.");
   } else {
-    lines.push("Debug/compatibility output only. For normal figure/table analysis, prefer search_figures -> get_figure_context_pack -> get_figure_image and inspect the returned actual image content.");
+    lines.push("Debug/compatibility output only. For normal figure/table analysis, prefer search_figures -> get_figure_context_pack -> get_figure_image and if image content is returned by the client, inspect pixels; otherwise open/attach the canonical image.");
   }
   lines.push("");
   lines.push("Suggested follow-up:");

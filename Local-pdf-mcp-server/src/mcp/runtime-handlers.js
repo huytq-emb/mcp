@@ -962,23 +962,89 @@ function mimeTypeForImagePath(imagePath = "") {
   return "image/png";
 }
 
+function normalizeFigureImageTransport(value) {
+  const raw = String(value || process.env.RENESAS_MCP_IMAGE_TRANSPORT || "metadata").trim().toLowerCase();
+  return raw === "mcp_image" ? "mcp_image" : "metadata";
+}
+
 async function handle_get_figure_image(args = {}, meta = {}) {
   const result = await getFigureImage(args.filename, String(args.figure_id || "").trim(), { dpi: args.dpi, image_path: args.image_path });
-  if (!result.image_path || !result.image_access?.exists) return jsonResult({ ...result, image_transport: { available: false, reason: "canonical_image_missing", canonical_image_path: result.image_path || "", required_client_action: "rebuild figure manifest or ensure canonical image cache exists under indexes/cache/figure-images" } });
+  const transport = normalizeFigureImageTransport(args.transport);
+  const mimeType = mimeTypeForImagePath(result.image_path);
+  if (!result.image_path || !result.image_access?.exists) {
+    return jsonResult({
+      ...result,
+      image_transport: {
+        available: false,
+        mode: "metadata",
+        mcp_image_content_returned: false,
+        reason: "canonical_image_missing",
+        client_action_required: "rebuild_figure_manifest_or_ensure_canonical_image_cache_exists",
+        canonical_image_path: result.image_path || "",
+        local_path: result.image_access?.local_path || "",
+        mimeType
+      }
+    });
+  }
+
+  if (transport === "metadata") {
+    const text = [
+      "Canonical figure image is available.",
+      `Image path: ${result.image_path}`,
+      `Local path: ${result.image_access.local_path}`,
+      `MIME: ${mimeType}`,
+      result.render?.width || result.render?.height ? `Dimensions: ${result.render.width || 0}x${result.render.height || 0}` : "Dimensions: unavailable",
+      "",
+      "Image transport mode: metadata.",
+      "This MCP client did not receive image pixels in the tool result.",
+      "Open/attach canonical image separately before visual semantic analysis.",
+      "Do not make visual semantic claims unless the client/model has opened or attached this image separately."
+    ].join("\n");
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: {
+        ...result,
+        image_transport: {
+          available: true,
+          mode: "metadata",
+          client_can_render_mcp_image: false,
+          mcp_image_content_returned: false,
+          client_action_required: "open_or_attach_local_image",
+          canonical_image_path: result.image_path,
+          local_path: result.image_access.local_path,
+          mimeType
+        }
+      }
+    };
+  }
+
   const data = await fs.readFile(result.image_access.local_path, { encoding: "base64" });
   const text = [
-    "Canonical figure image loaded.",
+    "Canonical figure image loaded as MCP image content.",
     `Source: ${result.image_path}`,
-    "Semantic truth source: attached image content.",
+    "Image transport mode: mcp_image.",
+    "Semantic truth source: attached image content returned by an image-capable MCP client.",
     "image_path is only a locator; inspect the returned image pixels before semantic claims.",
     "Do not answer from page_text/OCR/text extraction alone."
   ].join("\n");
   return {
     content: [
       { type: "text", text },
-      { type: "image", data, mimeType: mimeTypeForImagePath(result.image_path) }
+      { type: "image", data, mimeType }
     ],
-    structuredContent: { ...result, image_transport: { available: true, content_type: "mcp_image_content", mimeType: mimeTypeForImagePath(result.image_path), canonical_image_path: result.image_path } }
+    structuredContent: {
+      ...result,
+      image_transport: {
+        available: true,
+        mode: "mcp_image",
+        client_can_render_mcp_image: true,
+        mcp_image_content_returned: true,
+        content_type: "mcp_image_content",
+        mimeType,
+        canonical_image_path: result.image_path,
+        local_path: result.image_access.local_path
+      }
+    }
   };
 }
 
