@@ -10,6 +10,7 @@ import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, ext
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
 import { detectPdfRenderers, formatRegionRenderResult, formatRenderFigureRegionResult, formatRenderFigureResult, formatRenderResult, formatRendererAvailability, renderFigurePage, renderFigureRegion, renderPdfPage, renderPdfRegion } from "../domains/rendering.js";
+import { detectVisualSemanticIntent, withVisualSemanticGuard } from "../core/visual-guard.js";
 import { addVisualEvidence, buildVisualEvidenceReport, buildVisualEvidenceVerificationQueue, buildVisualReviewHandoffPack, formatAddVisualEvidence, formatGetVisualEvidence, formatListVisualEvidence, formatVerifyVisualEvidence, formatVisualEvidenceReport, formatVisualEvidenceVerificationQueue, formatVisualReviewHandoffPack, getVisualEvidence, listVisualEvidence, updateVisualEvidenceVerification } from "../domains/visual-evidence.js";
 import { DEFAULT_GOLDEN_PROFILE } from "../eval/golden.js";
 import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalCases, maybeWriteEvalReport, runEvalSuite } from "../eval/runtime.js";
@@ -764,7 +765,7 @@ async function handle_search_pdf(args = {}, meta = {}) {
     if (!query) throw new Error("query is required");
   
     const { results } = await searchPdfIndex(filename, query, topK);
-    return textResult(formatSearchResults(results, query));
+    return textResult(withVisualSemanticGuard(formatSearchResults(results, query), query, { filename, query, mode: "search" }));
 }
 
 async function handle_hybrid_search_pdf(args = {}, meta = {}) {
@@ -783,7 +784,7 @@ async function handle_hybrid_search_pdf(args = {}, meta = {}) {
       topK,
     });
   
-    return textResult(formatHybridSearchResults(payload));
+    return textResult(withVisualSemanticGuard(formatHybridSearchResults(payload), query, { filename, query, mode: "search" }));
 }
 
 async function handle_chunk_type_stats(args = {}, meta = {}) {
@@ -825,13 +826,14 @@ async function handle_read_pdf_pages(args = {}, meta = {}) {
     }
   
     const text = selectedPages.map((p) => `--- Page ${p.page} ---\n${p.text}`).join("\n\n");
-  
-    return textResult([
+    const guardInput = [String(args.query || args.task || ""), text].filter(Boolean).join("\n");
+    const body = [
       `Source: ${source}`,
       `Range: ${start}-${end}`,
       "",
       text || `No extractable text found from page ${start} to page ${end}.`,
-    ].join("\n"));
+    ].join("\n");
+    return textResult(withVisualSemanticGuard(body, guardInput, { filename, mode: "read" }));
 }
 
 async function handle_read_pdf_chunk(args = {}, meta = {}) {
@@ -854,7 +856,8 @@ async function handle_read_pdf_chunk(args = {}, meta = {}) {
       );
     }
   
-    return textResult(
+    const guardInput = [String(args.query || args.task || ""), chunk.text || ""].filter(Boolean).join("\n");
+    return textResult(withVisualSemanticGuard(
       [
         `ID: ${chunk.id}`,
         `File: ${chunk.filename}`,
@@ -877,7 +880,7 @@ async function handle_read_pdf_chunk(args = {}, meta = {}) {
         }`,
         "",
         chunk.text,
-      ].join("\n")
+      ].join("\n"), guardInput, { filename, mode: "read" })
     );
 }
 
@@ -1262,7 +1265,9 @@ async function handle_extract_layout_tables_from_pages(args = {}, meta = {}) {
     const kind = String(args.kind || "auto").trim();
   
     const tables = await extractTablesFromPages(filename, { startPage, endPage, minColumns });
-    return textResult(formatLayoutExtractedTables(tables, kind));
+    const formatted = formatLayoutExtractedTables(tables, kind);
+    const guardInput = [String(args.query || args.task || ""), formatted].filter(Boolean).join("\n");
+    return textResult(withVisualSemanticGuard(formatted, guardInput, { filename, mode: "layout-table", force: detectVisualSemanticIntent(guardInput).triggered }));
 }
 
 async function handle_extract_tables_from_pages(args = {}, meta = {}) {

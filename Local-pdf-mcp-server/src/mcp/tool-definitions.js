@@ -366,7 +366,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "search_pdf",
     description:
-      "Search keywords, phrases, register names, bit names, or natural-language questions inside an indexed PDF. Returns page numbers and chunk IDs.",
+      "Search keywords, phrases, register names, bit names, or natural-language questions inside an indexed PDF. Returns page numbers and chunk IDs. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -391,7 +391,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "hybrid_search_pdf",
     description:
-      "Search an indexed PDF without embeddings by combining exact phrase, keyword/BM25-like scoring, fuzzy token matching, intent expansion, and boosts from register/section/sequence/caution indexes. Use this for natural-language questions when Ollama/embedding search is unavailable.",
+      "Search an indexed PDF without embeddings by combining exact phrase, keyword/BM25-like scoring, fuzzy token matching, intent expansion, and boosts from register/section/sequence/caution indexes. Use this for natural-language questions when Ollama/embedding search is unavailable. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -462,7 +462,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "read_pdf_pages",
     description:
-      "Read extractable text from a specific page range in a local PDF. Use after search_pdf/find_register/find_section to inspect relevant pages.",
+      "Read extractable text from a specific page range in a local PDF. Use after search_pdf/find_register/find_section to inspect relevant pages. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -486,7 +486,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "read_pdf_chunk",
     description:
-      "Read the full text of a specific indexed chunk by chunk ID, for example GBETH.pdf:p17:c0.",
+      "Read the full text of a specific indexed chunk by chunk ID, for example GBETH.pdf:p17:c0. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1008,7 +1008,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "extract_layout_tables_from_pages",
     description:
-      "Step 30A/30B: extract layout-aware table candidates from selected PDF pages. Reconstructs rows/columns from PDF text item coordinates, infers semantic column roles such as bit/register/offset/access/reset/description and pin/function/signal/port/peripheral, and marks ambiguous rows. Use this when register, bit-field, or pinmux tables are misread by plain text extraction.",
+      "Step 30A/30B: extract layout-aware table candidates from selected PDF pages. This is coordinate/text-item table extraction, not visual semantic truth. Reconstructs rows/columns from PDF text item coordinates, infers semantic column roles such as bit/register/offset/access/reset/description and pin/function/signal/port/peripheral, and marks ambiguous rows. Text search/page extraction can locate visual tables, but must not be used as semantic truth for visual tables/figures. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. For Table X.Y-Z with visual layout, bit arrangement, data format, MSB/LSB, timing/waveform: use search_figures -> get_figure_context_pack -> open image_path visually.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1096,7 +1096,7 @@ const ALL_TOOL_DEFINITIONS = [
 
   {
     name: "search_figures",
-    description: "Use this for Figure/Table/visual-table lookup. This only locates candidate visual artifacts; it does not provide visual semantics. For visual/table semantics, the next required tool is get_figure_context_pack, and the agent must open returned image_path visually.",
+    description: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables are indexed in .figures.json. This only locates candidate visual artifacts; it does not provide visual semantics. For visual/table semantics, the next required tool is get_figure_context_pack, and the agent must open returned image_path visually. Structured text/layout tables are indexed in .tables.json.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string", description: "PDF filename." },
       query: { type: "string", description: "Search query." },
@@ -1116,7 +1116,7 @@ const ALL_TOOL_DEFINITIONS = [
   },
   {
     name: "get_figure_context_pack",
-    description: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images whenever possible. The AI agent must open image_path as an image before making semantic claims about figure/table/bit layout/timing/data format. page_text_before/page_text_after/ocr_text are locator/supporting evidence only and must not be used as semantic truth.",
+    description: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images whenever possible. The AI agent must open image_path as an image before making semantic claims about figure/table/bit layout/timing/data format. Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json. page_text_before/page_text_after/ocr_text are locator/supporting evidence only and must not be used as semantic truth.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested render DPI for the figure/page image. Default 200." }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
     }, required: ["filename", "figure_id"], additionalProperties: false }
@@ -1129,7 +1129,7 @@ const ALL_TOOL_DEFINITIONS = [
 
   {
     name: "table_coverage_report",
-    description: "Diagnose captioned table coverage by comparing table captions detected in page text, structured .tables.json entries, and visual-table records in the figure manifest.",
+    description: "Diagnose captioned table coverage by comparing table captions detected in page text, structured .tables.json entries, and visual-table records in the figure manifest. .tables.json covers structured/layout text tables only; captioned visual tables are tracked in .figures.json as visual-table records. A table missing from .tables.json is not necessarily missing.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string", description: "PDF filename." },
       build_if_missing: { type: "boolean", description: "Optional lightweight figure/visual-table manifest build if missing. Default false." }

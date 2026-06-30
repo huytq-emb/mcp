@@ -192,16 +192,16 @@ export const TOOL_USAGE_CATALOG = {
   doctor: { when: "Check index/artifact health before evidence work.", next: "index_pdf/start_index_pdf or get_module_profile", trust: "health gate" },
   index_pdf: { when: "Build indexes synchronously for small/medium manuals.", next: "doctor", trust: "artifact builder" },
   start_index_pdf: { when: "Build indexes for 500/800/1000+ page manuals without MCP timeout.", next: "job_status", trust: "artifact builder" },
-  hybrid_search_pdf: { when: "Recall-oriented search using BM25/synonyms/proximity; good for finding candidate evidence.", next: "read_pdf_pages/find_register/find_bitfield", trust: "hint, not final driver evidence" },
+  hybrid_search_pdf: { when: "Recall-oriented text search. Text extraction can locate visual tables, but must not be semantic truth; Visual/captioned tables live in .figures.json.", next: "For visual tables use search_figures -> get_figure_context_pack; otherwise read_pdf_pages/find_register/find_bitfield", trust: "locator/supporting only for visual content" },
   find_register: { when: "Locate a specific register or macro in the manual.", next: "summarize_register/find_bitfield/verify_register_usage", trust: "manual evidence candidate" },
   find_bitfield: { when: "Locate a bitfield/macro and candidate semantics.", next: "verify_register_usage", trust: "manual evidence candidate" },
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
-  extract_layout_tables_from_pages: { when: "Wide tables where text extraction may collapse columns; supporting/cross-check/locator evidence only for visual semantics.", next: "visual_review_handoff_pack/add_visual_evidence", trust: "layout hint only" },
+  extract_layout_tables_from_pages: { when: "Coordinate/text-item table extraction, not visual semantic truth. Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json.", next: "search_figures -> get_figure_context_pack for visual/captioned tables", trust: "locator/supporting only for visual content" },
   render_pdf_page: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
   render_pdf_region: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
   rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
-  search_figures: { when: "Use this for Figure/Table/visual-table lookup. This only locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then open returned image_path visually", trust: "locator only" },
+  search_figures: { when: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables live in .figures.json. This locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then open returned image_path visually", trust: "locator only" },
   get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "AI agent opens image_path visually before semantic claims", trust: "image_path is semantic truth source after visual open" },
   build_figures_index: { when: "Hidden legacy compatibility alias for rebuild_figure_manifest; do not advertise in normal workflows.", next: "rebuild_figure_manifest -> search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   find_figure: { when: "Hidden legacy compatibility alias for text-formatted figure search; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
@@ -259,7 +259,8 @@ export function formatToolUsage(toolName = "", task = "") {
     lines.push(`- ${key}: ${entry.when} Next: ${entry.next}. Trust: ${entry.trust}.`);
   }
   lines.push("", "Default driver-review flow: plan_manual_workflow -> doctor -> get_module_profile -> build_driver_evidence_pack -> source_review_prompt_pack -> verify_register_usage per source operation -> compare_driver_requirements.");
-  lines.push("Canonical figure flow: rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> AI agent opens image_path visually.");
+  lines.push("Canonical figure/visual-table flow: rebuild_figure_manifest -> search_figures -> get_figure_context_pack -> AI agent opens canonical image_path visually.");
+  lines.push("Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json; text extraction is locator/supporting only for visual semantics.");
   return lines.join("\n");
 }
 
