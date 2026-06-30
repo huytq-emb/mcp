@@ -955,9 +955,31 @@ async function handle_search_figures(args = {}, meta = {}) {
   return jsonResult(result);
 }
 
+function mimeTypeForImagePath(imagePath = "") {
+  const ext = path.extname(String(imagePath || "")).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  return "image/png";
+}
+
 async function handle_get_figure_image(args = {}, meta = {}) {
-  const result = await getFigureImage(args.filename, String(args.figure_id || "").trim(), { dpi: args.dpi });
-  return jsonResult(result);
+  const result = await getFigureImage(args.filename, String(args.figure_id || "").trim(), { dpi: args.dpi, image_path: args.image_path });
+  if (!result.image_path || !result.image_access?.exists) return jsonResult({ ...result, image_transport: { available: false, reason: "canonical_image_missing", canonical_image_path: result.image_path || "", required_client_action: "rebuild figure manifest or ensure canonical image cache exists under indexes/cache/figure-images" } });
+  const data = await fs.readFile(result.image_access.local_path, { encoding: "base64" });
+  const text = [
+    "Canonical figure image loaded.",
+    `Source: ${result.image_path}`,
+    "Semantic truth source: attached image content.",
+    "image_path is only a locator; inspect the returned image pixels before semantic claims.",
+    "Do not answer from page_text/OCR/text extraction alone."
+  ].join("\n");
+  return {
+    content: [
+      { type: "text", text },
+      { type: "image", data, mimeType: mimeTypeForImagePath(result.image_path) }
+    ],
+    structuredContent: { ...result, image_transport: { available: true, content_type: "mcp_image_content", mimeType: mimeTypeForImagePath(result.image_path), canonical_image_path: result.image_path } }
+  };
 }
 
 async function handle_get_figure_context_pack(args = {}, meta = {}) {

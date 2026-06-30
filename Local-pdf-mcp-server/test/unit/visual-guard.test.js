@@ -20,6 +20,7 @@ test("visual semantic detector catches visual table/figure intents", () => {
     assert.equal(detected.text_only_answer_forbidden, true);
     assert.ok(detected.required_next_tools.includes("search_figures"));
     assert.ok(detected.required_next_tools.includes("get_figure_context_pack"));
+    assert.ok(detected.required_next_tools.includes("get_figure_image"));
   }
   assert.equal(detectVisualSemanticIntent("plain register description for CTRL enable bit").triggered, false);
 });
@@ -27,7 +28,7 @@ test("visual semantic detector catches visual table/figure intents", () => {
 test("search text formatters emit visual guard for visual-table query", () => {
   const query = "Table 8.2-5 Data Formats Handled in the SCU";
   const text = formatSearchResults([], query);
-  for (const expected of ["VISUAL SEMANTIC GUARD", "locator evidence only", "Do not answer semantic visual content", "Visual tables are indexed in .figures.json", "search_figures", "get_figure_context_pack", "canonical image_path"]) {
+  for (const expected of ["VISUAL SEMANTIC GUARD", "locator evidence only", "Do not answer semantic visual content", "Visual tables are indexed in .figures.json", "search_figures", "get_figure_context_pack", "get_figure_image", "image_path is only a locator", "actual image content"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
@@ -41,14 +42,14 @@ test("read page/chunk formatter guard helper emits read warning from content", (
   assert.match(output, /VISUAL SEMANTIC GUARD/);
   assert.match(output, /Use this text only to locate or cross-check/);
   assert.match(output, /Do not provide semantic analysis from this text alone/);
-  assert.match(output, /search_figures -> get_figure_context_pack -> open canonical image_path visually/);
+  assert.match(output, /search_figures -> get_figure_context_pack -> get_figure_image -> inspect returned image content visually/);
 });
 
 test("extract layout tables warns visual semantics are not table truth", () => {
   const text = formatLayoutExtractedTables({ filename: "manual.pdf", startPage: 1, endPage: 1, tables: [{ tableId: "t1", page: 1, kind: "layout-table", confidence: "medium", columns: [{ index: 0, x: 1 }], rows: [{ rawCells: ["Table 8.2-5", "MSB", "LSB", "data format"], cells: ["Table 8.2-5", "MSB", "LSB", "data format"] }] }] }, "all");
   assert.match(text, /coordinate\/text-item extraction/i);
   assert.match(text, /not visual semantic truth/i);
-  assert.match(text, /search_figures -> get_figure_context_pack/i);
+  assert.match(text, /search_figures -> get_figure_context_pack -> get_figure_image/i);
 });
 
 test("table coverage report model supports visual-table-in-figures-index status", () => {
