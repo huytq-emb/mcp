@@ -1,4 +1,5 @@
 import { appendEvidenceContract, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeSequencesIndexPath } from "../core/runtime-helpers.js";
+import { withVisualSemanticGuard } from "../core/visual-guard.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_CAUTION_TOP_K, DEFAULT_DRIVER_PACK_REGISTERS, DEFAULT_DRIVER_PACK_SUMMARIES, DEFAULT_DRIVER_TASK_REGISTERS, DEFAULT_PAGE_RANGE, DEFAULT_REGISTER_SUMMARY_CHUNKS, DEFAULT_SEQUENCE_INDEX_TOPICS, DEFAULT_SEQUENCE_LIST_TOP_K, DEFAULT_SEQUENCE_TOP_K, DEFAULT_TABLE_PAGE_RANGE, DEFAULT_TOP_K, INDEX_DIR, MAX_BITFIELD_TABLE_ROWS, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_TOP_K, MAX_DRIVER_PACK_REGISTERS, MAX_DRIVER_PACK_SUMMARIES, MAX_DRIVER_TASK_REGISTERS, MAX_EXTRACTED_TABLES, MAX_PREVIEW_CHARS, MAX_REGISTER_SUMMARY_BITFIELDS, MAX_REGISTER_SUMMARY_CHUNKS, MAX_SEQUENCE_EVIDENCE_LINES, MAX_SEQUENCE_INDEX_RESULTS_PER_TOPIC, MAX_SEQUENCE_LIST_TOP_K, MAX_SEQUENCE_TOP_K, MAX_TABLE_COLUMNS, MAX_TABLE_PAGE_RANGE, MAX_TABLE_ROWS_PER_TABLE, MAX_TOP_K, SEQUENCE_INDEX_SCHEMA_VERSION } from "../core/runtime-constants.js";
 import fs from "node:fs/promises";
@@ -598,9 +599,9 @@ export function formatLayoutExtractedTables(result, kindFilter = "auto") {
   if (wanted === "bitfield") tables = tables.filter((table) => table.kind === "bitfield-table");
   if (wanted === "pinmux") tables = tables.filter((table) => table.kind === "pinmux-table");
   if (!tables.length) {
-    return [`No layout-aware table candidates found in ${result.filename} from page ${result.startPage} to ${result.endPage}.`, `Kind filter: ${wanted}`, "", "Suggested next steps:", `- read_pdf_pages(filename="${result.filename}", start_page=${result.startPage}, end_page=${result.endPage})`, "- Try a smaller page range around the exact register/bit-field/pin-function description pages."].join("\n");
+    return withVisualSemanticGuard([`No layout-aware table candidates found in ${result.filename} from page ${result.startPage} to ${result.endPage}.`, `Kind filter: ${wanted}`, "", "Suggested next steps:", `- read_pdf_pages(filename="${result.filename}", start_page=${result.startPage}, end_page=${result.endPage})`, "- Try a smaller page range around the exact register/bit-field/pin-function description pages."].join("\n"), `${result.filename} ${result.startPage}-${result.endPage}`, { filename: result.filename, mode: "layout-table", force: true });
   }
-  const lines = [`Step 30A/30B layout-aware table extraction for ${result.filename}`, `Pages: ${result.startPage}-${result.endPage}`, `Kind filter: ${wanted}`, `Tables shown: ${tables.length}`, "Reliability: layout-aware coordinate heuristic. Use it to preserve row/column structure, but verify driver-critical bit positions and reset values against original pages."];
+  const lines = [`Step 30A/30B layout-aware table extraction for ${result.filename}`, `Pages: ${result.startPage}-${result.endPage}`, `Kind filter: ${wanted}`, `Tables shown: ${tables.length}`, "Reliability: coordinate/text-item extraction, not visual semantic truth. Use it to preserve row/column structure, but for captioned visual tables (bit layout, MSB/LSB arrangement, data format, timing/waveform) use search_figures -> get_figure_context_pack and open canonical image_path visually."];
   tables.forEach((table, index) => {
     lines.push("", `Table ${index + 1}`, table.tableId ? `Table ID: ${table.tableId}` : null, `Pages: ${table.pageStart || table.page}${Number(table.pageEnd || table.page) !== Number(table.pageStart || table.page) ? `-${table.pageEnd}` : ""}`, `Kind: ${table.kind}`, `Confidence: ${table.confidence}`);
     const roles = (table.layout?.columnRoles || []).map((col) => `${col.column}@x${Math.round(col.x)}=${col.role}${col.ambiguous ? "?" : ""}${col.fallback ? "*" : ""}`).join(", ");
@@ -614,7 +615,7 @@ export function formatLayoutExtractedTables(result, kindFilter = "auto") {
     if ((table.rows || []).length > 24) lines.push(`... ${table.rows.length - 24} more rows omitted`);
   });
   lines.push("", "Machine summary JSON:", JSON.stringify({ schemaVersion: 1, filename: result.filename, source: result.source || "coordinate-extraction", kindFilter: wanted, tableCount: tables.length, tables: tables.map((table) => ({ tableId: table.tableId || null, kind: table.kind, pageStart: table.pageStart || table.page, pageEnd: table.pageEnd || table.page, rowCount: table.rowCount || table.rows?.length || 0, confidence: table.confidence, warnings: table.warnings || table.layout?.warnings || [] })) }, null, 2));
-  return lines.join("\n");
+  return withVisualSemanticGuard(lines.join("\n"), lines.join("\n"), { filename: result.filename, mode: "layout-table" });
 }
 
 export function normalizeRegisterCell(value) {

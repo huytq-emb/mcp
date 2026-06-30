@@ -101,7 +101,7 @@ export function buildVisualReviewExtractionSchema(diagramType) {
     visual_target: "<caption/page/query being reviewed>",
     figure_id: "<figure id if available>",
     page: "<page number>",
-    rendered_files: ["<full page or cropped render output paths>"],
+    canonical_image_files: ["<canonical image_path from get_figure_context_pack>"],
     direct_visual_observations: ["<facts visible in the rendered figure/diagram>"],
     caption_context_facts: ["<facts from caption or nearby text>"],
     manual_text_cross_checks: ["<read_pdf_pages/get_figure_context/extract_layout_tables evidence>"],
@@ -260,8 +260,8 @@ export function buildVisualReviewHandoffContract(pack) {
   })];
 
   const needsVerification = [makeNeedsVerification({
-    item: "Rendered visual content",
-    reason: "The pack creates the workflow and suggested render commands. The agent/user must inspect generated PNG/JPG/SVG outputs and record direct visual observations.",
+    item: "Visual content opened from canonical image_path",
+    reason: "The pack creates the canonical image_path workflow. The agent/user must inspect visual content opened from canonical image_path and record direct visual observations; debug/manual fallback render is only for explicit requests.",
     suggestedTools: pack.workflow.filter((line) => /render_figure|render_pdf|get_figure|read_pdf|extract_layout/.test(line)).slice(0, 8),
   })];
 

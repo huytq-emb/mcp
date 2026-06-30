@@ -848,10 +848,10 @@ export async function tableCoverageReport(filename, options = {}) {
     let status = "caption-only";
     let reason = "caption-detected-but-not-classified";
     if (structured) { status = "structured-table"; reason = "accepted-by-structured-table-index"; }
-    else if (visual) { status = "visual-table"; reason = visual.render?.status === "failed" ? "render-missing" : "captioned-visual-table"; }
+    else if (visual) { status = "visual-table-in-figures-index"; reason = visual.render?.status === "failed" ? "canonical-image-missing-but-visual-table-in-figures-index" : "captioned-visual-table-in-figures-index"; }
     return { caption: caption.caption, page: caption.page, number: caption.number, title: caption.title, structured_table_match: Boolean(structured), visual_table_match: Boolean(visual), status, reason };
   });
-  return { ok: true, filename, captionCount: captions.length, structuredTableCount: structuredTables.length, visualTableCount: visualTables.length, manifest_path: safeFiguresIndexPath(filename), tables_path: safeTablesIndexPath(filename), rows };
+  return { ok: true, filename, data_model: { tables_json: ".tables.json covers structured/layout text tables only", figures_json: "Captioned visual tables are tracked in .figures.json as visual-table records", missing_table_note: "A table missing from .tables.json is not necessarily missing; it may be a visual table in .figures.json." }, captionCount: captions.length, structuredTableCount: structuredTables.length, visualTableCount: visualTables.length, manifest_path: safeFiguresIndexPath(filename), tables_path: safeTablesIndexPath(filename), rows };
 }
 
 export function buildFigureEvidenceContract(tool, filename, query, figures) {

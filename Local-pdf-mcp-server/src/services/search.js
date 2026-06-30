@@ -1,4 +1,5 @@
 import { appendEvidenceContract, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
+import { withVisualSemanticGuard } from "../core/visual-guard.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, HYBRID_BM25_B, HYBRID_BM25_K1, HYBRID_BM25_WEIGHT, HYBRID_CANDIDATE_LIMIT, HYBRID_MIN_SCORE, HYBRID_PROXIMITY_WEIGHT, HYBRID_PROXIMITY_WINDOW, INDEX_DIR, MAX_BITFIELD_TABLE_ROWS, MAX_HYBRID_TOP_K, MAX_PREVIEW_CHARS, MAX_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
 import fs from "node:fs/promises";
@@ -1084,6 +1085,7 @@ export function buildHybridSearchEvidenceContract(payload) {
 export function formatHybridSearchResults(payload) {
   const { filename, query, intent, register, expandedTerms, context, results } = payload;
 
+  const guardQuery = query;
   const header = [
     `Hybrid search results for "${query}"`,
     `File: ${filename}`,
@@ -1106,7 +1108,7 @@ export function formatHybridSearchResults(payload) {
       "- Use search_pdf for exact register/bit names.",
       "- Use find_sequence/find_caution for very specific operation or restriction queries.",
     ].join("\n");
-    return appendEvidenceContract(text, buildHybridSearchEvidenceContract(payload));
+    return withVisualSemanticGuard(appendEvidenceContract(text, buildHybridSearchEvidenceContract(payload)), guardQuery, { query: guardQuery, filename, mode: "search" });
   }
 
   const resultLines = results.map((result, index) => {
@@ -1184,7 +1186,7 @@ export function formatHybridSearchResults(payload) {
     ...resultLines,
     contextLines.length ? "\n---\n\nPersistent-index hints\n" + contextLines.join("\n") : "",
   ].filter(Boolean).join("\n\n---\n\n");
-  return appendEvidenceContract(text, buildHybridSearchEvidenceContract(payload));
+  return withVisualSemanticGuard(appendEvidenceContract(text, buildHybridSearchEvidenceContract(payload)), guardQuery, { query: guardQuery, filename, mode: "search" });
 }
 
 export function scoreSection(section, query) {
@@ -1273,17 +1275,17 @@ export function formatSectionResults(results, query) {
 
 export function formatSearchResults(results, query) {
   if (!results.length) {
-    return [
+    return withVisualSemanticGuard([
       `No results found for "${query}".`,
       "",
       "Suggested next steps:",
       "- Check the exact PDF filename with list_pdfs.",
       "- Run index_pdf with force=true if the PDF changed.",
       "- Try a shorter query, register abbreviation, bit name, or section title.",
-    ].join("\n");
+    ].join("\n"), query, { query, mode: "search" });
   }
 
-  return results
+  return withVisualSemanticGuard(results
     .map((result, index) => {
       const text = String(result.text || "");
       const preview = normalizeText(text).slice(0, MAX_PREVIEW_CHARS);
@@ -1334,7 +1336,7 @@ export function formatSearchResults(results, query) {
         `${preview}${truncated}`,
       ].join("\n");
     })
-    .join("\n\n---\n\n");
+    .join("\n\n---\n\n"), query, { query, mode: "search" });
 }
 
 export function buildRegisterQueries(register) {
