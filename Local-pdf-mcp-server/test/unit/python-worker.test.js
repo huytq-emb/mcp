@@ -73,10 +73,17 @@ test("job cancellation persists a worker sentinel", async () => {
   const cancelPath = path.join(root, "cancel.requested");
   jobs.set("cancel-test", { id: "cancel-test", type: "test", filename: "manual.pdf", status: "running", metadata: { cancelPath }, log: [] });
   cancelBackgroundJob("cancel-test", "test cancellation");
+  let sentinelText = "";
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    try { await fs.access(cancelPath); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+    try {
+      sentinelText = await fs.readFile(cancelPath, "utf8");
+      if (/test cancellation/.test(sentinelText)) break;
+    } catch {
+      // The file may not exist yet on slower filesystems.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.match(await fs.readFile(cancelPath, "utf8"), /test cancellation/);
+  assert.match(sentinelText, /test cancellation/);
   jobs.delete("cancel-test");
   await fs.rm(root, { recursive: true, force: true });
 });

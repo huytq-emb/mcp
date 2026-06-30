@@ -2,6 +2,7 @@ import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, 
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
 import { spawn } from "../core/process-runner.js";
+import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
@@ -778,7 +779,13 @@ export function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
   if (["done", "failed", "cancelled"].includes(job.status)) return job;
   const cancelled = updateJob(job, { status: "cancelled", phase: "cancelled", message: reason, finishedAt: nowIso(), finishedMs: Date.now(), error: reason });
   const cancelPath = job.metadata?.cancelPath;
-  if (cancelPath) void fs.writeFile(cancelPath, `${reason}\n`, "utf8").catch(() => {});
+  if (cancelPath) {
+    try {
+      writeFileSync(cancelPath, `${reason}\n`, "utf8");
+    } catch {
+      // Keep cancellation best-effort; job status is still updated in memory/state.
+    }
+  }
   const workerPid = Number(job.metadata?.workerPid || 0);
   if (workerPid > 0) {
     try { process.kill(workerPid); } catch { /* Process may have completed between refresh and cancellation. */ }
