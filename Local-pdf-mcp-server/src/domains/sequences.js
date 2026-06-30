@@ -1116,7 +1116,8 @@ export function formatPersistentSequenceResult(result) {
     const registers = (sequence.relatedRegisters || []).slice(0, 12).join(", ") || "none";
     const sections = (sequence.relatedSections || []).slice(0, 5).map((section) => `${section.title} (page ${section.page})`).join(" | ") || "none";
     const evidence = (sequence.evidenceLines || []).map((line) => `   - ${line}`).join("\n") || "   - none";
-    const chunks = (sequence.chunks || []).slice(0, topSafe(5, sequence.chunks.length)).map((chunk) => {
+    const sequenceChunks = Array.isArray(sequence.chunks) ? sequence.chunks : [];
+    const chunks = sequenceChunks.slice(0, Math.min(5, sequenceChunks.length)).map((chunk) => {
       const endPage = Number(chunk.page) + DEFAULT_PAGE_RANGE - 1;
       return [
         `   Chunk: ${chunk.id}`,

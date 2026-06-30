@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSequenceEdges, extractOrderedWritePair, extractStructuredSequenceSteps, isSequenceBoilerplate, isTrustedSequenceTopic, sequenceConfidenceFromScore, sequenceSemanticAnchorScore, sequenceStructureStatus } from "../../src/domains/sequences.js";
+import { buildSequenceEdges, extractOrderedWritePair, extractStructuredSequenceSteps, formatPersistentSequenceResult, isSequenceBoilerplate, isTrustedSequenceTopic, sequenceConfidenceFromScore, sequenceSemanticAnchorScore, sequenceStructureStatus } from "../../src/domains/sequences.js";
 
 test("sequence v2 extracts ordered register steps with values and conditions", () => {
   const chunks = [{ id: "manual.pdf:p10:c0", page: 10, registers: ["CTRL", "STAT"], text: "Operation Procedure\n1. Write 1 to CTRL.EN to start operation.\n2. Poll STAT.DONE until it becomes 1." }];
@@ -38,4 +38,57 @@ test("sequence v2 rejects manual boilerplate and gates high confidence", () => {
   assert.equal(isTrustedSequenceTopic("Settings other than the above are prohibited"), false);
   assert.equal(sequenceConfidenceFromScore(300, "unstructured"), "medium");
   assert.equal(sequenceConfidenceFromScore(300, "complete"), "high");
+});
+
+
+test("persistent sequence formatter includes related chunk reads without throwing", () => {
+  const result = {
+    sequencesIndex: {
+      filename: "manual.pdf",
+      createdAt: "2026-06-30T00:00:00.000Z",
+    },
+    topic: "enable channel",
+    register: "DMACm_CHCTRL_n",
+    persistentMatches: [
+      {
+        id: "manual.pdf:seq:enable-channel",
+        topic: "enable channel",
+        kind: "start",
+        pages: [10],
+        relatedRegisters: ["DMACm_CHCTRL_n"],
+        relatedSections: [{ title: "Channel Enable", page: 10 }],
+        confidence: "medium",
+        structureStatus: "partial",
+        score: 123,
+        matchScore: 80,
+        evidenceLines: ["Set the channel enable bit."],
+        chunks: [
+          {
+            id: "manual.pdf:p10:c0",
+            page: 10,
+            score: 100,
+          },
+        ],
+        steps: [
+          {
+            order: 1,
+            operation: "enable",
+            text: "Set channel enable.",
+            register: "DMACm_CHCTRL_n",
+            bitfield: "SETEN",
+            evidence: { page: 10, chunkId: "manual.pdf:p10:c0" },
+          },
+        ],
+        cautions: [],
+      },
+    ],
+    fallback: null,
+  };
+
+  const output = formatPersistentSequenceResult(result);
+
+  assert.match(output, /Persistent sequence result/);
+  assert.match(output, /Suggested chunk read/);
+  assert.match(output, /read_pdf_pages/);
+  assert.match(output, /DMACm_CHCTRL_n/);
 });
