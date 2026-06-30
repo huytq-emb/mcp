@@ -194,9 +194,20 @@ test("default tool usage catalog hides legacy figure compatibility tools", async
 
 test("explicit legacy figure tool usage lookup remains available with compatibility warning", async () => {
   const registry = createRuntimeToolRegistry();
-  const result = await registry.dispatchTool("explain_tool_usage", { tool_name: "render_figure" });
-  const text = result.content[0].text;
 
-  assert.match(text, /Hidden legacy compatibility path|legacy compatibility|deprecated/i);
-  assert.match(text, /search_figures\s*->\s*get_figure_context_pack/);
+  for (const toolName of REMOVED_PUBLIC_FIGURE_TOOLS) {
+    const result = await registry.dispatchTool("explain_tool_usage", { tool_name: toolName });
+    const text = result.content[0].text;
+
+    assert.doesNotMatch(text, /Unknown tool/);
+    assert.match(text, new RegExp(`\\b${toolName}\\b`));
+    assert.match(text, /Hidden legacy compatibility path|legacy compatibility|deprecated/i);
+    if (toolName === "build_figures_index") {
+      assert.match(text, /rebuild_figure_manifest\s*->\s*search_figures\s*->\s*get_figure_context_pack/);
+    } else if (toolName === "ocr_figure") {
+      assert.match(text, /ocr_figure_for_search/);
+    } else {
+      assert.match(text, /search_figures\s*->\s*get_figure_context_pack/);
+    }
+  }
 });
