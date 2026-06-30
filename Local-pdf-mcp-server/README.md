@@ -88,6 +88,7 @@ doctor(filename="...")
 index_pdf(filename="...", mode="background")
 mcp_control(action="list_jobs")
 mcp_control(action="job_status", job_id="...")
+# Direct public helpers job_status(job_id="...") and list_jobs() are convenience/legacy-compatible alternatives, not the primary control-plane path.
 validate_index(filename="...")
 ```
 

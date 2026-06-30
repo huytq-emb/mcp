@@ -14,7 +14,7 @@
 2. Inspect manual/index state: `pdf_info(filename)`, `doctor(filename)`, `validate_index(filename)`.
 3. If index/artifacts are missing:
    - Small/medium PDFs: `index_pdf(filename)`.
-   - Large PDFs or timeout-prone clients: `index_pdf(filename, mode="background")`, then poll with `mcp_control(action="job_status", job_id="...")` and `mcp_control(action="list_jobs")`.
+   - Large PDFs or timeout-prone clients: `index_pdf(filename, mode="background")`, then poll with `mcp_control(action="job_status", job_id="...")` and list with `mcp_control(action="list_jobs")`. Direct public helpers `job_status(job_id="...")` and `list_jobs()` are convenience/legacy-compatible alternatives, not the primary control-plane path.
 4. Ask the workflow router: `plan_manual_workflow(filename, task, module_type?, driver_family?, source_files?)`.
 5. Follow the tools suggested by `plan_manual_workflow` unless the user explicitly requests another path.
 6. Produce a final response with separated evidence: manual facts, visual observations, source-code findings, engineering inference, and uncertainty/missing evidence.

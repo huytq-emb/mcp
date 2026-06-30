@@ -113,9 +113,12 @@ export async function buildManualWorkflowPlan(options = {}) {
     }
 
     if (includeVisual && flags.needsVisual) {
-      calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: "<page>", end_page: "<page>" }, "Use layout-aware extraction for wide manual tables."));
-      calls.push(workflowCall("visual_review_handoff_pack", { filename, task, pages: [] }, "Generate render/region instructions when text extraction is not trustworthy."));
-      calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<id>", status: "verified", note: "<human-checked table/figure meaning>" }, "Driver-critical table/figure evidence should be verified before use."));
+      calls.push(workflowCall("rebuild_figure_manifest", { filename }, "Build/update canonical figure manifest before visual retrieval."));
+      calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate figures by caption/page/search metadata."));
+      calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Return image_path and supporting context; AI agent must open image_path visually before claiming semantic figure facts. OCR/page text is only supporting evidence, not semantic truth."));
+      calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: "<page>", end_page: "<page>" }, "Use layout-aware extraction for wide manual tables as supporting evidence."));
+      calls.push(workflowCall("visual_review_handoff_pack", { filename, task, pages: [] }, "Generate render/region instructions when text extraction is not trustworthy; AI visual inspection remains required for figure semantics."));
+      calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<id>", status: "verified", note: "<human-checked table/figure meaning>" }, "Driver-critical table/figure evidence should be verified before use; OCR/page text may support but not replace visual review."));
     }
 
     calls.push(workflowCall("compare_driver_requirements", {
