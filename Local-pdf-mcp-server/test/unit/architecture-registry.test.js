@@ -238,7 +238,7 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
   assert.match(text, /"include_layout_tables":true/);
-  assert.match(text, /actual image content|returned image content/);
+  assert.match(text, /metadata-only|open\/attach canonical image|opt-in image content/);
   assert.match(text, /Do not claim visual analysis|do not claim visual analysis/i);
   assert.match(text, /"verification_note":/);
   assert.match(text, /"start_page":1/);
@@ -270,7 +270,7 @@ test("visual table planner uses visual-first workflow without render tools", asy
   });
   const text = result.content[0].text;
 
-  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "get_figure_image", "image_path alone is only a locator", "actual image content", "Do not claim visual analysis"]) {
+  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "get_figure_image", "image_path alone is only a locator", "metadata-only", "open/attach canonical image", "Do not claim visual analysis"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), expected);
   }
   for (const forbidden of ["render_pdf_page", "render_pdf_region", "render_figure_region", "render_figure_page", "render_figure", "ocr_figure"]) {
@@ -292,16 +292,40 @@ test("default tool usage catalog does not advertise render tools as normal visua
   assert.doesNotMatch(explicit.content[0].text, /Debug\/compatibility only|Prefer search_figures/);
 });
 
-test("get_figure_image returns MCP image content for canonical image_path", async () => {
+test("get_figure_image default is RICA-safe metadata for canonical image_path", async () => {
   const imagePath = "indexes/cache/figure-images/unit-transport/test.png";
   await fs.mkdir("indexes/cache/figure-images/unit-transport", { recursive: true });
   await fs.writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lR9sWQAAAABJRU5ErkJggg==", "base64"));
   const registry = createRuntimeToolRegistry({ context: createAppContext() });
   const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath });
+  assert.equal(result.content.every((item) => item.type === "text"), true);
+  assert.ok(result.content.some((item) => item.text.includes("metadata")));
+  assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(result.structuredContent.image_transport.mode, "metadata");
+  assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
+});
+
+test("get_figure_image mcp_image transport returns MCP image content for canonical image_path", async () => {
+  const imagePath = "indexes/cache/figure-images/unit-transport/test.png";
+  await fs.mkdir("indexes/cache/figure-images/unit-transport", { recursive: true });
+  await fs.writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lR9sWQAAAABJRU5ErkJggg==", "base64"));
+  const registry = createRuntimeToolRegistry({ context: createAppContext() });
+  const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath, transport: "mcp_image" });
   assert.ok(result.content.some((item) => item.type === "image"));
   const image = result.content.find((item) => item.type === "image");
   assert.ok(image.data);
   assert.equal(image.mimeType, "image/png");
-  assert.match(result.content.find((item) => item.type === "text").text, /Canonical figure image loaded/);
-  assert.equal(result.structuredContent.image_transport.available, true);
+  assert.equal(result.structuredContent.image_transport.mode, "mcp_image");
+  assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, true);
+});
+
+test("get_figure_image missing canonical image is RICA-safe metadata only", async () => {
+  const imagePath = "indexes/cache/figure-images/unit-transport/missing.png";
+  await fs.rm(imagePath, { force: true });
+  const registry = createRuntimeToolRegistry({ context: createAppContext() });
+  const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath });
+  assert.equal(result.content.every((item) => item.type === "text"), true);
+  assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(result.structuredContent.image_transport.mode, "metadata");
+  assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
 });

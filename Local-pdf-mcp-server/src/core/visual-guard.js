@@ -22,7 +22,7 @@ function baseResult(triggered, reasons = []) {
     artifact_index: ".figures.json",
     required_next_tools: REQUIRED_NEXT_TOOLS,
     text_only_answer_forbidden: true,
-    semantic_truth_source: "actual image content returned by get_figure_image",
+    semantic_truth_source: "image pixels opened/attached after get_figure_image metadata, or MCP image content when explicitly returned",
     text_context_role: "locator_support_only",
   };
 }
@@ -59,13 +59,13 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Use this text only to locate or cross-check the artifact.",
       "Do not provide semantic analysis from this text alone.",
       "For visual semantic analysis, use:",
-      "search_figures -> get_figure_context_pack -> get_figure_image -> inspect returned image content visually. image_path is only a locator.",
+      "search_figures -> get_figure_context_pack -> get_figure_image -> if image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator.",
       "Visual tables are stored in .figures.json, not .tables.json."
     );
   } else if (mode === "layout-table") {
     lines.push(
       "This is coordinate/text-item extraction, not visual semantic truth.",
-      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image and inspect actual image content visually. image_path is only a locator.",
+      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image and if image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator.",
       "Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json."
     );
   } else {
@@ -78,7 +78,7 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       `1. search_figures(filename="${filename}", query="${String(query).replace(/"/g, '\\"')}")`,
       "2. get_figure_context_pack(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
       "3. get_figure_image(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
-      "4. Inspect returned actual image content visually; image_path is only a locator."
+      "4. If image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator. Do not claim visual observation from path only."
     );
   }
   lines.push(`Guard reasons: ${detection.reasons.join(", ") || "forced"}`);
