@@ -238,8 +238,8 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
   assert.match(text, /"include_layout_tables":true/);
-  assert.match(text, /Open image_path visually/);
-  assert.match(text, /must not answer from text extraction only/i);
+  assert.match(text, /actual image content|returned image content/);
+  assert.match(text, /Do not claim visual analysis|do not claim visual analysis/i);
   assert.match(text, /"verification_note":/);
   assert.match(text, /"start_page":1/);
   assert.match(text, /"end_page":1/);
@@ -253,7 +253,8 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   const rebuildIndex = text.indexOf("rebuild_figure_manifest");
   const searchIndex = text.indexOf("search_figures");
   const contextIndex = text.indexOf("get_figure_context_pack");
-  assert.ok(rebuildIndex >= 0 && rebuildIndex < searchIndex && searchIndex < contextIndex);
+  const imageIndex = text.indexOf("get_figure_image");
+  assert.ok(rebuildIndex >= 0 && rebuildIndex < searchIndex && searchIndex < contextIndex && contextIndex < imageIndex);
 });
 
 
@@ -269,7 +270,7 @@ test("visual table planner uses visual-first workflow without render tools", asy
   });
   const text = result.content[0].text;
 
-  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "Open image_path", "must not answer from text extraction only"]) {
+  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "get_figure_image", "image_path alone is only a locator", "actual image content", "Do not claim visual analysis"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), expected);
   }
   for (const forbidden of ["render_pdf_page", "render_pdf_region", "render_figure_region", "render_figure_page", "render_figure", "ocr_figure"]) {
@@ -289,4 +290,18 @@ test("default tool usage catalog does not advertise render tools as normal visua
   const explicit = await registry.dispatchTool("explain_tool_usage", { tool_name: "render_pdf_page" });
   assert.match(explicit.content[0].text, /Unknown tool: render_pdf_page/);
   assert.doesNotMatch(explicit.content[0].text, /Debug\/compatibility only|Prefer search_figures/);
+});
+
+test("get_figure_image returns MCP image content for canonical image_path", async () => {
+  const imagePath = "indexes/cache/figure-images/unit-transport/test.png";
+  await fs.mkdir("indexes/cache/figure-images/unit-transport", { recursive: true });
+  await fs.writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lR9sWQAAAABJRU5ErkJggg==", "base64"));
+  const registry = createRuntimeToolRegistry({ context: createAppContext() });
+  const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath });
+  assert.ok(result.content.some((item) => item.type === "image"));
+  const image = result.content.find((item) => item.type === "image");
+  assert.ok(image.data);
+  assert.equal(image.mimeType, "image/png");
+  assert.match(result.content.find((item) => item.type === "text").text, /Canonical figure image loaded/);
+  assert.equal(result.structuredContent.image_transport.available, true);
 });

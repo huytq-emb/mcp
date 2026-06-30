@@ -57,7 +57,7 @@ export function visualReviewDepthRules(depth) {
   if (d === "deep") {
     return [
       "Search figure captions, nearby section text, and layout tables for all relevant visual candidates.",
-      "For each important candidate, use search_figures -> get_figure_context_pack and open canonical image_path.",
+      "For each important candidate, use search_figures -> get_figure_context_pack -> get_figure_image and inspect actual image content.",
       "Separate facts read directly from visual evidence from inferences based on caption/context.",
       "Cross-check visual evidence against register/bitfield/sequence/caution tools before proposing a patch.",
       "If the diagram is ambiguous, do not guess from text; request canonical-image review or a debug/manual fallback crop only when explicitly requested.",
@@ -65,7 +65,7 @@ export function visualReviewDepthRules(depth) {
   }
   return [
     "Find the relevant figure/table candidates from captions/context.",
-    "Get figure context and open canonical image_path for the best candidate; do not render by default.",
+    "Get figure context, then call get_figure_image for actual image content for the best candidate; do not render through legacy render tools by default.",
     "Extract concrete visual facts and list ambiguity explicitly.",
     "Use manual text/register tools to verify any driver-relevant conclusion.",
   ];
@@ -142,11 +142,11 @@ export function figureCandidateCommandLines(filename, figure, options = {}) {
   const lines = [];
   if (figure?.id) {
     lines.push(`get_figure_context_pack(filename="${filename}", figure_id="${figureId}")`);
-    lines.push(`open canonical image_path from get_figure_context_pack visually`);
+    lines.push(`call get_figure_image for actual image content; image_path from get_figure_context_pack is only a locator`);
     if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   } else if (page) {
     lines.push(`search_figures(filename="${filename}", query="${query}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    lines.push(`open canonical image_path from get_figure_context_pack visually`);
+    lines.push(`call get_figure_image for actual image content; image_path from get_figure_context_pack is only a locator`);
     if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   }
   if (page) {
@@ -208,7 +208,7 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
   else {
     workflow.push(`list_figures(filename="${filename}", filter="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`);
     workflow.push(`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    workflow.push(`open canonical image_path from get_figure_context_pack visually`);
+    workflow.push(`call get_figure_image for actual image content; image_path from get_figure_context_pack is only a locator`);
   }
 
   return {
@@ -230,7 +230,7 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
     outputRules: visualReviewOutputRules(outputFormat),
     extractionSchema: buildVisualReviewExtractionSchema(diagramType),
     approvalRules: [
-      "Do not infer driver behavior solely from text/OCR/render fallback; open canonical image_path and cross-check with manual text/register/bitfield/sequence/caution evidence.",
+      "Do not infer driver behavior solely from text/OCR/render fallback; inspect actual image content returned by get_figure_image and cross-check with manual text/register/bitfield/sequence/caution evidence.",
       "When a visual edge/arrow/timing relation is unclear, use the canonical image_path from get_figure_context_pack and record uncertainties for manual review.",
       "Separate direct visual observations from caption/context text and from engineering inference.",
       "For code or DTS changes, map each visual fact to source impact and list remaining needsVerification.",
@@ -571,7 +571,7 @@ export function buildVisualEvidenceRecommendedTools(filename, entry) {
   if (entry.figureId) tools.push(`get_figure_context_pack(filename="${filename}", figure_id="${entry.figureId}")`);
   else if (entry.page) tools.push(`search_figures(filename="${filename}", query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
   if (entry.page) tools.push(`read_pdf_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
-  if (entry.page) tools.push(`open canonical image_path from get_figure_context_pack visually`);
+  if (entry.page) tools.push(`call get_figure_image for actual image content; image_path from get_figure_context_pack is only a locator`);
   for (const reg of (entry.relatedRegisters || []).slice(0, 3)) {
     tools.push(`verify_register_usage(filename="${filename}", register="${quoteForPromptCall(reg)}", operation="<operation related to visual evidence>", access_type="auto", intent="auto")`);
   }

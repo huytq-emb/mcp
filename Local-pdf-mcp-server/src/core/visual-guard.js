@@ -1,4 +1,4 @@
-const REQUIRED_NEXT_TOOLS = ["search_figures", "get_figure_context_pack"];
+const REQUIRED_NEXT_TOOLS = ["search_figures", "get_figure_context_pack", "get_figure_image"];
 
 const RULES = [
   ["table-number", /\btable\s+\d+(?:\.\d+)+(?:-\d+)?\b/i],
@@ -22,7 +22,7 @@ function baseResult(triggered, reasons = []) {
     artifact_index: ".figures.json",
     required_next_tools: REQUIRED_NEXT_TOOLS,
     text_only_answer_forbidden: true,
-    semantic_truth_source: "canonical image_path",
+    semantic_truth_source: "actual image content returned by get_figure_image",
     text_context_role: "locator_support_only",
   };
 }
@@ -59,13 +59,13 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Use this text only to locate or cross-check the artifact.",
       "Do not provide semantic analysis from this text alone.",
       "For visual semantic analysis, use:",
-      "search_figures -> get_figure_context_pack -> open canonical image_path visually.",
+      "search_figures -> get_figure_context_pack -> get_figure_image -> inspect returned image content visually. image_path is only a locator.",
       "Visual tables are stored in .figures.json, not .tables.json."
     );
   } else if (mode === "layout-table") {
     lines.push(
       "This is coordinate/text-item extraction, not visual semantic truth.",
-      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack and open image_path visually.",
+      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image and inspect actual image content visually. image_path is only a locator.",
       "Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json."
     );
   } else {
@@ -77,7 +77,8 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Required next workflow:",
       `1. search_figures(filename="${filename}", query="${String(query).replace(/"/g, '\\"')}")`,
       "2. get_figure_context_pack(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
-      "3. Open canonical image_path under indexes/cache/figure-images visually."
+      "3. get_figure_image(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
+      "4. Inspect returned actual image content visually; image_path is only a locator."
     );
   }
   lines.push(`Guard reasons: ${detection.reasons.join(", ") || "forced"}`);

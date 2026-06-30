@@ -171,11 +171,15 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.ok(pack.page_text_after.includes("alpha") || pack.page_text_before.includes("alpha"));
   assert.ok(pack.context_anchor.method);
   assert.equal(pack.visual_contract.requires_visual_open, true);
-  assert.equal(pack.visual_contract.semantic_truth_source, "image_path");
+  assert.equal(pack.visual_contract.requires_image_transport, true);
+  assert.equal(pack.visual_contract.semantic_truth_source, "image_content");
+  assert.equal(pack.visual_contract.locator_source, "image_path");
+  assert.equal(pack.visual_contract.required_next_tool_for_pixels, "get_figure_image");
   assert.equal(pack.visual_contract.text_context_role, "locator_support_only");
   assert.equal(pack.visual_contract.must_not_answer_from_text_only, true);
-  assert.equal(pack.agent_instruction.includes("Open image_path"), true);
-  assert.equal(pack.agent_instruction.includes("Do not infer"), true);
+  assert.equal(pack.agent_instruction.includes("image_path is only a locator"), true);
+  assert.equal(pack.agent_instruction.includes("get_figure_image"), true);
+  assert.equal(pack.agent_instruction.includes("returned image content"), true);
   assert.match(pack.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
   assert.doesNotMatch(pack.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
 });
@@ -244,7 +248,8 @@ test("context pack exposes render, warnings, anchor, and image instruction", asy
   assert.ok(pack.render);
   assert.ok(Array.isArray(pack.warnings));
   assert.ok(pack.context_anchor);
-  assert.ok(pack.agent_instruction.includes("Open image_path"));
+  assert.ok(pack.agent_instruction.includes("image_path is only a locator"));
+  assert.ok(pack.agent_instruction.includes("get_figure_image"));
 });
 
 test("cached-or-extracted page text prefers cache and avoids extraction", async () => {
@@ -288,4 +293,12 @@ test("cached-or-extracted page text unavailable is non-fatal", async () => {
   assert.equal(result.source, "unavailable");
   assert.equal(result.text, "");
   assert.equal(result.warning, "page text unavailable");
+});
+
+
+test("getFigureImage rejects non-canonical image_path locators", async () => {
+  await assert.rejects(
+    () => getFigureImage(filename, "", { image_path: "renders/bad.png" }),
+    /non-canonical|indexes\/cache\/figure-images|renders\//i
+  );
 });
