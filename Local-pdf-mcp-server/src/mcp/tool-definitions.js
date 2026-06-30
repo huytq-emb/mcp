@@ -929,6 +929,55 @@ const ALL_TOOL_DEFINITIONS = [
     inputSchema: { type: "object", properties: { filename: { type: "string" }, figure_id: { type: "string" }, force: { type: "boolean" } }, required: ["filename", "figure_id"], additionalProperties: false }
   },
   {
+    name: "analyze_figure_semantics",
+    description: "Analyze one figure/table/page candidate into lightweight semantic evidence from caption, page text, and optional OCR. Semantics are candidate evidence and should be verified against the original manual image/text before driver decisions.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      figure_id: { type: "string", description: "Optional figure_id from list_figures/search_figures." },
+      page: { type: "number", description: "Optional 1-based page target. Used for page-level or bbox-based analysis." },
+      bbox: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "Optional figure bbox [x0,y0,x1,y1]." },
+      force: { type: "boolean", description: "Recompute even if a cached semantic record exists. Default false." },
+      generate_ocr: { type: "boolean", description: "Run OCR on demand. Default true only when the target has a bbox; false for caption/page-only targets." }
+    }, required: ["filename"], additionalProperties: false }
+  },
+  {
+    name: "get_figure_semantics",
+    description: "Read one cached figure semantic record. Run analyze_figure_semantics or rebuild_figure_semantics first if the artifact is missing.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      figure_id: { type: "string", description: "Figure semantic record ID." }
+    }, required: ["filename", "figure_id"], additionalProperties: false }
+  },
+  {
+    name: "list_figure_semantics",
+    description: "List cached figure semantic records from <filename>.figure_semantic.json, optionally filtered by page or figure_type.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      page: { type: "number", description: "Optional 1-based page filter." },
+      figure_type: { type: "string", description: "Optional semantic type filter, for example timing_diagram, sequence_diagram, state_machine, block_diagram, register_diagram, table, or unknown." }
+    }, required: ["filename"], additionalProperties: false }
+  },
+  {
+    name: "search_figure_semantics",
+    description: "Search cached figure semantic records by register, signal, block, state, sequence, action, or inference text.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      query: { type: "string", description: "Semantic search query." },
+      page: { type: "number", description: "Optional 1-based page filter." },
+      figure_type: { type: "string", description: "Optional semantic type filter." }
+    }, required: ["filename", "query"], additionalProperties: false }
+  },
+  {
+    name: "rebuild_figure_semantics",
+    description: "Build or rebuild <filename>.figure_semantic.json from the figure manifest. Page-limited rebuilds may opt into OCR; full rebuild defaults to caption/page text only.",
+    inputSchema: { type: "object", properties: {
+      filename: { type: "string", description: "PDF filename." },
+      page: { type: "number", description: "Optional 1-based page-limited rebuild." },
+      force: { type: "boolean", description: "Recompute records even when cached records exist. Default false." },
+      generate_ocr: { type: "boolean", description: "Run OCR on demand for rebuild targets. Default false for full rebuild, true for page-limited rebuilds with bbox." }
+    }, required: ["filename"], additionalProperties: false }
+  },
+  {
     name: "extract_register_table",
     description:
       "Extract register-map table candidates using PDF text item coordinates. Returns rows with register name, abbreviation, offset, initial value, access size, page, and confidence when detected.",

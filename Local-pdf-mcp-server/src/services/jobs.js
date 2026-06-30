@@ -1,6 +1,6 @@
-import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
+import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFigureSemanticIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
+import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
 import { spawn } from "../core/process-runner.js";
 import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -30,6 +30,7 @@ const loadPdfIndex = createRuntimePort("loadPdfIndex");
 const loadCautionsIndex = createRuntimePort("loadCautionsIndex");
 const loadRegistersIndex = createRuntimePort("loadRegistersIndex");
 const loadTablesIndex = createRuntimePort("loadTablesIndex");
+const rebuildFigureSemanticsArtifact = createRuntimePort("rebuildFigureSemanticsArtifact");
 
 
 // -----------------------------------------------------------------------------
@@ -454,6 +455,7 @@ export function normalizeArtifactName(value) {
     ["caution", "cautions"], ["cautions", "cautions"], ["cautions-index", "cautions"],
     ["figure", "figures"], ["figures", "figures"], ["figures-index", "figures"],
     ["figure-ocr", "figure_ocr"], ["figure_ocr", "figure_ocr"], ["ocr", "figure_ocr"], ["figures-ocr", "figure_ocr"],
+    ["figure-semantic", "figure_semantic"], ["figure_semantic", "figure_semantic"], ["figure-semantics", "figure_semantic"], ["semantics", "figure_semantic"],
     ["all", "all"], ["core", "core"], ["driver", "driver"],
   ]);
   return aliases.get(raw) || raw;
@@ -473,6 +475,7 @@ export function artifactPathsForStatus(filename) {
     { key: "cautions", label: "Cautions index", path: safeCautionsIndexPath(filename), schemaVersion: CAUTION_INDEX_SCHEMA_VERSION, rootKey: "cautions", countKey: "cautionCount" },
     { key: "figures", label: "Figures index", path: safeFiguresIndexPath(filename), schemaVersion: FIGURE_INDEX_SCHEMA_VERSION, rootKey: "figures", countKey: "figureCount" },
     { key: "figure_ocr", label: "Figure OCR index", path: safeFigureOcrIndexPath(filename), schemaVersion: FIGURE_OCR_SCHEMA_VERSION, rootKey: "figures", countKey: "figureOcrCount", optional: true },
+    { key: "figure_semantic", label: "Figure semantic index", path: safeFigureSemanticIndexPath(filename), schemaVersion: FIGURE_SEMANTIC_SCHEMA_VERSION, rootKey: "records", countKey: "semanticCount", optional: true },
     { key: "visual-evidence", label: "Visual evidence", path: safeVisualEvidencePath(filename), schemaVersion: VISUAL_EVIDENCE_SCHEMA_VERSION, rootKey: "entries", countKey: "entryCount", optional: true },
     { key: "module-profile", label: "Module profile", path: safeModuleProfileJsonPath(filename), schemaVersion: MODULE_PROFILE_SCHEMA_VERSION, rootKey: "profile", optional: true },
     { key: "driver-pack", label: "Driver evidence pack", path: safeDriverPackPath(filename), text: true, optional: true },
@@ -876,8 +879,13 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
     await writeArtifactManifest(filename, { buildStatus: "partial", notes: [result.cached ? "figure OCR cache reused" : "rebuilt figure OCR index"], rebuiltArtifacts: ["figure_ocr"], producer: { engine: "python", operation: "figure_ocr.build" } });
     return { ok: true, artifact: normalized, rebuilt: result.cached ? [] : ["figure_ocr"], counts: result.counts || { figure_ocr: result.artifact?.figureOcrCount || 0 } };
   }
+  if (normalized === "figure_semantic") {
+    const result = await rebuildFigureSemanticsArtifact(filename, { force, onProgress, page: options.page, generateOcr: options.generateOcr });
+    await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt figure semantic index"], rebuiltArtifacts: ["figure_semantic"], producer: { engine: "node", operation: "figure_semantics.build" } });
+    return result;
+  }
   if (normalized === "driver") throw new Error("driver artifact rebuild is intentionally not automatic. Use build_driver_evidence_pack or prepare_driver_task with explicit module/focus inputs.");
-  throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, figure_ocr, core/all.`);
+  throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, figure_ocr, figure_semantic, core/all.`);
 }
 
 export async function startRebuildArtifactJob(filename, artifact, options = {}) {

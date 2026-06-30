@@ -631,6 +631,15 @@ export function safeFigureOcrIndexPath(filename) {
   );
 }
 
+export function safeFigureSemanticIndexPath(filename) {
+  ensurePdfFilename(filename);
+  return ensureInsideRoot(
+    path.join(INDEX_DIR, `${filename}.figure_semantic.json`),
+    INDEX_DIR,
+    "figure semantic index"
+  );
+}
+
 export function safeVisualEvidencePath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(

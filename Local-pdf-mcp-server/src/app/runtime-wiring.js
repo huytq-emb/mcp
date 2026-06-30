@@ -19,6 +19,7 @@ import * as module15 from "../domains/visual-evidence.js";
 import * as tables from "../domains/tables.js";
 import * as hybrid from "./hybrid-runtime.js";
 import * as ocr from "../services/ocr.js";
+import * as figureSemantics from "../domains/figure-semantics.js";
 
 export function wireRuntimePorts(context) {
   const registry = context?.runtimePorts;
@@ -160,6 +161,7 @@ export function wireRuntimePorts(context) {
     "quoteForPromptCall": module9.quoteForPromptCall,
 
     "resolveDriverProfile": module12.resolveDriverProfile,
+    "rebuildFigureSemanticsArtifact": figureSemantics.rebuildFigureSemanticsArtifact,
     "runEvalHealthCheck": module5.runEvalHealthCheck,
 
     "scoreCautionChunk": cautionSearch.scoreCautionChunk,

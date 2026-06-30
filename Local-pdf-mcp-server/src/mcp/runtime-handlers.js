@@ -6,6 +6,7 @@ import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOver
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../domains/cautions.js";
 import { formatFigureList, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch, tableCoverageReport } from "../domains/figures.js";
+import { analyzeFigureSemantics, figureSemanticSummary, getFigureSemantics, listFigureSemantics, rebuildFigureSemanticsArtifact, searchFigureSemantics } from "../domains/figure-semantics.js";
 import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../domains/manual-intelligence.js";
 import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../domains/sequences.js";
 import { findCautionInIndex, formatCautionResults } from "../domains/caution-search.js";
@@ -1073,6 +1074,83 @@ async function handle_table_coverage_report(args = {}, meta = {}) {
   return jsonResult(result);
 }
 
+function figureSemanticArtifactSummary(artifact = null) {
+  if (!artifact) return null;
+  return {
+    schemaVersion: artifact.schemaVersion,
+    serverVersion: artifact.serverVersion,
+    filename: artifact.filename,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    sourceFingerprint: artifact.sourceFingerprint,
+    semanticCount: artifact.semanticCount,
+  };
+}
+
+function figureSemanticSearchSummary(item = {}) {
+  const { score, ...record } = item;
+  const summary = figureSemanticSummary(record);
+  return score === undefined ? summary : { score, ...summary };
+}
+
+async function handle_analyze_figure_semantics(args = {}, meta = {}) {
+  const result = await analyzeFigureSemantics(args.filename, {
+    ...args,
+    generateOcr: args.generate_ocr,
+  });
+  return jsonResult({
+    cached: Boolean(result.cached),
+    artifact: figureSemanticArtifactSummary(result.artifact),
+    record: figureSemanticSummary(result.record),
+  });
+}
+
+async function handle_get_figure_semantics(args = {}, meta = {}) {
+  const result = await getFigureSemantics(args.filename, String(args.figure_id || "").trim());
+  return jsonResult({
+    artifact: figureSemanticArtifactSummary(result.artifact),
+    record: figureSemanticSummary(result.record),
+  });
+}
+
+async function handle_list_figure_semantics(args = {}, meta = {}) {
+  const result = await listFigureSemantics(args.filename, {
+    page: args.page,
+    figure_type: args.figure_type,
+  });
+  return jsonResult({
+    filename: result.filename,
+    semanticCount: result.semanticCount,
+    artifact: figureSemanticArtifactSummary(result.artifact),
+    records: (result.records || []).map((record) => figureSemanticSummary(record)),
+  });
+}
+
+async function handle_search_figure_semantics(args = {}, meta = {}) {
+  const result = await searchFigureSemantics(args.filename, {
+    query: args.query,
+    page: args.page,
+    figure_type: args.figure_type,
+  });
+  return jsonResult({
+    filename: result.filename,
+    query: result.query,
+    figure_type: result.figure_type,
+    resultCount: result.resultCount,
+    artifact: figureSemanticArtifactSummary(result.artifact),
+    results: (result.results || []).map((item) => figureSemanticSearchSummary(item)),
+  });
+}
+
+async function handle_rebuild_figure_semantics(args = {}, meta = {}) {
+  const result = await rebuildFigureSemanticsArtifact(args.filename, {
+    page: args.page,
+    force: Boolean(args.force),
+    generateOcr: args.generate_ocr,
+  });
+  return jsonResult(result);
+}
+
 async function handle_add_visual_evidence(args = {}, meta = {}) {
   const name = meta.name || "add_visual_evidence";
     const filename = args.filename;
@@ -1764,6 +1842,11 @@ export function createRuntimeHandlers(_context = null) {
     "rebuild_figure_manifest": handle_rebuild_figure_manifest,
     "ocr_figure_for_search": handle_ocr_figure_for_search,
     "table_coverage_report": handle_table_coverage_report,
+    "analyze_figure_semantics": handle_analyze_figure_semantics,
+    "get_figure_semantics": handle_get_figure_semantics,
+    "list_figure_semantics": handle_list_figure_semantics,
+    "search_figure_semantics": handle_search_figure_semantics,
+    "rebuild_figure_semantics": handle_rebuild_figure_semantics,
     "add_visual_evidence": handle_add_visual_evidence,
     "list_visual_evidence": handle_list_visual_evidence,
     "get_visual_evidence": handle_get_visual_evidence,
