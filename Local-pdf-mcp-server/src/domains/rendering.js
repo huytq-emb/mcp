@@ -408,7 +408,7 @@ export function formatRenderResult(result) {
   if (result.renderer === "text_svg") {
     lines.push("Important: this is a text-layer SVG fallback. It preserves text positions but does not render actual diagrams/images/vector paths. Install Poppler pdftoppm or MuPDF mutool for real visual rendering.");
   } else {
-    lines.push("This image file can be opened locally or passed to a vision-capable agent/model for diagram/timing/clock-tree inspection.");
+    lines.push("Debug/compatibility output only. For normal figure/table analysis, prefer search_figures -> get_figure_context_pack and open the canonical indexes/cache/figure-images image_path.");
   }
   lines.push("");
   lines.push("Suggested follow-up:");
@@ -621,11 +621,11 @@ export function formatRegionRenderResult(result, title = "Rendered PDF Region") 
   if (result.cropWarning) lines.push(`Warning: ${result.cropWarning}`);
   if (result.warning) lines.push(`Warning: ${result.warning}`);
   lines.push("");
-  lines.push("This cropped/zoomed image is intended for vision review of diagrams, timing charts, clock trees, block diagrams, and dense tables.");
+  lines.push("Debug/compatibility crop only. Do not use as normal semantic evidence unless explicitly requested by a human; prefer search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path.");
   lines.push("");
   lines.push("Suggested follow-up:");
   lines.push(`- search_figures(filename="${result.filename}", page=${result.page}, limit=5) then get_figure_context_pack(filename="${result.filename}", figure_id="<figure-id>")`);
-  lines.push(`- render_pdf_page(filename="${result.filename}", page=${result.page}, dpi=${result.dpi}, format="${result.outputFormat}")`);
+  lines.push(`- debug/manual fallback only: render_pdf_page(filename="${result.filename}", page=${result.page}, dpi=${result.dpi}, format="${result.outputFormat}")`);
   return lines.join("\n");
 }
 

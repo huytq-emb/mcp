@@ -35,7 +35,7 @@ export function inferWorkflowFlags(taskText, moduleType, sourceFiles = []) {
     isDriverReview: /review|completeness|đánh giá|hoàn thiện|source|driver/.test(text),
     isDebug: /debug|bug|crash|fail|timeout|hang|irq|interrupt|dma|reset|reboot|lỗi/.test(text),
     isPatchPlan: /patch|implement|write|add|support|triển khai|sửa|fix/.test(text),
-    needsVisual: /pinmux|pfc|table|layout|figure|diagram|mux|function|bảng|hình|timing/.test(text),
+    needsVisual: /pinmux|pfc|table\s+\d+(?:[.-]\d+)*|figure\s+\d+(?:[.-]\d+)*|layout|figure|diagram|mux|function|bảng|hình|timing|waveform|bit\s+(?:layout|arrangement)|\bmsb\b|\blsb\b|data\s+formats?\s+handled|format\s+handled|data\s+format|frame\s+format|word\s+format|visual\s+table/.test(text),
     needsRegisterVerification: /register|bit|field|writel|readl|regmap|irq|interrupt|dma|reset|clock|sequence|caution|reserved|clear/.test(text),
     needsEval: /eval|test|regression|hardening|smoke|verify|validate|coverage/.test(text),
   };
@@ -114,10 +114,10 @@ export async function buildManualWorkflowPlan(options = {}) {
 
     if (includeVisual && flags.needsVisual) {
       calls.push(workflowCall("rebuild_figure_manifest", { filename }, "Build/update canonical figure manifest before visual retrieval."));
-      calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate figures by caption/page/search metadata."));
-      calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Return image_path and supporting context; AI agent must open image_path visually before claiming semantic figure facts. OCR/page text is only supporting evidence, not semantic truth."));
-      calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Use layout-aware extraction for wide manual tables as supporting evidence. Replace page 1 with the page identified by search_figures/get_figure_context_pack."));
-      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true, include_render_commands: true }, "Generate render/region instructions when text extraction is not trustworthy; AI visual inspection remains required for figure semantics."));
+      calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate visual artifacts only; this does not provide visual semantics."));
+      calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Main visual-semantics entry point. Open image_path visually; must not answer from text extraction only. OCR/page text is locator/supporting evidence only, not semantic truth."));
+      calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
+      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true, include_render_commands: false }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Open image_path visually."));
       calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<evidence_id_from_add_visual_evidence_or_visual_evidence_verification_queue>", status: "verified", verification_note: "<manual/text/register evidence used to verify the visual observation>" }, "Driver-critical table/figure evidence should be verified before use; OCR/page text may support but not replace visual review."));
     }
 
@@ -142,7 +142,7 @@ export async function buildManualWorkflowPlan(options = {}) {
   const gates = [
     "Do not produce driver-critical conclusions from search_pdf alone; use register/bitfield/sequence/caution evidence.",
     "Every source-code readl/writel/regmap operation that affects hardware state must be checked with verify_register_usage when possible.",
-    "For pinmux, bit tables, timing diagrams, and wide tables, use visual/layout evidence and mark unverified evidence as needs_verification.",
+    "For figures/visual tables/bit layouts/timing/data formats, use rebuild_figure_manifest -> search_figures -> get_figure_context_pack. Do not answer from text extraction only. Open image_path visually.",
     "MCP does not read the source repo; source observations must come from the VS Code agent and be passed back into compare_driver_requirements.",
   ];
 
@@ -197,10 +197,12 @@ export const TOOL_USAGE_CATALOG = {
   find_bitfield: { when: "Locate a bitfield/macro and candidate semantics.", next: "verify_register_usage", trust: "manual evidence candidate" },
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
-  extract_layout_tables_from_pages: { when: "Wide tables where text extraction may collapse columns.", next: "visual_review_handoff_pack/add_visual_evidence", trust: "layout hint" },
+  extract_layout_tables_from_pages: { when: "Wide tables where text extraction may collapse columns; supporting/cross-check/locator evidence only for visual semantics.", next: "visual_review_handoff_pack/add_visual_evidence", trust: "layout hint only" },
+  render_pdf_page: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
+  render_pdf_region: { when: "Debug/compatibility only. Do not use for normal figure/table analysis.", next: "Prefer search_figures -> get_figure_context_pack", trust: "debug/manual fallback only" },
   rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
-  search_figures: { when: "Find candidate figures by caption/page/search metadata; OCR is optional metadata only.", next: "get_figure_context_pack", trust: "figure retrieval candidate" },
-  get_figure_context_pack: { when: "Collect figure metadata, surrounding text, and image_path for AI visual inspection.", next: "AI agent opens image_path visually", trust: "retrieval pack; visual meaning requires inspection" },
+  search_figures: { when: "Use this for Figure/Table/visual-table lookup. This only locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then open returned image_path visually", trust: "locator only" },
+  get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "AI agent opens image_path visually before semantic claims", trust: "image_path is semantic truth source after visual open" },
   build_figures_index: { when: "Hidden legacy compatibility alias for rebuild_figure_manifest; do not advertise in normal workflows.", next: "rebuild_figure_manifest -> search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   find_figure: { when: "Hidden legacy compatibility alias for text-formatted figure search; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   get_figure_context: { when: "Hidden legacy compatibility alias for text-formatted figure context; prefer context packs with image_path/image_access.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
@@ -209,7 +211,7 @@ export const TOOL_USAGE_CATALOG = {
   render_figure_region: { when: "Hidden legacy compatibility path only; prefer manifest-backed figure images/context packs.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
   ocr_figure: { when: "Hidden legacy compatibility path only; OCR is optional search metadata, not semantic truth.", next: "ocr_figure_for_search only when search keywords need OCR", trust: "deprecated compatibility" },
   inspect_figure: { when: "Hidden legacy compatibility path only; prefer retrieval-first figure workflow.", next: "search_figures -> get_figure_context_pack", trust: "deprecated compatibility" },
-  visual_review_handoff_pack: { when: "Prepare human/agent visual review for figures, pinmux, bit tables, timing diagrams.", next: "add_visual_evidence/verify_visual_evidence", trust: "handoff" },
+  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack; render commands are debug/manual fallback only when explicitly requested.", next: "open canonical image_path, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
   verify_visual_evidence: { when: "Mark visual/table evidence as verified/rejected/needs_verification.", next: "driver_completeness_checklist/source_review_prompt_pack", trust: "verified visual evidence if status=verified" },
   driver_completeness_checklist: { when: "Create subsystem/profile checklist for source review.", next: "source_review_prompt_pack", trust: "review contract" },
   build_driver_evidence_pack: { when: "Collect module-level manual anchors for driver review/debug.", next: "source_review_prompt_pack", trust: "evidence pack" },
@@ -229,6 +231,8 @@ const HIDDEN_USAGE_TOOLS = new Set([
   "render_figure",
   "render_figure_page",
   "render_figure_region",
+  "render_pdf_page",
+  "render_pdf_region",
   "ocr_figure",
 ]);
 

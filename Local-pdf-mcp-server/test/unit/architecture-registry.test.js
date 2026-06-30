@@ -248,7 +248,9 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
   assert.match(text, /"include_layout_tables":true/);
-  assert.match(text, /"include_render_commands":true/);
+  assert.match(text, /"include_render_commands":false/);
+  assert.match(text, /Open image_path visually/);
+  assert.match(text, /must not answer from text extraction only/i);
   assert.match(text, /"verification_note":/);
   assert.match(text, /"start_page":1/);
   assert.match(text, /"end_page":1/);
@@ -263,4 +265,50 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   const searchIndex = text.indexOf("search_figures");
   const contextIndex = text.indexOf("get_figure_context_pack");
   assert.ok(rebuildIndex >= 0 && rebuildIndex < searchIndex && searchIndex < contextIndex);
+});
+
+
+test("visual table planner uses visual-first workflow without render tools", async () => {
+  const context = createAppContext();
+  wireRuntimePorts(context);
+  const registry = createRuntimeToolRegistry({ context });
+  const result = await registry.dispatchTool("plan_manual_workflow", {
+    filename: "rzv2h.pdf",
+    task: "phân tích Table 8.2-5 Data Formats Handled in the SCU",
+    include_visual: true,
+    include_eval: false,
+  });
+  const text = result.content[0].text;
+
+  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "Open image_path", "must not answer from text extraction only"]) {
+    assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), expected);
+  }
+  for (const forbidden of ["render_pdf_page", "render_pdf_region", "render_figure_region", "render_figure_page", "render_figure", "ocr_figure"]) {
+    assert.doesNotMatch(text, new RegExp(`\\b${forbidden}\\b`), forbidden);
+  }
+  if (/read_pdf_pages/.test(text)) assert.match(text, /supporting|cross-check|locator/i);
+});
+
+test("default tool usage catalog does not advertise render tools as normal visual workflow", async () => {
+  const registry = createRuntimeToolRegistry();
+  const result = await registry.dispatchTool("explain_tool_usage", {});
+  const text = result.content[0].text;
+  for (const forbidden of ["render_pdf_page", "render_pdf_region", "render_figure_region", "render_figure_page", "render_figure"]) {
+    assert.doesNotMatch(text, new RegExp(`\\b${forbidden}\\b`), forbidden);
+  }
+
+  const explicit = await registry.dispatchTool("explain_tool_usage", { tool_name: "render_pdf_page" });
+  assert.match(explicit.content[0].text, /Debug\/compatibility only/);
+  assert.match(explicit.content[0].text, /Prefer search_figures -> get_figure_context_pack/);
+});
+
+test("public render tool descriptions are debug-only and point to canonical visual workflow", () => {
+  for (const name of ["render_pdf_page", "render_pdf_region"]) {
+    const tool = PUBLIC_TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
+    assert.ok(tool, name);
+    assert.match(tool.description, /^Debug\/compatibility only/);
+    assert.match(tool.description, /Do not use for normal figure\/table analysis/);
+    assert.match(tool.description, /get_figure_context_pack/);
+    assert.match(tool.description, /indexes\/cache\/figure-images/);
+  }
 });

@@ -20,7 +20,23 @@ const q = createRuntimePort("q");
 const scoreSimpleText = createRuntimePort("scoreSimpleText");
 
 
-const FIGURE_AGENT_INSTRUCTION = "Open image_path as an image and analyze the figure visually. Use the text context only as supporting evidence.";
+const FIGURE_AGENT_INSTRUCTION = [
+  "Open image_path as an image before making semantic claims.",
+  "Do not infer figure/table/bit-layout/timing/data-format semantics from page_text_before/page_text_after.",
+  "Text/OCR context is locator/supporting evidence only.",
+  "If image_path is empty or image_access.exists=false, report that visual analysis is unavailable instead of guessing from text."
+].join(" ");
+
+const VISUAL_CONTRACT = Object.freeze({
+  requires_visual_open: true,
+  semantic_truth_source: "image_path",
+  canonical_image_required: true,
+  expected_image_path_root: "indexes/cache/figure-images",
+  text_context_role: "locator_support_only",
+  ocr_context_role: "search_support_only",
+  must_not_answer_from_text_only: true,
+  forbidden_semantic_sources: ["page_text_before", "page_text_after", "ocr_text", "read_pdf_pages text", "search_pdf text", "renders/"]
+});
 
 function canonicalFigureId(page, ordinal) {
   return `p${Number(page || 0)}_f${String(Math.max(1, Number(ordinal || 1))).padStart(3, "0")}`;
@@ -784,7 +800,7 @@ export async function getFigureContextPack(filename, figureId, options = {}) {
     const cached = (ocrIndex?.figures || []).find((f) => [f.figure_id, f.id, f.figureUid, f.figure_uid, ...(f.legacy_ids || []), ...(f.aliases || [])].filter(Boolean).includes(figureId));
     if (cached) ocr_text = cached.ocr_text || cached.items || [];
   }
-  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: [...(image.warnings || []), ...(pageText.warning ? [pageText.warning] : []), ...((pageText.warnings || []).filter((w) => w && !String(w).includes("not wired")).slice(0, 2))], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} The image may be a full-page fallback because the exact figure bbox was unavailable.` : FIGURE_AGENT_INSTRUCTION };
+  return { figure_id: figure.figure_id || figure.id, filename, page: figure.page, bbox: figure.bbox || [], image_path: image.image_path, image_access: image.image_access, visual_contract: { ...VISUAL_CONTRACT }, caption, section_title: figure.section_title || "", page_text_before: compactText(before, 2500), page_text_after: compactText(after, 2500), context_anchor: anchor, nearby_tables: options.include_tables === false ? [] : (figure.related_tables || []), nearby_cautions: options.include_cautions === false ? [] : (figure.related_cautions || []), related_registers: figure.related_registers || [], related_bitfields: figure.related_bitfields || [], ocr_text, render: image.render, warnings: [...(image.warnings || []), ...(image.image_path ? [] : ["Canonical figure image_path under indexes/cache/figure-images is unavailable; visual semantic analysis must not be guessed from text context."]), ...(pageText.warning ? [pageText.warning] : []), ...((pageText.warnings || []).filter((w) => w && !String(w).includes("not wired")).slice(0, 2))], agent_instruction: image.render?.mode === "page_fallback" ? `${FIGURE_AGENT_INSTRUCTION} The image may be a full-page fallback because the exact figure bbox was unavailable.` : FIGURE_AGENT_INSTRUCTION };
 }
 
 export async function ocrFigureForSearch(filename, figureId, options = {}) {

@@ -1115,7 +1115,7 @@ async function handle_visual_review_handoff_pack(args = {}, meta = {}) {
       outputFormat: String(args.output_format || "report").trim(),
       topK: args.top_k,
       includeLayoutTables: args.include_layout_tables !== false,
-      includeRenderCommands: args.include_render_commands !== false,
+      includeRenderCommands: args.include_render_commands === true,
     });
     return textResult(formatVisualReviewHandoffPack(pack));
 }

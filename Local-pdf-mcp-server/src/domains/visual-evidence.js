@@ -50,22 +50,22 @@ export function visualReviewDepthRules(depth) {
   if (d === "quick") {
     return [
       "Find the most likely figure/table page and inspect caption/context first.",
-      "Render only the top candidate or the supplied page/figure_id.",
+      "Open canonical image_path from get_figure_context_pack for the top candidate; render/crop only as debug/manual fallback when explicitly requested.",
       "Extract only the facts needed for the current task and mark the rest as needsVerification.",
     ];
   }
   if (d === "deep") {
     return [
       "Search figure captions, nearby section text, and layout tables for all relevant visual candidates.",
-      "Render full page and at least one cropped/zoomed region for each important candidate.",
+      "For each important candidate, use search_figures -> get_figure_context_pack and open canonical image_path; render/crop only as debug/manual fallback when explicitly requested.",
       "Separate facts read directly from visual evidence from inferences based on caption/context.",
       "Cross-check visual evidence against register/bitfield/sequence/caution tools before proposing a patch.",
-      "If the diagram is ambiguous, request a tighter render_pdf_region crop rather than guessing.",
+      "If the diagram is ambiguous, do not guess from text; request canonical-image review or a debug/manual fallback crop only when explicitly requested.",
     ];
   }
   return [
     "Find the relevant figure/table candidates from captions/context.",
-    "Get figure context and render the best candidate page/region.",
+    "Get figure context and open canonical image_path for the best candidate; do not render by default.",
     "Extract concrete visual facts and list ambiguity explicitly.",
     "Use manual text/register tools to verify any driver-relevant conclusion.",
   ];
@@ -138,18 +138,16 @@ export function figureCandidateCommandLines(filename, figure, options = {}) {
   const figureId = figure?.id || "<figure-id>";
   const query = quoteForPromptCall(options.query || figure?.caption || "visual target");
   const includeLayout = options.includeLayoutTables !== false;
-  const includeRender = options.includeRenderCommands !== false;
+  const includeRender = options.includeRenderCommands === true;
   const lines = [];
   if (figure?.id) {
     lines.push(`get_figure_context_pack(filename="${filename}", figure_id="${figureId}")`);
-    if (includeRender) {
-      lines.push(`open image_path from get_figure_context_pack visually`);
-    }
+    lines.push(`open canonical image_path from get_figure_context_pack visually`);
+    if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   } else if (page) {
     lines.push(`search_figures(filename="${filename}", query="${query}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    if (includeRender) {
-      lines.push(`open image_path from get_figure_context_pack visually`);
-    }
+    lines.push(`open canonical image_path from get_figure_context_pack visually`);
+    if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   }
   if (page) {
     lines.push(`read_pdf_pages(filename="${filename}", start_page=${page}, end_page=${page})`);
@@ -168,7 +166,7 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
   const reviewDepth = normalizeReviewDepth(options.reviewDepth);
   const outputFormat = normalizeReviewOutputFormat(options.outputFormat);
   const includeLayoutTables = options.includeLayoutTables !== false;
-  const includeRenderCommands = options.includeRenderCommands !== false;
+  const includeRenderCommands = options.includeRenderCommands === true;
   const topK = clampInteger(options.topK, 6, 1, DEFAULT_FIGURE_TOP_K);
 
   let diagramType = normalizeVisualDiagramType(options.diagramType);
@@ -210,7 +208,8 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
   else {
     workflow.push(`list_figures(filename="${filename}", filter="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`);
     workflow.push(`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    if (includeRenderCommands) workflow.push(`open image_path from get_figure_context_pack visually`);
+    workflow.push(`open canonical image_path from get_figure_context_pack visually`);
+    if (includeRenderCommands) workflow.push(`debug/manual fallback only: render commands may be requested only after canonical image_path is unavailable or a human explicitly asks for debug render/crop`);
   }
 
   return {
@@ -232,8 +231,8 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
     outputRules: visualReviewOutputRules(outputFormat),
     extractionSchema: buildVisualReviewExtractionSchema(diagramType),
     approvalRules: [
-      "Do not infer driver behavior solely from a rendered diagram; cross-check with manual text/register/bitfield/sequence/caution evidence.",
-      "When a visual edge/arrow/timing relation is unclear, request a tighter render_pdf_region/render_figure_region crop instead of guessing.",
+      "Do not infer driver behavior solely from text/OCR/render fallback; open canonical image_path and cross-check with manual text/register/bitfield/sequence/caution evidence.",
+      "When a visual edge/arrow/timing relation is unclear, first use the canonical image_path from get_figure_context_pack; render/crop commands are debug/manual fallback only when explicitly requested.",
       "Separate direct visual observations from caption/context text and from engineering inference.",
       "For code or DTS changes, map each visual fact to source impact and list remaining needsVerification.",
     ],
@@ -573,7 +572,7 @@ export function buildVisualEvidenceRecommendedTools(filename, entry) {
   if (entry.figureId) tools.push(`get_figure_context_pack(filename="${filename}", figure_id="${entry.figureId}")`);
   else if (entry.page) tools.push(`search_figures(filename="${filename}", query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
   if (entry.page) tools.push(`read_pdf_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
-  if (entry.page) tools.push(`open image_path from get_figure_context_pack visually`);
+  if (entry.page) tools.push(`open canonical image_path from get_figure_context_pack visually`);
   for (const reg of (entry.relatedRegisters || []).slice(0, 3)) {
     tools.push(`verify_register_usage(filename="${filename}", register="${quoteForPromptCall(reg)}", operation="<operation related to visual evidence>", access_type="auto", intent="auto")`);
   }
