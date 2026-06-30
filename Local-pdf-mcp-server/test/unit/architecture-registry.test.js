@@ -246,6 +246,14 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /image_path/);
   assert.match(text, /include_ocr":false/);
   assert.match(text, /<figure_id_from_search_figures>/);
+  assert.match(text, /"query":"analyze timing diagram \/ figure"/);
+  assert.match(text, /"include_layout_tables":true/);
+  assert.match(text, /"include_render_commands":true/);
+  assert.match(text, /"verification_note":/);
+  assert.match(text, /"start_page":1/);
+  assert.match(text, /"end_page":1/);
+  assert.doesNotMatch(text, /"pages":\[\]/);
+  assert.doesNotMatch(text, /"note":"<human-checked table\/figure meaning>"/);
   assert.doesNotMatch(text, /\bfind_figure\b/);
   assert.doesNotMatch(text, /\bget_figure_context\b/);
   assert.doesNotMatch(text, /\brender_figure\b/);
