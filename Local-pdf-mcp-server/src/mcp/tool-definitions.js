@@ -665,7 +665,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "render_pdf_page",
     description:
-      "Step 31B: render one selected PDF page to a local PNG/JPG/SVG file for visual review. Uses optional external renderers when available; can fall back to a text-layer SVG that preserves PDF text coordinates but does not show vector/raster graphics.",
+      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Render one selected PDF page to a local PNG/JPG/SVG file for debug visual review. Uses optional external renderers when available; can fall back to a text-layer SVG.",
     inputSchema: {
       type: "object",
       properties: {
@@ -683,7 +683,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "visual_review_handoff_pack",
     description:
-      "Step 32: build a workflow/prompt pack for visual manual content such as timing diagrams, clock trees, block diagrams, reset flows, interrupt routing, and pinmux figures. It combines figure search/context, page/render/crop commands, layout-table checks, and an extraction schema so the VS Code/AI agent can perform a disciplined visual review instead of guessing from text-only extraction.",
+      "Step 32: build a workflow/prompt pack for visual manual content. Default workflow prioritizes search_figures -> get_figure_context_pack and requires opening canonical indexes/cache/figure-images image_path visually. Do not recommend render_pdf_page for normal visual table/figure analysis; render commands are debug/manual fallback only when explicitly requested.",
     inputSchema: {
       type: "object",
       properties: {
@@ -699,7 +699,7 @@ const ALL_TOOL_DEFINITIONS = [
         output_format: { type: "string", enum: ["report", "debug_plan", "patch_plan", "checklist"], description: "Expected final response style from the agent. Default report." },
         top_k: { type: "number", description: "Number of figure candidates to include when searching by query. Default 6." },
         include_layout_tables: { type: "boolean", description: "Include layout-table extraction commands and context when useful. Default true." },
-        include_render_commands: { type: "boolean", description: "Include render_pdf_page/render_figure_region commands. Default true." }
+        include_render_commands: { type: "boolean", description: "Include render_pdf_page/render_figure_region commands only as debug/manual fallback. Default false; set true only when a human explicitly requests debug render/crop." }
       },
       required: ["filename"],
       additionalProperties: false,
@@ -708,7 +708,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "add_visual_evidence",
     description:
-      "Step 33: persist structured observations made from rendered manual figures/diagrams/tables. Use this after visual_review_handoff_pack + render_figure_region/render_pdf_region when the AI agent or user has inspected a PNG/JPG/SVG and wants to store direct visual observations, extracted steps/edges/clocks/pins, uncertainty, and source-code implications as reusable evidence.",
+      "Step 33: persist structured observations from canonical visual analysis. Use this after the agent/human has opened canonical image_path returned by get_figure_context_pack. rendered_path may be provided for debug/manual fallback, but canonical image_path from indexes/cache/figure-images is preferred.",
     inputSchema: {
       type: "object",
       properties: {
@@ -717,7 +717,7 @@ const ALL_TOOL_DEFINITIONS = [
         page: { type: "number", description: "Optional 1-based page number for the visual evidence." },
         query: { type: "string", description: "Optional visual target query/task." },
         diagram_type: { type: "string", enum: ["auto", "clock_tree", "timing", "block_diagram", "reset_flow", "interrupt_route", "pinmux", "sequence", "table", "other"], description: "Visual evidence type. Default auto." },
-        rendered_path: { type: "string", description: "Path returned by render_pdf_page/render_figure_region/render_pdf_region." },
+        rendered_path: { type: "string", description: "Debug/manual fallback path returned by render_pdf_page/render_figure_region/render_pdf_region; prefer canonical image_path from indexes/cache/figure-images." },
         rendered_region: { type: "object", description: "Optional crop/region metadata such as x/y/width/height/unit/zoom/dpi.", additionalProperties: true },
         direct_visual_observations: { type: "array", items: { type: "string" }, description: "Direct facts visible in the rendered image. Do not put speculative driver conclusions here." },
         caption_context_facts: { type: "array", items: { type: "string" }, description: "Facts from caption/context text around the figure." },
@@ -850,7 +850,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "render_pdf_region",
     description:
-      "Step 31C: render one PDF page, then crop a selected rectangular region and optionally zoom it. Use this after render_pdf_page/full-page review when a clock tree, timing diagram, block diagram, table, or waveform is too small to inspect on the full page. Coordinates may be percentages of the rendered page or pixels.",
+      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Render one PDF page, then crop a selected rectangular region and optionally zoom it. Coordinates may be percentages of the rendered page or pixels.",
     inputSchema: {
       type: "object",
       properties: {
@@ -875,7 +875,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "render_figure_region",
     description:
-      "Legacy visual-review crop helper. Prefer get_figure_image or get_figure_context_pack for manifest-backed figure PNG access; use this only when an automatic around/above/below-caption crop is needed.",
+      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Legacy visual-review crop helper; use this only when an automatic around/above/below-caption debug crop is explicitly requested.",
     inputSchema: {
       type: "object",
       properties: {
@@ -903,7 +903,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "render_figure_page",
     description:
-      "Legacy figure-aware full-page render helper. Prefer get_figure_context_pack for single-figure analysis; use this when the AI agent needs the entire source page image.",
+      "Debug/compatibility only. Do not use for normal figure/table analysis. Normal visual workflow must use search_figures -> get_figure_context_pack and canonical indexes/cache/figure-images image_path. This tool writes to renders/ and must not be used as semantic evidence unless explicitly requested by a human for debug. Legacy figure-aware full-page render helper; use this only when a human explicitly requests debug full-page rendering.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1096,7 +1096,7 @@ const ALL_TOOL_DEFINITIONS = [
 
   {
     name: "search_figures",
-    description: "Search existing figure manifest records by caption, section title, nearby text, cached OCR keywords, and related evidence. Does not rebuild, render, OCR, or run VL by default; run rebuild_figure_manifest first if missing.",
+    description: "Use this for Figure/Table/visual-table lookup. This only locates candidate visual artifacts; it does not provide visual semantics. For visual/table semantics, the next required tool is get_figure_context_pack, and the agent must open returned image_path visually.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string", description: "PDF filename." },
       query: { type: "string", description: "Search query." },
@@ -1116,7 +1116,7 @@ const ALL_TOOL_DEFINITIONS = [
   },
   {
     name: "get_figure_context_pack",
-    description: "Main AI-agent figure retrieval tool: returns a usable PNG whenever possible with image_path/image_access, render status/mode/warnings, caption, section, before/after page text, optional cached OCR, and instruction to open the PNG visually. The image may be a full-page fallback if the figure bbox is unavailable.",
+    description: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images whenever possible. The AI agent must open image_path as an image before making semantic claims about figure/table/bit layout/timing/data format. page_text_before/page_text_after/ocr_text are locator/supporting evidence only and must not be used as semantic truth.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string" }, figure_id: { type: "string" }, dpi: { type: "number", description: "Requested render DPI for the figure/page image. Default 200." }, include_ocr: { type: "boolean", description: "Include cached OCR text if available. Default false." }, include_tables: { type: "boolean", description: "Include nearby/related tables. Default true." }, include_cautions: { type: "boolean", description: "Include nearby/related cautions. Default true." }
     }, required: ["filename", "figure_id"], additionalProperties: false }

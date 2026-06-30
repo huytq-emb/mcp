@@ -107,9 +107,9 @@ test("manifest normalization ignores legacy render paths and public retrieval do
       caption: "Figure 1.1 Example",
       section_title: "Intro section",
       nearby_text_preview: "Example context",
-      renderPath: "render/bad-crop.png",
+      renderPath: "C:\\\\tmp\\renders\\foo.png",
       render_path: "renders/bad-crop.png",
-      image_path: "render/bad-crop.png",
+      image_path: "C:\\\\tmp\\renders\\foo.png",
     }],
   });
 
@@ -125,6 +125,11 @@ test("manifest normalization ignores legacy render paths and public retrieval do
   assert.equal(found.results[0].image_path, "");
   assert.equal(found.results[0].render.status, "missing");
   assert.doesNotMatch(JSON.stringify(found), /(^|[\\/])renders?[\\/]/i);
+
+  const pack = await getFigureContextPack(filename, "p1_f001");
+  assert.equal(pack.image_path, "");
+  assert.match(pack.warnings.join("\n"), /non-canonical figure image path|Canonical figure image_path/);
+  assert.doesNotMatch(JSON.stringify({ image_path: pack.image_path, image_access: pack.image_access }), /(^|[\\/])renders?[\\/]/i);
 });
 
 
@@ -165,7 +170,12 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.equal(pack.caption, manifest.figures[0].caption);
   assert.ok(pack.page_text_after.includes("alpha") || pack.page_text_before.includes("alpha"));
   assert.ok(pack.context_anchor.method);
+  assert.equal(pack.visual_contract.requires_visual_open, true);
+  assert.equal(pack.visual_contract.semantic_truth_source, "image_path");
+  assert.equal(pack.visual_contract.text_context_role, "locator_support_only");
+  assert.equal(pack.visual_contract.must_not_answer_from_text_only, true);
   assert.equal(pack.agent_instruction.includes("Open image_path"), true);
+  assert.equal(pack.agent_instruction.includes("Do not infer"), true);
   assert.match(pack.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
   assert.doesNotMatch(pack.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
 });
