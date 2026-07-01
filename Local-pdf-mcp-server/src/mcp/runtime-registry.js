@@ -1,8 +1,5 @@
-import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "./tool-definitions.js";
-import {
-  HIDDEN_COMPATIBILITY_TOOL_NAMES,
-  createToolRegistry,
-} from "./registry.js";
+import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "./tool-definitions.js";
+import { createToolRegistry } from "./registry.js";
 import { createRuntimeHandlers } from "./runtime-handlers.js";
 
 export function createRuntimeToolRegistry(options = {}) {

@@ -6,8 +6,8 @@ import {
   validateDriverProfileFragmentObject,
   validateDriverProfileObject,
 } from "../src/driver-profiles/catalog.js";
-import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "../src/mcp/tool-definitions.js";
-import { HIDDEN_COMPATIBILITY_TOOL_NAMES, validateToolRegistryContract } from "../src/mcp/registry.js";
+import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "../src/mcp/tool-definitions.js";
+import { validateToolRegistryContract } from "../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../src/mcp/runtime-registry.js";
 
 const root = process.cwd();

@@ -4,8 +4,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import test from "node:test";
-import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
-import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
+import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { createAppContext } from "../../src/core/app-context.js";
 import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
@@ -85,12 +84,24 @@ test("runtime registry covers advertised and hidden compatibility handlers", asy
   await assert.rejects(registry.dispatchTool("not_a_tool"), /Unknown tool/);
 });
 
-test("index.js remains a thin bootstrap and architecture graph is acyclic", async () => {
+test("entrypoint and MCP assembly modules remain thin", async () => {
   const indexSource = await fs.readFile("index.js", "utf-8");
   assert.ok(indexSource.split(/\r?\n/).length <= 80);
   assert.doesNotMatch(indexSource, /function\s+(?:build|load|search|find|render|extract)[A-Z]/);
+  const runtimeHandlersSource = await fs.readFile("src/mcp/runtime-handlers.js", "utf-8");
+  assert.ok(runtimeHandlersSource.split(/\r?\n/).length <= 80);
+  assert.doesNotMatch(runtimeHandlersSource, /async function handle_/);
+  const toolDefinitionsSource = await fs.readFile("src/mcp/tool-definitions.js", "utf-8");
+  assert.ok(toolDefinitionsSource.split(/\r?\n/).length <= 80);
+  assert.match(toolDefinitionsSource, /tool-definitions\/catalog\.js/);
   const { stdout } = await execFileAsync(process.execPath, ["scripts/architecture-health.js"], { cwd: process.cwd() });
   assert.match(stdout, /Architecture health: PASS/);
+});
+
+test("registry is generic and does not import the concrete tool catalog", async () => {
+  const source = await fs.readFile("src/mcp/registry.js", "utf-8");
+  assert.doesNotMatch(source, /tool-definitions/);
+  assert.doesNotMatch(source, /HIDDEN_TOOL_NAMES/);
 });
 
 test("architecture modules can be imported without starting the MCP transport", async () => {
@@ -188,7 +199,7 @@ test("named hidden compatibility helpers remain hidden-callable with schema vali
 });
 
 test("job cancellation refreshes persisted job state before canceling", async () => {
-  const source = await fs.readFile("src/mcp/runtime-handlers.js", "utf-8");
+  const source = await fs.readFile("src/mcp/handlers/control.js", "utf-8");
   assert.match(source, /if \(action === "cancel_job"\) \{\s+await refreshJobsStateFromDisk\(\);\s+const jobId[\s\S]*?cancelBackgroundJob/);
   assert.match(source, /async function handle_cancel_job[\s\S]*?await refreshJobsStateFromDisk\(\);[\s\S]*?cancelBackgroundJob/);
 });

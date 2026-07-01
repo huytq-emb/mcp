@@ -1,7 +1,4 @@
 import Ajv from "ajv";
-import { HIDDEN_TOOL_NAMES } from "./tool-definitions.js";
-
-export const HIDDEN_COMPATIBILITY_TOOL_NAMES = HIDDEN_TOOL_NAMES;
 
 function validateDefinition(definition) {
   if (!definition || typeof definition !== "object") throw new Error("Tool definition must be an object");

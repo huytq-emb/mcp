@@ -3,11 +3,8 @@ import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
 import { createRuntimeConfig } from "../../src/core/runtime-config.js";
 import { appendEvidenceContract, textResult } from "../../src/core/runtime-helpers.js";
-import {
-  HIDDEN_COMPATIBILITY_TOOL_NAMES,
-  createToolRegistry,
-  validateToolRegistryContract,
-} from "../../src/mcp/registry.js";
+import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
+import { createToolRegistry, validateToolRegistryContract } from "../../src/mcp/registry.js";
 
 test("runtime config derives all writable paths from the supplied root", () => {
   const config = createRuntimeConfig({ rootDir: "C:/workspace/manual-server" });
