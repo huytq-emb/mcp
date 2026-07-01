@@ -22,7 +22,7 @@ function baseResult(triggered, reasons = []) {
     artifact_index: ".figures.json",
     required_next_tools: REQUIRED_NEXT_TOOLS,
     text_only_answer_forbidden: true,
-    semantic_truth_source: "image pixels opened/attached after get_figure_image metadata, or MCP image content when explicitly returned",
+    semantic_truth_source: "actual image pixels opened/attached to model vision input after get_figure_image metadata",
     text_context_role: "locator_support_only",
   };
 }
@@ -59,13 +59,13 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Use this text only to locate or cross-check the artifact.",
       "Do not provide semantic analysis from this text alone.",
       "For visual semantic analysis, use:",
-      "search_figures -> get_figure_context_pack -> get_figure_image. For RICA: use get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator.",
+      "Use get_figure_image transport=\"metadata\" to retrieve canonical_image_path/local_path, then open/attach the actual PNG as model vision input. mcp_image/image_url are experimental/client-dependent and not proof that the model saw pixels. image_path is only a locator. If no actual image input is available, return NO_IMAGE_INPUT.",
       "Visual tables are stored in .figures.json, not .tables.json."
     );
   } else if (mode === "layout-table") {
     lines.push(
       "This is coordinate/text-item extraction, not visual semantic truth.",
-      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image. For RICA: use get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator.",
+      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image transport=\"metadata\"; then open/attach the actual PNG as model vision input. image_path is only a locator. If no actual image input is available, return NO_IMAGE_INPUT.",
       "Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json."
     );
   } else {
@@ -77,8 +77,8 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Required next workflow:",
       `1. search_figures(filename="${filename}", query="${String(query).replace(/"/g, '\\"')}")`,
       "2. get_figure_context_pack(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
-      "3. get_figure_image(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
-      "4. For RICA: call get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator. Do not claim visual observation from path only."
+      "3. get_figure_image(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\", transport=\"metadata\")",
+      "4. Open/attach canonical_image_path as actual model vision input before making visual-semantic claims. mcp_image/image_url are experimental/client-dependent and not proof that the model saw pixels. image_path is only a locator. If no actual image input is available, return NO_IMAGE_INPUT."
     );
   }
   lines.push(`Guard reasons: ${detection.reasons.join(", ") || "forced"}`);

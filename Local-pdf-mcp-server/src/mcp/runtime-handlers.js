@@ -996,18 +996,22 @@ async function handle_get_figure_image(args = {}, meta = {}) {
     });
   }
 
+  const statForMetadata = await fs.stat(result.image_access.local_path).catch(() => null);
+
   if (transport === "metadata") {
+    const fileSize = statForMetadata?.size ?? 0;
     const text = [
-      "Canonical figure image is available.",
-      `Image path: ${result.image_path}`,
-      `Local path: ${result.image_access.local_path}`,
-      `MIME: ${mimeType}`,
+      "Canonical figure image metadata is available.",
+      `canonical_image_path: ${result.image_path}`,
+      `local_path: ${result.image_access.local_path}`,
+      "file_exists: true",
+      `file_size_bytes: ${fileSize}`,
+      `mime: ${mimeType}`,
       result.render?.width || result.render?.height ? `Dimensions: ${result.render.width || 0}x${result.render.height || 0}` : "Dimensions: unavailable",
       "",
-      "Image transport mode: metadata.",
-      "This MCP client did not receive image pixels in the tool result.",
-      "Open/attach canonical image separately before visual semantic analysis.",
-      "Do not make visual semantic claims unless the client/model has opened or attached this image separately."
+      "Image transport mode: metadata (canonical path contract).",
+      "This MCP tool can provide the canonical image path, but it cannot guarantee that your MCP client forwards image pixels to the model. For visual-semantic analysis, attach/open canonical_image_path as actual image input. If no actual image input is available, return NO_IMAGE_INPUT.",
+      "Do not make visual semantic claims from OCR/caption/text/context metadata alone."
     ].join("\n");
     return {
       content: [{ type: "text", text }],
@@ -1021,7 +1025,10 @@ async function handle_get_figure_image(args = {}, meta = {}) {
           client_action_required: "open_or_attach_local_image",
           canonical_image_path: result.image_path,
           local_path: result.image_access.local_path,
-          mimeType
+          file_exists: true,
+          file_size_bytes: fileSize,
+          mimeType,
+          warning: "This MCP tool can provide the canonical image path, but it cannot guarantee that your MCP client forwards image pixels to the model. For visual-semantic analysis, attach/open canonical_image_path as actual image input. If no actual image input is available, return NO_IMAGE_INPUT."
         }
       }
     };
@@ -1032,7 +1039,7 @@ async function handle_get_figure_image(args = {}, meta = {}) {
     const maxBytes = normalizeFigureImageUrlMaxBytes(args.max_bytes);
     if (stat.size > maxBytes) {
       return {
-        content: [{ type: "text", text: "Canonical image exists but is too large for image_url transport. Use metadata or reduce image size." }],
+        content: [{ type: "text", text: "Canonical image exists but is too large for experimental/client-dependent image_url transport. Use metadata and open/attach canonical_image_path as actual image input." }],
         structuredContent: {
           ...result,
           image_transport: {
@@ -1055,12 +1062,12 @@ async function handle_get_figure_image(args = {}, meta = {}) {
         {
           type: "text",
           text: [
-            "Canonical figure image prepared as imageUrl/data URI.",
+            "Canonical figure image prepared as experimental/client-dependent imageUrl/data URI.",
             `Image path: ${result.image_path}`,
             `MIME: ${mimeType}`,
             "Image transport mode: image_url.",
-            "The image data URI is available in structuredContent.image_transport.imageUrls.",
-            "The client must bridge imageUrls into model image input before visual semantic claims.",
+            "The image data URI is available in structuredContent.image_transport.imageUrls, but this does not guarantee model vision input.",
+            "RICA/VS Code may reduce MCP tool results to text-only; attach/open canonical_image_path as actual image input before visual-semantic claims.",
             "Do not answer from page_text/OCR/text extraction alone."
           ].join("\n")
         }
@@ -1080,7 +1087,10 @@ async function handle_get_figure_image(args = {}, meta = {}) {
           ],
           canonical_image_path: result.image_path,
           local_path: result.image_access.local_path,
-          client_action_required: "bridge_structuredContent_image_transport_imageUrls_to_model_imageUrl_parts"
+          client_action_required: "experimental_client_dependent_attach_or_open_canonical_image_path_as_actual_model_image_input",
+          experimental: true,
+          client_dependent: true,
+          not_guaranteed_to_reach_model_vision_input: true
         }
       }
     };
@@ -1088,11 +1098,11 @@ async function handle_get_figure_image(args = {}, meta = {}) {
 
   const data = await fs.readFile(result.image_access.local_path, { encoding: "base64" });
   const text = [
-    "Canonical figure image loaded as MCP image content.",
+    "Canonical figure image loaded as experimental/client-dependent MCP image content.",
     `Source: ${result.image_path}`,
     "Image transport mode: mcp_image.",
-    "Semantic truth source: attached image content returned by an image-capable MCP client.",
-    "image_path is only a locator; inspect the returned image pixels before semantic claims.",
+    "MCP image content is client-dependent and is not guaranteed to reach model vision input; RICA/VS Code may reduce tool results to text-only.",
+    "image_path is only a locator; attach/open the actual PNG or otherwise confirm real image input before semantic claims.",
     "Do not answer from page_text/OCR/text extraction alone."
   ].join("\n");
   return {
@@ -1107,6 +1117,9 @@ async function handle_get_figure_image(args = {}, meta = {}) {
         mode: "mcp_image",
         client_can_render_mcp_image: true,
         mcp_image_content_returned: true,
+        experimental: true,
+        client_dependent: true,
+        not_guaranteed_to_reach_model_vision_input: true,
         content_type: "mcp_image_content",
         mimeType,
         canonical_image_path: result.image_path,

@@ -28,7 +28,7 @@ test("visual semantic detector catches visual table/figure intents", () => {
 test("search text formatters emit visual guard for visual-table query", () => {
   const query = "Table 8.2-5 Data Formats Handled in the SCU";
   const text = formatSearchResults([], query);
-  for (const expected of ["VISUAL SEMANTIC GUARD", "locator evidence only", "Do not answer semantic visual content", "Visual tables are indexed in .figures.json", "search_figures", "get_figure_context_pack", "get_figure_image", "image_path is only a locator", "transport=\"image_url\"", "structuredContent.image_transport.imageUrls", "image_path is only a locator"]) {
+  for (const expected of ["VISUAL SEMANTIC GUARD", "locator evidence only", "Do not answer semantic visual content", "Visual tables are indexed in .figures.json", "search_figures", "get_figure_context_pack", "get_figure_image", "image_path is only a locator", "transport=\"metadata\"", "NO_IMAGE_INPUT", "image_path is only a locator"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
@@ -42,8 +42,8 @@ test("read page/chunk formatter guard helper emits read warning from content", (
   assert.match(output, /VISUAL SEMANTIC GUARD/);
   assert.match(output, /Use this text only to locate or cross-check/);
   assert.match(output, /Do not provide semantic analysis from this text alone/);
-  assert.match(output, /transport="image_url"/);
-  assert.match(output, /structuredContent\.image_transport\.imageUrls/);
+  assert.match(output, /transport="metadata"/);
+  assert.match(output, /NO_IMAGE_INPUT/);
   assert.match(output, /image_path is only a locator/);
 });
 
