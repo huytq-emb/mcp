@@ -12,7 +12,7 @@ import { parseSequenceDiagram } from "../../src/figure/sequenceDiagramParser.js"
 import { parseStateMachine } from "../../src/figure/stateMachineParser.js";
 import { parseBlockDiagram } from "../../src/figure/blockDiagramParser.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
-import { PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
+import { HIDDEN_TOOL_NAMES, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { artifactPathsForStatus, normalizeArtifactName } from "../../src/services/jobs.js";
 
 const figure5718Text = [
@@ -107,10 +107,11 @@ test("OCR normalization preserves original text and fixes register-like tokens",
   assert.deepEqual(block.bbox, [1, 2, 3, 4]);
 });
 
-test("figure semantic MCP tools are advertised and handled", () => {
+test("figure semantic MCP tools are hidden compatibility handlers", () => {
   const registry = createRuntimeToolRegistry();
   for (const name of ["analyze_figure_semantics", "get_figure_semantics", "list_figure_semantics", "search_figure_semantics", "rebuild_figure_semantics"]) {
-    assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+    assert.equal(HIDDEN_TOOL_NAMES.includes(name), true, name);
     assert.equal(registry.has(name), true, name);
   }
 });

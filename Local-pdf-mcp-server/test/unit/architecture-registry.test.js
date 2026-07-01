@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import test from "node:test";
-import { PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
+import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { createAppContext } from "../../src/core/app-context.js";
@@ -26,7 +26,6 @@ const REMOVED_PUBLIC_FIGURE_TOOLS = [
 
 const PUBLIC_FIGURE_TOOLS = [
   "rebuild_figure_manifest",
-  "list_figures",
   "search_figures",
   "get_figure_image",
   "get_figure_context_pack",
@@ -37,9 +36,6 @@ test("public MCP catalog preserves names and schemas", () => {
   assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);
   const digest = createHash("sha256").update(JSON.stringify(PUBLIC_TOOL_DEFINITIONS)).digest("hex");
   assert.match(digest, /^[a-f0-9]{64}$/);
-  const healthTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "eval_health_check");
-  assert.equal(healthTool.inputSchema.properties.step40_action.description.includes("Deprecated"), true);
-  assert.doesNotMatch(healthTool.description, /job|artifact|cache control/i);
   const controlTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "mcp_control");
   assert.equal(controlTool.inputSchema.required.includes("action"), true);
   for (const action of ["ping", "compat_report", "index_status_lite", "ocr_health", "rebuild_artifact", "job_status", "list_jobs", "cancel_job", "cleanup_jobs", "cache_status", "cleanup_cache", "figure_cache_status", "cleanup_figure_cache"]) {
@@ -47,30 +43,31 @@ test("public MCP catalog preserves names and schemas", () => {
   }
   for (const name of PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
   for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+  for (const name of ["job_status", "list_jobs", "start_index_pdf", "validate_index", "run_eval", "list_eval_cases", "analyze_figure_semantics", "search_figure_semantics", "rebuild_figure_semantics"]) {
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+    assert.equal(HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name), true, name);
+  }
+  assert.equal(new Set(PUBLIC_TOOL_NAMES).intersection?.(new Set(HIDDEN_COMPATIBILITY_TOOL_NAMES))?.size || PUBLIC_TOOL_NAMES.filter((name) => HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name)).length, 0);
+  const hiddenDefinitionNames = HIDDEN_TOOL_DEFINITIONS.map((tool) => tool.name);
+  for (const name of HIDDEN_COMPATIBILITY_TOOL_NAMES) assert.equal(hiddenDefinitionNames.includes(name), true, name);
+  for (const definition of HIDDEN_TOOL_DEFINITIONS) assert.equal(definition.inputSchema?.type, "object", definition.name);
   const contextPackTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context_pack");
   assert.equal(contextPackTool.inputSchema.properties.dpi.type, "number");
   const figureImageTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_image");
   assert.deepEqual(figureImageTool.inputSchema.properties.transport.enum, ["metadata", "mcp_image", "image_url"]);
-  const semanticTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "analyze_figure_semantics");
-  assert.match(semanticTool.description, /caption\/page-text\/OCR-derived semantic hints/);
-  assert.match(semanticTool.description, /does not inspect image pixels/);
-  assert.match(semanticTool.description, /visual-semantic truth/);
-  assert.match(semanticTool.description, /NO_IMAGE_INPUT/);
 });
 
 
-test("public job helper descriptions point agents to mcp_control as preferred control plane", () => {
-  const startIndex = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "start_index_pdf");
-  const jobStatus = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "job_status");
-  const listJobs = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "list_jobs");
+test("hidden job helper definitions point agents to mcp_control as preferred control plane", () => {
+  const startIndex = HIDDEN_TOOL_DEFINITIONS.find((tool) => tool.name === "start_index_pdf");
+  const jobStatus = HIDDEN_TOOL_DEFINITIONS.find((tool) => tool.name === "job_status");
+  const listJobs = HIDDEN_TOOL_DEFINITIONS.find((tool) => tool.name === "list_jobs");
 
   assert.match(startIndex.description, /mcp_control\(action="job_status"/);
-  assert.match(startIndex.description, /direct job_status/);
-  assert.match(jobStatus.description, /Direct public helper/);
   assert.match(jobStatus.description, /preferred control-plane/);
-  assert.match(listJobs.description, /Direct public helper/);
   assert.match(listJobs.description, /mcp_control\(action="list_jobs"/);
 });
+
 
 test("runtime registry covers advertised and hidden compatibility handlers", async () => {
   const registry = createRuntimeToolRegistry();
@@ -139,6 +136,8 @@ test("mcp_control validates required action arguments and eval_health_check step
   const report = JSON.parse(compat.content[0].text);
   assert.equal(report.supportedInterface, "mcp_control(action=...)");
   assert.equal(report.deprecatedInterface, "eval_health_check(step40_action=...)");
+  assert.equal(report.replacements.job_status, 'mcp_control(action="job_status", job_id="...")');
+  assert.match(report.replacements.figure_semantic_tools, /actual image/);
   assert.equal(report.notes.some((note) => /supported.*eval_health_check\(step40_action/i.test(note)), false);
 });
 
@@ -150,6 +149,8 @@ test("mcp_control compat_report text uses supported control-plane wording", asyn
   assert.match(text, /Supported interface: mcp_control\(action=\.\.\.\)/);
   assert.match(text, /Supported Step 40 actions via mcp_control/);
   assert.doesNotMatch(text, /Supported Step 40 actions via eval_health_check/);
+  assert.match(text, /job_status -> mcp_control\(action="job_status"/);
+  assert.match(text, /figure_semantic_tools -> .*actual image/);
 });
 
 test("hidden legacy control handlers fail fast when filename is missing", async () => {
@@ -157,23 +158,17 @@ test("hidden legacy control handlers fail fast when filename is missing", async 
 
   await assert.rejects(
     registry.dispatchTool("rebuild_artifact", { artifact: "pages" }),
-    (error) => /filename is required/.test(error.message) &&
-      /deprecated rebuild_artifact/.test(error.message) &&
-      /mcp_control\(action="rebuild_artifact"/.test(error.message),
+    /Invalid arguments for rebuild_artifact: \/filename must have required property/
   );
 
   await assert.rejects(
     registry.dispatchTool("pdf_index_status_lite", {}),
-    (error) => /filename is required/.test(error.message) &&
-      /deprecated pdf_index_status_lite/.test(error.message) &&
-      /mcp_control\(action="index_status_lite"/.test(error.message),
+    /Invalid arguments for pdf_index_status_lite: \/filename must have required property/
   );
 
   await assert.rejects(
     registry.dispatchTool("index_status", {}),
-    (error) => /filename is required/.test(error.message) &&
-      /deprecated index_status/.test(error.message) &&
-      /mcp_control\(action="index_status_lite"/.test(error.message),
+    /Invalid arguments for index_status: \/filename must have required property/
   );
 });
 

@@ -137,13 +137,24 @@ test("textResult exposes evidence contracts as structured content before truncat
   assert.deepEqual(result.structuredContent.evidenceContract, contract);
 });
 
-test("Step 40 compatibility names remain explicit and stable", () => {
-  assert.deepEqual(HIDDEN_COMPATIBILITY_TOOL_NAMES, [
+test("hidden compatibility names remain explicit and stable", () => {
+  for (const name of [
     "mcp_server_ping",
     "pdf_index_status_lite",
     "index_status",
     "rebuild_artifact",
     "cancel_job",
     "cleanup_jobs",
-  ]);
+    "job_status",
+    "list_jobs",
+    "start_index_pdf",
+    "validate_index",
+    "run_eval",
+    "list_eval_cases",
+    "analyze_figure_semantics",
+    "search_figure_semantics",
+    "rebuild_figure_semantics",
+  ]) {
+    assert.equal(HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name), true, name);
+  }
 });
