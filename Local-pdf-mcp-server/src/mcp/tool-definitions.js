@@ -1658,12 +1658,12 @@ const HIDDEN_COMPATIBILITY_TOOL_NAMES_FROM_DEFINITIONS = Object.freeze([
   "list_driver_profiles", "driver_completeness_checklist", "list_visual_evidence", "get_visual_evidence",
   "visual_evidence_verification_queue", "verify_visual_evidence", "analyze_figure_semantics", "get_figure_semantics",
   "list_figure_semantics", "search_figure_semantics", "rebuild_figure_semantics", "explain_tool_usage",
-]);
-
-// Defined handlers that are intentionally not advertised and not part of the compatibility surface.
-const INTERNAL_ONLY_TOOL_NAMES = Object.freeze([
   "extract_layout_tables_from_pages", "extract_pinmux_table", "list_figures", "prepare_driver_task",
 ]);
+
+// All definition-backed runtime tools are either public or hidden-callable; keep this
+// bucket empty unless a future definition is intentionally not runtime-callable.
+const INTERNAL_ONLY_TOOL_NAMES = Object.freeze([]);
 
 const LEGACY_HIDDEN_COMPATIBILITY_TOOL_DEFINITIONS = Object.freeze([
   { name: "mcp_server_ping", description: "Deprecated hidden compatibility ping; prefer mcp_control(action=\"ping\").", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
