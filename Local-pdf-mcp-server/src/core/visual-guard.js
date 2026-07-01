@@ -59,13 +59,13 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       "Use this text only to locate or cross-check the artifact.",
       "Do not provide semantic analysis from this text alone.",
       "For visual semantic analysis, use:",
-      "search_figures -> get_figure_context_pack -> get_figure_image -> if image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator.",
+      "search_figures -> get_figure_context_pack -> get_figure_image. For RICA: use get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator.",
       "Visual tables are stored in .figures.json, not .tables.json."
     );
   } else if (mode === "layout-table") {
     lines.push(
       "This is coordinate/text-item extraction, not visual semantic truth.",
-      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image and if image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator.",
+      "For captioned visual tables such as bit layout, MSB/LSB arrangement, data format, timing/waveform tables, use search_figures -> get_figure_context_pack -> get_figure_image. For RICA: use get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator.",
       "Visual/captioned tables are indexed in .figures.json; structured text/layout tables are indexed in .tables.json."
     );
   } else {
@@ -78,7 +78,7 @@ export function buildVisualSemanticGuard(text = "", options = {}) {
       `1. search_figures(filename="${filename}", query="${String(query).replace(/"/g, '\\"')}")`,
       "2. get_figure_context_pack(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
       "3. get_figure_image(filename=\"...\", figure_id=\"<figure_id_from_search_figures>\")",
-      "4. If image content is returned by the client, inspect pixels; otherwise open/attach canonical image. image_path is only a locator. Do not claim visual observation from path only."
+      "4. For RICA: call get_figure_image(..., transport=\"image_url\") and require the client to bridge structuredContent.image_transport.imageUrls into model imageUrl parts; otherwise inspect MCP image content or open/attach canonical image. image_path is only a locator. Do not claim visual observation from path only."
     );
   }
   lines.push(`Guard reasons: ${detection.reasons.join(", ") || "forced"}`);

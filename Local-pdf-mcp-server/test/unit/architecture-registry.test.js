@@ -49,6 +49,8 @@ test("public MCP catalog preserves names and schemas", () => {
   for (const name of REMOVED_PUBLIC_FIGURE_TOOLS) assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
   const contextPackTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_context_pack");
   assert.equal(contextPackTool.inputSchema.properties.dpi.type, "number");
+  const figureImageTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_image");
+  assert.deepEqual(figureImageTool.inputSchema.properties.transport.enum, ["metadata", "mcp_image", "image_url"]);
 });
 
 
@@ -301,6 +303,7 @@ test("get_figure_image default is RICA-safe metadata for canonical image_path", 
   assert.equal(result.content.every((item) => item.type === "text"), true);
   assert.ok(result.content.some((item) => item.text.includes("metadata")));
   assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(JSON.stringify(result).includes("data:image"), false);
   assert.equal(result.structuredContent.image_transport.mode, "metadata");
   assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
 });
@@ -319,6 +322,36 @@ test("get_figure_image mcp_image transport returns MCP image content for canonic
   assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, true);
 });
 
+test("get_figure_image image_url transport returns data URI in structuredContent only", async () => {
+  const imagePath = "indexes/cache/figure-images/unit-transport/test.png";
+  await fs.mkdir("indexes/cache/figure-images/unit-transport", { recursive: true });
+  await fs.writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lR9sWQAAAABJRU5ErkJggg==", "base64"));
+  const registry = createRuntimeToolRegistry({ context: createAppContext() });
+  const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath, transport: "image_url" });
+  assert.equal(result.content.every((item) => item.type === "text"), true);
+  assert.equal(JSON.stringify(result.content).includes("data:image"), false);
+  assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(result.structuredContent.image_transport.mode, "image_url");
+  assert.equal(result.structuredContent.image_transport.imageUrl.url.startsWith("data:image/png;base64,"), true);
+  assert.equal(result.structuredContent.image_transport.imageUrls[0].startsWith("data:image/png;base64,"), true);
+  assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
+});
+
+test("get_figure_image image_url transport rejects oversized data URI safely", async () => {
+  const imagePath = "indexes/cache/figure-images/unit-transport/oversize.png";
+  await fs.mkdir("indexes/cache/figure-images/unit-transport", { recursive: true });
+  await fs.writeFile(imagePath, Buffer.alloc(32, 1));
+  const registry = createRuntimeToolRegistry({ context: createAppContext() });
+  const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath, transport: "image_url", max_bytes: 4 });
+  assert.equal(result.content.every((item) => item.type === "text"), true);
+  assert.equal(JSON.stringify(result).includes("data:image"), false);
+  assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(result.structuredContent.image_transport.mode, "image_url");
+  assert.equal(result.structuredContent.image_transport.available, false);
+  assert.equal(result.structuredContent.image_transport.reason, "image_too_large_for_data_uri_transport");
+  assert.equal(result.structuredContent.image_transport.fallback_transport, "metadata");
+});
+
 test("get_figure_image missing canonical image is RICA-safe metadata only", async () => {
   const imagePath = "indexes/cache/figure-images/unit-transport/missing.png";
   await fs.rm(imagePath, { force: true });
@@ -326,6 +359,7 @@ test("get_figure_image missing canonical image is RICA-safe metadata only", asyn
   const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath });
   assert.equal(result.content.every((item) => item.type === "text"), true);
   assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
+  assert.equal(JSON.stringify(result).includes("data:image"), false);
   assert.equal(result.structuredContent.image_transport.mode, "metadata");
   assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
 });

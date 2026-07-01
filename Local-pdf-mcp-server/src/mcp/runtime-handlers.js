@@ -965,7 +965,15 @@ function mimeTypeForImagePath(imagePath = "") {
 
 function normalizeFigureImageTransport(value) {
   const raw = String(value || process.env.RENESAS_MCP_IMAGE_TRANSPORT || "metadata").trim().toLowerCase();
-  return raw === "mcp_image" ? "mcp_image" : "metadata";
+  if (raw === "mcp_image") return "mcp_image";
+  if (raw === "image_url" || raw === "data_uri") return "image_url";
+  return "metadata";
+}
+
+function normalizeFigureImageUrlMaxBytes(value) {
+  const fallback = 6 * 1024 * 1024;
+  const parsed = Number(value || process.env.RENESAS_MCP_IMAGE_URL_MAX_BYTES || fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 async function handle_get_figure_image(args = {}, meta = {}) {
@@ -1014,6 +1022,65 @@ async function handle_get_figure_image(args = {}, meta = {}) {
           canonical_image_path: result.image_path,
           local_path: result.image_access.local_path,
           mimeType
+        }
+      }
+    };
+  }
+
+  if (transport === "image_url") {
+    const stat = await fs.stat(result.image_access.local_path);
+    const maxBytes = normalizeFigureImageUrlMaxBytes(args.max_bytes);
+    if (stat.size > maxBytes) {
+      return {
+        content: [{ type: "text", text: "Canonical image exists but is too large for image_url transport. Use metadata or reduce image size." }],
+        structuredContent: {
+          ...result,
+          image_transport: {
+            available: false,
+            mode: "image_url",
+            reason: "image_too_large_for_data_uri_transport",
+            max_bytes: maxBytes,
+            actual_bytes: stat.size,
+            canonical_image_path: result.image_path,
+            local_path: result.image_access.local_path,
+            fallback_transport: "metadata"
+          }
+        }
+      };
+    }
+    const data = await fs.readFile(result.image_access.local_path, { encoding: "base64" });
+    const dataUri = `data:${mimeType};base64,${data}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            "Canonical figure image prepared as imageUrl/data URI.",
+            `Image path: ${result.image_path}`,
+            `MIME: ${mimeType}`,
+            "Image transport mode: image_url.",
+            "The image data URI is available in structuredContent.image_transport.imageUrls.",
+            "The client must bridge imageUrls into model image input before visual semantic claims.",
+            "Do not answer from page_text/OCR/text extraction alone."
+          ].join("\n")
+        }
+      ],
+      structuredContent: {
+        ...result,
+        image_transport: {
+          available: true,
+          mode: "image_url",
+          mimeType,
+          mcp_image_content_returned: false,
+          imageUrl: {
+            url: dataUri
+          },
+          imageUrls: [
+            dataUri
+          ],
+          canonical_image_path: result.image_path,
+          local_path: result.image_access.local_path,
+          client_action_required: "bridge_structuredContent_image_transport_imageUrls_to_model_imageUrl_parts"
         }
       }
     };
