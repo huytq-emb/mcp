@@ -131,6 +131,7 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 ### Missing figures manifest
 
 - Run `rebuild_figure_manifest(filename="...")`.
+
 ### Canonical figure image workflow
 
 ```text

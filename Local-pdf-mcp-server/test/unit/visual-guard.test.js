@@ -4,6 +4,8 @@ import { detectVisualSemanticIntent, withVisualSemanticGuard } from "../../src/c
 import { formatSearchResults, formatHybridSearchResults } from "../../src/services/search.js";
 import { formatLayoutExtractedTables } from "../../src/domains/manual-intelligence.js";
 import { formatToolUsage } from "../../src/workflows/manual-workflow.js";
+import { buildVisualReviewExtractionSchema, figureCandidateCommandLines, visualReviewDepthRules } from "../../src/domains/visual-evidence.js";
+import { activateRuntimePortRegistry, bindRuntimePorts, createRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 
 test("visual semantic detector catches visual table/figure intents", () => {
   const samples = [
@@ -67,4 +69,24 @@ test("tool usage catalog explains visual table workflow", () => {
   assert.match(text, /Visual\/captioned tables live in \.figures\.json/);
   assert.match(text, /search_figures -> get_figure_context_pack/);
   assert.match(text, /text extraction is locator\/supporting only/i);
+});
+
+
+test("visual review wording requires metadata image and actual model vision input", () => {
+  const registry = createRuntimePortRegistry();
+  activateRuntimePortRegistry(registry);
+  bindRuntimePorts({ normalizeReviewDepth: (value) => value || "standard", quoteForPromptCall: (value) => String(value || "") }, registry);
+  const schema = buildVisualReviewExtractionSchema("clock_tree");
+  const text = [
+    ...visualReviewDepthRules("deep"),
+    ...figureCandidateCommandLines("manual.pdf", { id: "p5_f001", page: 5, caption: "clock tree" }),
+    schema.direct_visual_observations.join(" "),
+    "direct_visual_observations",
+  ].join("\n");
+  assert.match(text, /transport="metadata"/);
+  assert.match(text, /actual model vision input/);
+  assert.match(text, /NO_IMAGE_INPUT/);
+  assert.match(text, /direct_visual_observations/);
+  assert.match(text, /leave empty/);
+  assert.match(text, /supporting evidence/);
 });

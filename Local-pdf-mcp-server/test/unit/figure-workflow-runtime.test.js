@@ -6,7 +6,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { activateRuntimePortRegistry, bindRuntimePorts, createRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 import { atomicWriteJson, getPdfSourceInfo, safeFigureLookupIndexPath, safeFiguresIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
-import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, findFigure } from "../../src/domains/figures.js";
+import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, findFigure, buildFigureEvidenceContract } from "../../src/domains/figures.js";
+import { normalizeFigureImageTransport } from "../../src/mcp/runtime-handlers.js";
 
 const filename = "unit-figure-workflow.pdf";
 const execFileAsync = promisify(execFile);
@@ -58,6 +59,31 @@ function wirePorts() {
     scoreSimpleText: (text, query) => String(text).toLowerCase().includes(String(query).toLowerCase()) ? 10 : 0,
   }, registry);
 }
+
+test("figure image transport default ignores legacy environment override", () => {
+  const previous = process.env.RENESAS_MCP_IMAGE_TRANSPORT;
+  process.env.RENESAS_MCP_IMAGE_TRANSPORT = "image_url";
+  try {
+    assert.equal(normalizeFigureImageTransport(undefined), "metadata");
+    assert.equal(normalizeFigureImageTransport(""), "metadata");
+    assert.equal(normalizeFigureImageTransport("image_url"), "image_url");
+    assert.equal(normalizeFigureImageTransport("data_uri"), "image_url");
+    assert.equal(normalizeFigureImageTransport("mcp_image"), "mcp_image");
+  } finally {
+    if (previous === undefined) delete process.env.RENESAS_MCP_IMAGE_TRANSPORT;
+    else process.env.RENESAS_MCP_IMAGE_TRANSPORT = previous;
+  }
+});
+
+test("figure evidence contract recommends metadata image workflow before text cross-checks", () => {
+  const contract = buildFigureEvidenceContract("search_figures", filename, "clock tree", [{ id: "p1_f001", page: 1, caption: "Figure 1.1 Clock tree" }]);
+  assert.ok(contract.recommendedNextTools.includes('get_figure_context_pack(filename="unit-figure-workflow.pdf", figure_id="<figure-id>")'));
+  assert.ok(contract.recommendedNextTools.includes('get_figure_image(filename="unit-figure-workflow.pdf", figure_id="<figure-id>", transport="metadata")'));
+  assert.ok(contract.recommendedNextTools.includes("open/attach canonical_image_path as actual model vision input"));
+  const text = JSON.stringify(contract);
+  assert.match(text, /caption\/text\/OCR alone is insufficient/i);
+  assert.match(text, /supporting text cross-check only/i);
+});
 
 test("figure workflow builds lightweight canonical manifest and supports page-limited updates", async () => {
   await resetArtifacts();
