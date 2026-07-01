@@ -6,7 +6,7 @@ import {
   validateDriverProfileFragmentObject,
   validateDriverProfileObject,
 } from "../src/driver-profiles/catalog.js";
-import { PUBLIC_TOOL_DEFINITIONS } from "../src/mcp/tool-definitions.js";
+import { HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "../src/mcp/tool-definitions.js";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES, validateToolRegistryContract } from "../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../src/mcp/runtime-registry.js";
 
@@ -30,26 +30,48 @@ if (missingHandlers.length) failures.push(`Missing call handlers: ${missingHandl
 const missingCompatibilityHandlers = HIDDEN_COMPATIBILITY_TOOL_NAMES.filter((name) => !registry.has(name));
 if (missingCompatibilityHandlers.length) failures.push(`Missing compatibility handlers: ${missingCompatibilityHandlers.join(", ")}`);
 
-const criticalTools = [
+const criticalPublicTools = [
   "list_pdfs",
   "pdf_info",
   "doctor",
-  "validate_index",
-  "eval_health_check",
-  "start_index_pdf",
   "index_pdf",
+  "mcp_control",
   "hybrid_search_pdf",
   "find_register",
   "extract_bitfield_table",
-  "prepare_driver_task",
   "build_driver_evidence_pack",
   "verify_register_usage",
   "rebuild_figure_manifest",
   "search_figures",
   "get_figure_context_pack",
+  "get_figure_image",
 ];
-for (const name of criticalTools) {
-  if (!tools.includes(name)) failures.push(`Critical tool missing from registry: ${name}`);
+for (const name of criticalPublicTools) {
+  if (!tools.includes(name)) failures.push(`Critical public tool missing from registry: ${name}`);
+}
+const hiddenDeprecatedTools = [
+  "job_status",
+  "list_jobs",
+  "start_index_pdf",
+  "validate_index",
+  "run_eval",
+  "list_eval_cases",
+  "analyze_figure_semantics",
+  "search_figure_semantics",
+  "rebuild_figure_semantics",
+];
+for (const name of hiddenDeprecatedTools) {
+  if (tools.includes(name)) failures.push(`Hidden/deprecated tool is advertised: ${name}`);
+  if (!HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name)) failures.push(`Hidden/deprecated tool missing from hidden list: ${name}`);
+}
+const publicHiddenOverlap = tools.filter((name) => HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name));
+if (publicHiddenOverlap.length) failures.push(`Public/hidden overlap: ${publicHiddenOverlap.join(", ")}`);
+const hiddenDefinitionNames = HIDDEN_TOOL_DEFINITIONS.map((tool) => tool.name);
+for (const name of HIDDEN_COMPATIBILITY_TOOL_NAMES) {
+  if (!hiddenDefinitionNames.includes(name)) failures.push(`Hidden tool missing definition: ${name}`);
+}
+for (const definition of HIDDEN_TOOL_DEFINITIONS) {
+  if (definition.inputSchema?.type !== "object") failures.push(`Hidden tool missing object input schema: ${definition.name}`);
 }
 
 for (const rel of ["driver_profiles", "driver_profiles/fragments", "eval", "eval/profiles", "eval/fixtures", "eval/golden"]) {

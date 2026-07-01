@@ -190,9 +190,9 @@ export function formatManualWorkflowPlan(plan) {
 
 export const TOOL_USAGE_CATALOG = {
   list_pdfs: { when: "Find available manuals.", next: "pdf_info or doctor", trust: "navigation" },
-  doctor: { when: "Check index/artifact health before evidence work.", next: "index_pdf/start_index_pdf or get_module_profile", trust: "health gate" },
-  index_pdf: { when: "Build indexes synchronously for small/medium manuals.", next: "doctor", trust: "artifact builder" },
-  start_index_pdf: { when: "Build indexes for 500/800/1000+ page manuals without MCP timeout.", next: "job_status", trust: "artifact builder" },
+  doctor: { when: "Check index/artifact health before evidence work.", next: "index_pdf(mode=\"background\") or get_module_profile", trust: "health gate" },
+  index_pdf: { when: "Build indexes for manuals; use mode=\"background\" for large files to avoid MCP client timeout.", next: "mcp_control(action=\"job_status\") for background jobs, then doctor", trust: "artifact builder" },
+  start_index_pdf: { when: "Hidden legacy alias for background indexing; do not use as the primary workflow.", next: "index_pdf(filename=..., mode=\"background\")", trust: "compatibility only" },
   hybrid_search_pdf: { when: "Recall-oriented text search. Text extraction can locate visual tables, but must not be semantic truth; Visual/captioned tables live in .figures.json.", next: "For visual tables use search_figures -> get_figure_context_pack -> get_figure_image; otherwise read_pdf_pages/find_register/find_bitfield", trust: "locator/supporting only for visual content" },
   find_register: { when: "Locate a specific register or macro in the manual.", next: "summarize_register/find_bitfield/verify_register_usage", trust: "manual evidence candidate" },
   find_bitfield: { when: "Locate a bitfield/macro and candidate semantics.", next: "verify_register_usage", trust: "manual evidence candidate" },
@@ -214,7 +214,14 @@ export const TOOL_USAGE_CATALOG = {
   run_eval: { when: "Run regression/smoke cases against a manual.", next: "fix failures or add fixtures", trust: "regression signal" },
 };
 
-const HIDDEN_USAGE_TOOLS = new Set();
+const HIDDEN_USAGE_TOOLS = new Set([
+  "start_index_pdf",
+  "visual_review_handoff_pack",
+  "verify_visual_evidence",
+  "driver_completeness_checklist",
+  "eval_health_check",
+  "run_eval",
+]);
 
 function visibleToolUsageNames() {
   return Object.keys(TOOL_USAGE_CATALOG).filter((key) => !HIDDEN_USAGE_TOOLS.has(key)).sort();
@@ -261,8 +268,33 @@ export function buildStep407CompatibilityReport() {
       "index_status",
       "rebuild_artifact",
       "cancel_job",
-      "cleanup_jobs"
+      "cleanup_jobs",
+      "job_status",
+      "list_jobs",
+      "start_index_pdf",
+      "validate_index",
+      "check_pdf_renderers",
+      "list_eval_cases",
+      "run_eval",
+      "analyze_figure_semantics",
+      "search_figure_semantics",
+      "rebuild_figure_semantics"
     ],
+    publicSurfaceCleanup: {
+      directControlHelpers: "hidden/deprecated",
+      evalTools: "dev-only via npm scripts",
+      figureSemanticTools: "hidden; semantic truth comes from actual image pixels",
+      visualAdvancedHelpers: "hidden compatibility/dev surface"
+    },
+    replacements: {
+      job_status: "mcp_control(action=\"job_status\", job_id=\"...\")",
+      list_jobs: "mcp_control(action=\"list_jobs\")",
+      start_index_pdf: "index_pdf(filename=\"...\", mode=\"background\")",
+      validate_index: "doctor(filename=\"...\") or mcp_control(action=\"index_status_lite\", filename=\"...\")",
+      check_pdf_renderers: "future/control diagnostic; not normal workflow",
+      eval_tools: "npm scripts/dev-only",
+      figure_semantic_tools: "search_figures -> get_figure_context_pack -> get_figure_image transport=\"metadata\" -> attach/open actual image"
+    },
     stillAvailableLegacyHandlers: true,
     notes: STEP40_DIRECT_TOOL_COMPAT_NOTES,
     recommendedCalls: [
@@ -291,6 +323,9 @@ export function formatStep407CompatibilityReport(report) {
     "",
     "Notes:",
     ...report.notes.map((n) => `- ${n}`),
+    "",
+    "Preferred replacements:",
+    ...Object.entries(report.replacements || {}).map(([from, to]) => `- ${from} -> ${to}`),
     "",
     "Recommended calls:",
     ...report.recommendedCalls.map((c) => `- ${c}`),

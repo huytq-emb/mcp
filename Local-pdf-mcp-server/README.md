@@ -88,8 +88,7 @@ doctor(filename="...")
 index_pdf(filename="...", mode="background")
 mcp_control(action="list_jobs")
 mcp_control(action="job_status", job_id="...")
-# Direct public helpers job_status(job_id="...") and list_jobs() are convenience/legacy-compatible alternatives, not the primary control-plane path.
-validate_index(filename="...")
+# Direct job_status/list_jobs/start_index_pdf/validate_index helpers are hidden compatibility paths; prefer mcp_control/doctor.
 ```
 
 ## Figure commands
@@ -100,9 +99,11 @@ Canonical retrieval-first figure workflow:
 rebuild_figure_manifest(filename="...")
 search_figures(filename="...", query="timing diagram")
 get_figure_context_pack(filename="...", figure_id="...")
+get_figure_image(filename="...", figure_id="...", transport="metadata")
+# client/agent opens or attaches canonical_image_path as actual model vision input
 ```
 
-The AI agent must open `image_path` visually. Caption, page text, and OCR text are supporting evidence only. Optional OCR can improve search metadata:
+The normal workflow uses `transport="metadata"`; RICA client-side local image bridge can consume `canonical_image_path` and attach the image pixels to the model. The AI agent must open or attach `canonical_image_path` visually. Caption, page text, and OCR text are supporting evidence only. Optional OCR can improve search metadata:
 
 ```text
 ocr_figure_for_search(filename="...", figure_id="...")
@@ -125,7 +126,7 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 
 ### Stale lock
 
-- Run `doctor(filename="...")` and `validate_index(filename="...")` first.
+- Run `doctor(filename="...")` or `mcp_control(action="index_status_lite", filename="...")` first.
 - Use `force_lock` only if no indexing worker is running.
 
 ### Missing figures manifest
@@ -146,9 +147,9 @@ rebuild_figure_manifest
 Non-goals and trust rules:
 
 ```text
-MCP image transports are best-effort and client-dependent.
-They are not semantic proof that the model saw the image.
-OCR output is optional search metadata, not visual truth.
+`mcp_image` and `image_url` are experimental/debug compatibility only.
+Normal workflow uses metadata and a client-side local image bridge.
+OCR/caption/page context are optional search metadata, not visual-semantic truth.
 ```
 
 `get_figure_image` defaults to the stable metadata contract: `canonical_image_path`, `local_path`, file existence/size, and MIME. `mcp_image` and `image_url` remain experimental/debug compatibility modes only; RICA/VS Code may reduce MCP tool results to text-only, so visual-semantic claims require the actual PNG to be opened or attached as model vision input. If no actual image input is available, return `NO_IMAGE_INPUT`.
