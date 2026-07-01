@@ -320,7 +320,7 @@ export async function getCautionsIndex(filename, options = {}) {
     return await buildCautionsIndex(filename, indexData, sectionsIndex, registersIndex);
   }
 
-  throw new Error(`Cautions index not found for ${filename}. Run index_pdf or start_index_pdf first.`);
+  throw new Error(`Cautions index not found for ${filename}. Run index_pdf first; use mode="background" for large manuals.`);
 }
 
 export function cautionMatchesFilter(caution, filter = "", register = "", type = "") {
@@ -401,7 +401,9 @@ export function formatPersistentCautionList(cautionsIndex, results, options = {}
       "",
       "No persistent caution candidates matched.",
       "Suggested fallback:",
-      `- find_caution(filename="${filename}", topic="${filter || 'reserved bits'}"${register ? `, register="${register}"` : ""})`,
+      register
+        ? `- get_cautions_for_register(filename="${filename}", register="${register}", include_dynamic_fallback=true)`
+        : `- list_cautions(filename="${filename}", filter="${filter || 'reserved bits'}")`,
       `- find_section(filename="${filename}", section="Usage Notes")`,
     ].join("\n");
   }
@@ -586,7 +588,7 @@ export function formatCautionsForRegister(result) {
       result.fallback
         ? "Dynamic fallback result:"
         : "Dynamic fallback skipped by default to avoid timeout on large manuals.",
-      result.fallback ? formatCautionResults(result.fallback) : `- For deeper recall, call get_cautions_for_register(filename="${filename}", register="${register}", include_dynamic_fallback=true) or find_caution(filename="${filename}", topic="reserved bits", register="${register}").`,
+      result.fallback ? formatCautionResults(result.fallback) : `- For deeper recall, call get_cautions_for_register(filename="${filename}", register="${register}", include_dynamic_fallback=true) or list_cautions(filename="${filename}", filter="reserved bits").`,
     ].join("\n");
   }
 
@@ -618,7 +620,7 @@ export function formatCautionsForRegister(result) {
         `Related chunks: ${chunks}`,
         "Evidence:",
         evidence,
-        `Suggested dynamic check: find_caution(filename="${filename}", topic="${caution.topic}", register="${register}")`,
+        `Suggested dynamic check: get_cautions_for_register(filename="${filename}", register="${register}", include_dynamic_fallback=true)`,
         `Suggested page read: read_pdf_pages(filename="${filename}", start_page=${firstPage}, end_page=${endPage})`,
       ].filter(Boolean).join("\n");
     }),

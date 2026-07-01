@@ -954,8 +954,9 @@ export function formatFigureContext(result) {
 
   lines.push("", "Suggested next steps:");
   lines.push(`- read_pdf_pages(filename="${result.filename}", start_page=${figure.page}, end_page=${figure.page})`);
-  lines.push(`- extract_layout_tables_from_pages(filename="${result.filename}", start_page=${result.startPage}, end_page=${result.endPage}, kind="all")`);
-  lines.push("- If the actual graphic content is required, open/render the original PDF page visually; this tool only indexes text/captions around it.");
+  lines.push(`- get_figure_image(filename="${result.filename}", figure_id="${figure.id}", transport="metadata")`);
+  lines.push(`- extract_tables_from_pages(filename="${result.filename}", start_page=${result.startPage}, end_page=${result.endPage})`);
+  lines.push("- If the actual graphic content is required, open/attach the canonical image path returned by get_figure_image metadata; captions/OCR/page text are locator support only.");
 
   return appendEvidenceContract(lines.join("\n"), buildFigureEvidenceContract("get_figure_context_pack", result.filename, figure.caption, [figure]));
 }

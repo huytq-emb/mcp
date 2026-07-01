@@ -373,7 +373,7 @@ export function formatCautionResults(cautionResult) {
       `- Try search_pdf(filename="${filename}", query="${topic} caution note restriction reserved undefined prohibited").`,
       register
         ? `- Try summarize_register(filename="${filename}", register="${register}").`
-        : `- Try passing a related register, for example find_caution(filename="${filename}", topic="write only when stopped", register="DMACm_CHCTRL_n").`,
+        : `- Try get_cautions_for_register with a related register, for example get_cautions_for_register(filename="${filename}", register="DMACm_CHCTRL_n", include_dynamic_fallback=true).`,
     ].join("\n");
   }
 

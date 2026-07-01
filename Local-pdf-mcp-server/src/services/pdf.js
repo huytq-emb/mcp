@@ -203,7 +203,7 @@ export async function getPagesCache(filename, options = {}) {
     return await buildPagesCache(filename, options);
   }
 
-  throw new Error(`Pages cache not found for ${filename}. Run index_pdf or start_index_pdf first. For a small page range, use read_pdf_pages which can extract selected pages without building full cache.`);
+  throw new Error(`Pages cache not found for ${filename}. Run index_pdf first; use mode="background" for large manuals. For a small page range, use read_pdf_pages which can extract selected pages without building full cache.`);
 }
 
 /**

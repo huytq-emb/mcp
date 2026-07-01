@@ -151,7 +151,7 @@ export function figureCandidateCommandLines(filename, figure, options = {}) {
   }
   if (page) {
     lines.push(`read_pdf_pages(filename="${filename}", start_page=${page}, end_page=${page})`);
-    if (includeLayout) lines.push(`extract_layout_tables_from_pages(filename="${filename}", start_page=${Math.max(1, page - 1)}, end_page=${page + 1}, kind="all")`);
+    if (includeLayout) lines.push(`extract_tables_from_pages(filename="${filename}", start_page=${Math.max(1, page - 1)}, end_page=${page + 1})`);
   }
   return lines;
 }
@@ -813,7 +813,7 @@ export function visualEvidenceVerificationRequirements(entry) {
     requirements.push("Verify operation order with get_sequence and surrounding page text.");
   }
   if (/caution|restriction|reserved|prohibited|undefined|only when|must/.test(text)) {
-    requirements.push("Verify restrictions with get_cautions_for_register or find_caution.");
+    requirements.push("Verify restrictions with list_cautions or get_cautions_for_register.");
   }
   if (/clock|pll|divider|gate|mstp|module clock/.test(text)) {
     requirements.push("Cross-check clock source/divider/gate assumptions against manual text and clock/reset registers.");
@@ -822,7 +822,7 @@ export function visualEvidenceVerificationRequirements(entry) {
     requirements.push("Cross-check timing constraints against caption/table text and numeric timing notes.");
   }
   if (/pinmux|pfc|pmc|ioport|port|pin|function|selector/.test(text)) {
-    requirements.push("Cross-check pin/function selector values with extract_pinmux_table and page text.");
+    requirements.push("Cross-check pin/function selector values with extract_tables_from_pages, search_pdf, and page text.");
   }
   if (/interrupt|irq|route|mask|status/.test(text)) {
     requirements.push("Cross-check interrupt routing/status/clear semantics with sequence/caution/register evidence.");
@@ -837,9 +837,9 @@ export function visualEvidenceVerificationSuggestedTools(filename, entry) {
   else if (entry.page) tools.push(`search_figures(filename="${filename}", query="${quoteForPromptCall(entry.query || entry.figure?.caption || "")}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
   if (entry.page) tools.push(`read_pdf_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
   if (entry.page && /pinmux|pfc|pmc|pin|port|function|selector/i.test(visualEvidenceSearchText(entry))) {
-    tools.push(`extract_pinmux_table(filename="${filename}", start_page=${entry.page}, end_page=${entry.page}, filter="${quoteForPromptCall(entry.query || "pin function")}")`);
+    tools.push(`extract_tables_from_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
   }
-  if (entry.page) tools.push(`extract_layout_tables_from_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page}, kind="auto")`);
+  if (entry.page) tools.push(`extract_tables_from_pages(filename="${filename}", start_page=${entry.page}, end_page=${entry.page})`);
   for (const reg of (entry.relatedRegisters || []).slice(0, 4)) {
     tools.push(`verify_register_usage(filename="${filename}", register="${quoteForPromptCall(reg)}", operation="<operation supported by ${entry.id}>", access_type="auto", intent="auto")`);
     tools.push(`get_cautions_for_register(filename="${filename}", register="${quoteForPromptCall(reg)}")`);
@@ -1289,9 +1289,12 @@ export async function collectDriverReviewVisualEvidence(filename, options = {}) 
 export function visualEvidenceGateSuggestedCalls(filename, gate = {}) {
   const calls = [];
   for (const entry of (gate.unverifiedEntries || []).slice(0, 6)) {
-    calls.push(`get_visual_evidence(filename="${filename}", evidence_id="${entry.id}")`);
-    calls.push(`visual_evidence_verification_queue(filename="${filename}", filter="${quoteForPromptCall(entry.query || entry.figure?.caption || entry.diagramType || entry.id)}", top_k=10)`);
-    calls.push(`verify_visual_evidence(filename="${filename}", evidence_id="${entry.id}", status="verified", supporting_evidence=[...], supporting_tool_calls=[...])`);
+    const query = quoteForPromptCall(entry.query || entry.figure?.caption || entry.diagramType || entry.id);
+    calls.push(`visual_evidence_report(filename="${filename}", filter="${query}", status="all", include_entries=true)`);
+    if (entry.figureId) calls.push(`get_figure_context_pack(filename="${filename}", figure_id="${entry.figureId}")`);
+    else calls.push(`search_figures(filename="${filename}", query="${query}", build_if_missing=true)`);
+    calls.push(`get_figure_image(filename="${filename}", ${entry.figureId ? `figure_id="${entry.figureId}"` : `figure_id="<figure_id_from_search_figures>"`}, transport="metadata")`);
+    calls.push(`add_visual_evidence(filename="${filename}", ${entry.figureId ? `figure_id="${entry.figureId}", ` : ""}query="${query}", direct_visual_observations=[...], verification_status="verified")`);
   }
   if (!calls.length) calls.push(`visual_evidence_report(filename="${filename}", status="verified", include_entries=true)`);
   return [...new Set(calls)].slice(0, 18);
@@ -1311,8 +1314,8 @@ export function visualEvidenceGateNeedsVerification(gate = {}, filename = "") {
       item: `${entry.id} (${entry.diagramType || "visual"}, status=${entry.verificationStatus || "needs_verification"})`,
       reason: "Related visual evidence matched this driver-review context but is not verified.",
       suggestedTools: [
-        `get_visual_evidence(filename="${filename}", evidence_id="${entry.id}")`,
-        `verify_visual_evidence(filename="${filename}", evidence_id="${entry.id}", status="verified", supporting_evidence=[...], supporting_tool_calls=[...])`,
+        `visual_evidence_report(filename="${filename}", filter="${quoteForPromptCall(entry.query || entry.figure?.caption || entry.diagramType || entry.id)}", status="all", include_entries=true)`,
+        `add_visual_evidence(filename="${filename}", ${entry.figureId ? `figure_id="${entry.figureId}", ` : ""}query="${quoteForPromptCall(entry.query || entry.figure?.caption || entry.diagramType || entry.id)}", direct_visual_observations=[...], verification_status="verified")`,
       ],
     }));
   }
@@ -1354,7 +1357,9 @@ export function formatDriverVisualEvidenceSection(entries, filename, title = "Re
   const lines = [title];
   if (!(entries || []).length) {
     lines.push("- No persisted visual evidence matched this driver-review context.");
-    lines.push(`- Suggested: visual_review_handoff_pack(filename="${filename}", query="<clock/timing/reset/pinmux/interrupt topic>")`);
+    lines.push(`- Suggested: search_figures(filename="${filename}", query="<clock/timing/reset/pinmux/interrupt topic>", build_if_missing=true)`);
+    lines.push(`- Suggested: get_figure_context_pack(filename="${filename}", figure_id="<figure_id_from_search_figures>")`);
+    lines.push(`- Suggested: get_figure_image(filename="${filename}", figure_id="<figure_id_from_search_figures>", transport="metadata")`);
     return lines;
   }
   for (const entry of entries.slice(0, 10)) {
@@ -1366,7 +1371,7 @@ export function formatDriverVisualEvidenceSection(entries, filename, title = "Re
     for (const unc of (entry.uncertainties || []).slice(0, 2)) lines.push(`  uncertainty: ${unc}`);
     const regs = (entry.relatedRegisters || []).slice(0, 6).join(", ");
     if (regs) lines.push(`  related registers: ${regs}`);
-    lines.push(`  suggested: get_visual_evidence(filename="${filename}", evidence_id="${entry.id}")`);
+    lines.push(`  suggested: visual_evidence_report(filename="${filename}", filter="${quoteForPromptCall(entry.id)}", status="all", include_entries=true)`);
   }
   lines.push(`- Summary/report: visual_evidence_report(filename="${filename}", include_entries=true)`);
   return lines;

@@ -402,7 +402,7 @@ export function formatSequenceResults(sequenceResult) {
       `- Try search_pdf(filename="${filename}", query="${topic} procedure sequence operation caution").`,
       register
         ? `- Try summarize_register(filename="${filename}", register="${register}").`
-        : `- Try passing a related register, for example find_sequence(filename="${filename}", topic="${topic}", register="DMACm_CHCTRL_n").`,
+        : `- Try get_sequence with a related register, for example get_sequence(filename="${filename}", topic="${topic}", register="DMACm_CHCTRL_n").`,
     ].join("\n");
   }
 
@@ -962,7 +962,7 @@ export async function getSequencesIndex(filename, options = {}) {
     return await buildSequencesIndex(filename, indexData, sectionsIndex, registersIndex, { tablesIndex, bitfieldsIndex, cautionsIndex });
   }
 
-  throw new Error(`Sequences index not found for ${filename}. Run index_pdf or start_index_pdf first.`);
+  throw new Error(`Sequences index not found for ${filename}. Run index_pdf first; use mode="background" for large manuals.`);
 }
 
 export function scoreSimpleText(text, query) {
@@ -1036,7 +1036,7 @@ export function formatSequenceListResults(sequencesIndex, results, filter = "") 
   ];
 
   if (!results.length) {
-    lines.push("No sequence candidates found. Try find_sequence with a concrete topic such as start transfer, clear interrupt, reset, or initialization.");
+    lines.push("No sequence candidates found. Try get_sequence with a concrete topic such as start transfer, clear interrupt, reset, or initialization.");
     return lines.join("\n");
   }
 

@@ -87,7 +87,6 @@ export async function buildManualWorkflowPlan(options = {}) {
 
   if (filename) {
     calls.push(workflowCall("get_module_profile", { filename, module_type: moduleType || undefined, focus: task }, "Build/read module orientation before driver-specific evidence collection."));
-    calls.push(workflowCall("driver_completeness_checklist", { filename, subsystem: moduleType || undefined, driver_family: driverFamily || undefined, task }, "Generate the source-review checklist from the selected driver profile."));
     calls.push(workflowCall("build_driver_evidence_pack", { filename, module_type: moduleType || undefined, focus: task, top_registers: depth === "deep" ? 30 : 15, top_summaries: depth === "quick" ? 5 : 10 }, "Collect manual evidence anchors for registers, sequences, cautions, and summaries."));
 
     if (sourceFiles.length || flags.isDriverReview || flags.isPatchPlan || flags.isDebug) {
@@ -117,9 +116,9 @@ export async function buildManualWorkflowPlan(options = {}) {
       calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate visual artifacts only; this does not provide visual semantics."));
       calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Get locator/support context. image_path alone is only a locator; do not claim visual analysis from text extraction only."));
       calls.push(workflowCall("get_figure_image", { filename, figure_id: "<figure_id_from_search_figures>" }, "Load canonical image metadata by default. Use metadata to retrieve canonical_image_path/local_path, then open/attach the actual PNG as model vision input. mcp_image/image_url are experimental/client-dependent and not guaranteed to reach model vision input. Do not claim visual observation from path only."));
-      calls.push(workflowCall("extract_layout_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
-      calls.push(workflowCall("visual_review_handoff_pack", { filename, query: task, task, include_layout_tables: true }, "Optional handoff around canonical visual workflow. Do not answer from text extraction only. Call get_figure_image; if metadata-only, open/attach canonical image before semantic claims."));
-      calls.push(workflowCall("verify_visual_evidence", { filename, evidence_id: "<evidence_id_from_add_visual_evidence_or_visual_evidence_verification_queue>", status: "verified", verification_note: "<manual/text/register evidence used to verify the visual observation>" }, "Driver-critical table/figure evidence should be verified before use; OCR/page text may support but not replace visual review."));
+      calls.push(workflowCall("extract_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
+      calls.push(workflowCall("add_visual_evidence", { filename, figure_id: "<figure_id_from_search_figures>", query: task, direct_visual_observations: ["<facts observed from the opened/attached PNG>"], verification_status: "needs_verification" }, "Persist observations only after the actual canonical image has been opened/attached as model vision input."));
+      calls.push(workflowCall("visual_evidence_report", { filename, filter: task, status: "all", include_entries: true }, "Review persisted visual evidence and resolve unverified entries before driver-critical conclusions."));
     }
 
     calls.push(workflowCall("compare_driver_requirements", {
@@ -136,8 +135,7 @@ export async function buildManualWorkflowPlan(options = {}) {
   }
 
   if (includeEval || flags.needsEval) {
-    calls.push(workflowCall("eval_health_check", { create_default: true, include_profiles: true, include_fixtures: true, write_report: true }, "Static hardening check after tool/profile/eval changes."));
-    if (filename) calls.push(workflowCall("run_eval", { filename, module_type: moduleType || undefined, eval_profile: moduleType || undefined, auto_index: false, write_report: true }, "Run data-driven smoke/regression cases against the selected manual."));
+    calls.push(workflowCall("mcp_control", { action: "compat_report" }, "Check public/hidden compatibility routing through the primary control plane. Run npm-based evals from the repository shell when doing MCP code changes."));
   }
 
   const gates = [
@@ -198,11 +196,10 @@ export const TOOL_USAGE_CATALOG = {
   find_bitfield: { when: "Locate a bitfield/macro and candidate semantics.", next: "verify_register_usage", trust: "manual evidence candidate" },
   list_sequences: { when: "Find start/stop/reset/initialization sequences.", next: "get_sequence or verify_register_usage", trust: "sequence evidence" },
   list_cautions: { when: "Find restrictions/cautions/reserved-bit/clear-semantics notes.", next: "get_cautions_for_register", trust: "risk evidence" },
-  extract_layout_tables_from_pages: { when: "Coordinate/text-item table extraction, not visual semantic truth. Visual/captioned tables live in .figures.json; structured text/layout tables live in .tables.json.", next: "search_figures -> get_figure_context_pack -> get_figure_image for visual/captioned tables", trust: "locator/supporting only for visual content" },
   rebuild_figure_manifest: { when: "Build or refresh the canonical figure manifest before figure retrieval.", next: "search_figures", trust: "artifact builder" },
   search_figures: { when: "Use this for Figure/Table/visual-table lookup. Visual/captioned tables live in .figures.json. This locates candidate visual artifacts; it does not provide visual semantics.", next: "get_figure_context_pack, then get_figure_image for canonical image path metadata", trust: "locator only" },
   get_figure_context_pack: { when: "Main visual-semantics entry point. Returns canonical image_path under indexes/cache/figure-images when possible; page/OCR text is locator/support only.", next: "call get_figure_image; if metadata-only, open/attach canonical image before semantic claims", trust: "actual opened/attached PNG image input is semantic truth; image_path is locator only" },
-  visual_review_handoff_pack: { when: "Optional handoff that prioritizes search_figures -> get_figure_context_pack -> get_figure_image metadata-first image review.", next: "call get_figure_image; use metadata to retrieve canonical_image_path/local_path, then open/attach the actual PNG as model vision input, then add_visual_evidence/verify_visual_evidence", trust: "handoff" },
+  visual_review_handoff_pack: { when: "Optional compatibility handoff that prioritizes search_figures -> get_figure_context_pack -> get_figure_image metadata-first image review.", next: "call get_figure_image; use metadata to retrieve canonical_image_path/local_path, then open/attach the actual PNG as model vision input, then add_visual_evidence and visual_evidence_report", trust: "handoff" },
   verify_visual_evidence: { when: "Mark visual/table evidence as verified/rejected/needs_verification.", next: "driver_completeness_checklist/source_review_prompt_pack", trust: "verified visual evidence if status=verified" },
   driver_completeness_checklist: { when: "Create subsystem/profile checklist for source review.", next: "source_review_prompt_pack", trust: "review contract" },
   build_driver_evidence_pack: { when: "Collect module-level manual anchors for driver review/debug.", next: "source_review_prompt_pack", trust: "evidence pack" },
@@ -216,6 +213,7 @@ export const TOOL_USAGE_CATALOG = {
 
 const HIDDEN_USAGE_TOOLS = new Set([
   "start_index_pdf",
+  "extract_layout_tables_from_pages",
   "visual_review_handoff_pack",
   "verify_visual_evidence",
   "driver_completeness_checklist",

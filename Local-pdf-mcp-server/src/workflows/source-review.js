@@ -186,7 +186,7 @@ export async function buildSourceReviewPromptPack(filename, options = {}) {
     visualEvidenceGate: visualGate,
     mandatoryWorkflow: [
       `doctor(filename="${filename}")`,
-      `driver_completeness_checklist(filename="${filename}", subsystem="${quoteForPromptCall(subsystem)}", driver_family="${quoteForPromptCall(driverFamily)}", profile="${quoteForPromptCall(checklist.selectedProfile)}", task="${quoteForPromptCall(task)}")`,
+      `get_module_profile(filename="${filename}", module_type="${quoteForPromptCall(subsystem)}", focus="${quoteForPromptCall(task)}")`,
       `build_driver_evidence_pack(filename="${filename}", module_type="${quoteForPromptCall(subsystem)}", focus="${quoteForPromptCall(task)}", mode="adaptive")`,
       `visual_evidence_report(filename="${filename}", filter="${quoteForPromptCall(options.visualFilter || task)}", status="${quoteForPromptCall(options.visualStatus || "all")}", include_entries=true)`,
       compareCall,

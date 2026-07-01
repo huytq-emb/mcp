@@ -1106,7 +1106,7 @@ export function formatHybridSearchResults(payload) {
       "- Try a shorter query.",
       "- Pass register=... if the question is about a specific register.",
       "- Use search_pdf for exact register/bit names.",
-      "- Use find_sequence/find_caution for very specific operation or restriction queries.",
+      "- Use list_sequences/get_sequence and list_cautions/get_cautions_for_register for very specific operation or restriction queries.",
     ].join("\n");
     return withVisualSemanticGuard(appendEvidenceContract(text, buildHybridSearchEvidenceContract(payload)), guardQuery, { query: guardQuery, filename, mode: "search" });
   }
@@ -1941,7 +1941,7 @@ export async function getBitfieldsIndex(filename, options = {}) {
     return buildBitfieldsIndex(filename, indexData, registersIndex);
   }
 
-  throw new Error(`Bitfields index not found for ${filename}. Run index_pdf or start_index_pdf first.`);
+  throw new Error(`Bitfields index not found for ${filename}. Run index_pdf first; use mode="background" for large manuals.`);
 }
 
 export function scoreBitfieldIndexEntry(entry, options = {}) {

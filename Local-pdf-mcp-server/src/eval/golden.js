@@ -524,7 +524,7 @@ export async function evaluateGoldenProfile({
       results: [],
       missingArtifacts,
       manifestProblems,
-      recommendation: `Run start_index_pdf(filename="${data.filename}") and rerun golden eval after job_status is done.`,
+      recommendation: `Run index_pdf(filename="${data.filename}", mode="background") and rerun golden eval after mcp_control(action="job_status", job_id="...") is done.`,
     };
   }
 
@@ -558,7 +558,7 @@ export async function evaluateGoldenProfile({
     missingArtifacts,
     manifestProblems,
     recommendation: missingArtifacts.length || manifestProblems.length
-      ? `Run start_index_pdf(filename="${data.filename}") before bootstrapping/evaluating golden facts.`
+      ? `Run index_pdf(filename="${data.filename}", mode="background") before bootstrapping/evaluating golden facts.`
       : "",
     accuracyMetrics: {
       stitchedTables: (artifacts.tables || []).filter((table) => Number(table.pageEnd || table.page) > Number(table.pageStart || table.page)).length,
@@ -669,7 +669,7 @@ export async function bootstrapGoldenProfile({
   const artifacts = await loadGoldenArtifacts(root, data.filename);
   const manifestProblems = goldenManifestProblems(artifacts);
   if ((artifacts.missing || []).length || manifestProblems.length) {
-    const error = new Error(`Missing or unhealthy core index artifacts. Run start_index_pdf(filename="${data.filename}") first.`);
+    const error = new Error(`Missing or unhealthy core index artifacts. Run index_pdf(filename="${data.filename}", mode="background") first.`);
     error.missingArtifacts = artifacts.missing;
     error.manifestProblems = manifestProblems;
     throw error;
@@ -778,7 +778,7 @@ export async function buildGoldenSeedReport({
     missingArtifacts,
     manifestProblems,
     recommendation: health === "fail"
-      ? `Run start_index_pdf(filename="${data.filename}") and fix golden schema errors before seed review.`
+      ? `Run index_pdf(filename="${data.filename}", mode="background") and fix golden schema errors before seed review.`
       : "Review high-quality candidates against manual pages before promoting any fact to verified.",
     verifiedCoverage,
     candidates: {

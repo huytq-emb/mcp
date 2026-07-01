@@ -884,7 +884,7 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
     await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt figure semantic index"], rebuiltArtifacts: ["figure_semantic"], producer: { engine: "node", operation: "figure_semantics.build" } });
     return result;
   }
-  if (normalized === "driver") throw new Error("driver artifact rebuild is intentionally not automatic. Use build_driver_evidence_pack or prepare_driver_task with explicit module/focus inputs.");
+  if (normalized === "driver") throw new Error("driver artifact rebuild is intentionally not automatic. Use build_driver_evidence_pack or source_review_prompt_pack with explicit module/focus inputs.");
   throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, figure_ocr, figure_semantic, core/all.`);
 }
 

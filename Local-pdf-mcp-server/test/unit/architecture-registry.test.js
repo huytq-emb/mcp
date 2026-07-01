@@ -32,6 +32,8 @@ const PUBLIC_FIGURE_TOOLS = [
   "ocr_figure_for_search",
 ];
 
+const HIDDEN_DIRECT_CALL_RE = /\b(?:driver_completeness_checklist|prepare_driver_task|visual_review_handoff_pack|extract_layout_tables_from_pages|extract_pinmux_table|find_sequence|find_caution|start_index_pdf|validate_index|job_status|list_jobs|eval_health_check|run_eval|get_visual_evidence|visual_evidence_verification_queue|verify_visual_evidence)\s*\(/;
+
 test("public MCP catalog preserves names and schemas", () => {
   assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);
   const digest = createHash("sha256").update(JSON.stringify(PUBLIC_TOOL_DEFINITIONS)).digest("hex");
@@ -66,6 +68,9 @@ test("hidden job helper definitions point agents to mcp_control as preferred con
   assert.match(startIndex.description, /mcp_control\(action="job_status"/);
   assert.match(jobStatus.description, /preferred control-plane/);
   assert.match(listJobs.description, /mcp_control\(action="list_jobs"/);
+  assert.doesNotMatch(startIndex.description, /public helper/i);
+  assert.doesNotMatch(jobStatus.description, /public helper/i);
+  assert.doesNotMatch(listJobs.description, /public helper/i);
 });
 
 
@@ -172,6 +177,22 @@ test("hidden legacy control handlers fail fast when filename is missing", async 
   );
 });
 
+test("named hidden compatibility helpers remain hidden-callable with schema validation", async () => {
+  const registry = createRuntimeToolRegistry();
+  for (const name of ["prepare_driver_task", "extract_pinmux_table", "extract_layout_tables_from_pages", "list_figures"]) {
+    assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
+    assert.equal(HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name), true, name);
+    assert.equal(registry.has(name), true, name);
+    await assert.rejects(registry.dispatchTool(name, {}), new RegExp(`Invalid arguments for ${name}`));
+  }
+});
+
+test("job cancellation refreshes persisted job state before canceling", async () => {
+  const source = await fs.readFile("src/mcp/runtime-handlers.js", "utf-8");
+  assert.match(source, /if \(action === "cancel_job"\) \{\s+await refreshJobsStateFromDisk\(\);\s+const jobId[\s\S]*?cancelBackgroundJob/);
+  assert.match(source, /async function handle_cancel_job[\s\S]*?await refreshJobsStateFromDisk\(\);[\s\S]*?cancelBackgroundJob/);
+});
+
 test("ultra-lite index status hints recommend mcp_control only", async () => {
   const registry = createRuntimeToolRegistry();
   const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf" });
@@ -239,10 +260,13 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /include_ocr":false/);
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
-  assert.match(text, /"include_layout_tables":true/);
+  assert.match(text, /extract_tables_from_pages/);
+  assert.match(text, /add_visual_evidence/);
+  assert.match(text, /visual_evidence_report/);
   assert.match(text, /metadata-only|open\/attach canonical image|actual opened\/attached PNG image input/);
   assert.match(text, /Do not claim visual analysis|do not claim visual analysis/i);
-  assert.match(text, /"verification_note":/);
+  assert.match(text, /"direct_visual_observations":/);
+  assert.match(text, /"verification_status":"needs_verification"/);
   assert.match(text, /"start_page":1/);
   assert.match(text, /"end_page":1/);
   assert.doesNotMatch(text, /"pages":\[\]/);
@@ -251,6 +275,7 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.doesNotMatch(text, /\bget_figure_context\b/);
   assert.doesNotMatch(text, /\brender_figure\b/);
   assert.doesNotMatch(text, /\bocr_figure\b/);
+  assert.doesNotMatch(text, HIDDEN_DIRECT_CALL_RE);
 
   const rebuildIndex = text.indexOf("rebuild_figure_manifest");
   const searchIndex = text.indexOf("search_figures");
@@ -272,13 +297,73 @@ test("visual table planner uses visual-first workflow without render tools", asy
   });
   const text = result.content[0].text;
 
-  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "get_figure_image", "image_path alone is only a locator", "metadata-only", "open/attach canonical image", "Do not claim visual analysis"]) {
+  for (const expected of ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "image_path", "get_figure_image", "image_path alone is only a locator", "metadata-only", "open/attach the canonical image", "Do not claim visual analysis"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), expected);
   }
   for (const forbidden of ["render_pdf_page", "render_pdf_region", "render_figure_region", "render_figure_page", "render_figure", "ocr_figure"]) {
     assert.doesNotMatch(text, new RegExp(`\\b${forbidden}\\b`), forbidden);
   }
+  assert.doesNotMatch(text, HIDDEN_DIRECT_CALL_RE);
   if (/read_pdf_pages/.test(text)) assert.match(text, /supporting|cross-check|locator/i);
+});
+
+test("public workflow outputs do not recommend hidden direct helper calls", async () => {
+  const context = createAppContext();
+  wireRuntimePorts(context);
+  const registry = createRuntimeToolRegistry({ context });
+  const filename = "unit-public-surface.pdf";
+
+  await registry.dispatchTool("add_visual_evidence", {
+    filename,
+    query: "reset timing visual evidence",
+    page: 1,
+    direct_visual_observations: ["reset timing label visible in the opened canonical image"],
+    verification_status: "needs_verification",
+  });
+
+  const cases = [
+    ["plan_manual_workflow", { filename, task: "review reset timing figure", module_type: "generic", include_visual: true, include_eval: true }],
+    ["source_review_prompt_pack", { filename, task: "review reset timing figure", subsystem: "generic", visual_gate: "block_unverified" }],
+    ["visual_evidence_report", { filename, filter: "reset timing", status: "all", include_entries: true }],
+    ["compare_driver_requirements", { filename, subsystem: "generic", task: "review reset timing figure", source_observations: ["driver has reset path"], visual_gate: "block_unverified" }],
+  ];
+
+  for (const [tool, args] of cases) {
+    const result = await registry.dispatchTool(tool, args);
+    const text = result.content[0].text;
+    assert.doesNotMatch(text, HIDDEN_DIRECT_CALL_RE, tool);
+  }
+});
+
+test("compare_driver_requirements returns visual evidence gate blockers", async () => {
+  const context = createAppContext();
+  wireRuntimePorts(context);
+  const registry = createRuntimeToolRegistry({ context });
+  const filename = "unit-visual-gate.pdf";
+
+  await registry.dispatchTool("add_visual_evidence", {
+    filename,
+    query: "clock reset sequence",
+    page: 2,
+    direct_visual_observations: ["clock/reset sequence arrows were visible in the opened canonical image"],
+    verification_status: "needs_verification",
+  });
+
+  const result = await registry.dispatchTool("compare_driver_requirements", {
+    filename,
+    subsystem: "generic",
+    task: "clock reset sequence review",
+    visual_filter: "clock reset sequence",
+    source_observations: ["driver deasserts reset after enabling clock"],
+    visual_gate: "block_unverified",
+  });
+  const text = result.content[0].text;
+
+  assert.match(text, /5b\. Visual evidence verification gate/);
+  assert.match(text, /gate mode: block_unverified/);
+  assert.match(text, /BLOCKERS:/);
+  assert.match(text, /add_visual_evidence/);
+  assert.doesNotMatch(text, HIDDEN_DIRECT_CALL_RE);
 });
 
 test("default tool usage catalog does not advertise render tools as normal visual workflow", async () => {

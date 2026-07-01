@@ -119,8 +119,8 @@ export function createArtifactManifest({
     dependencyGraph: ARTIFACT_DEPENDENCIES,
     artifacts: byKey,
     nextActions: missingRequired.length
-      ? [`start_index_pdf(filename="${filename}")`, `doctor(filename="${filename}")`]
-      : [`build_driver_evidence_pack(filename="${filename}")`, `prepare_driver_task(filename="${filename}", task="<driver task>")`],
+      ? [`index_pdf(filename="${filename}", mode="background")`, `doctor(filename="${filename}")`]
+      : [`build_driver_evidence_pack(filename="${filename}")`, `source_review_prompt_pack(filename="${filename}", task="<driver task>")`],
     notes: notes.filter(Boolean),
   };
 }

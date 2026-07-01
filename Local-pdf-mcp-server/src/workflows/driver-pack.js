@@ -602,7 +602,7 @@ export function driverImplementationChecklist(moduleType) {
     "Select the Linux subsystem from the current source tree and module function.",
     "Identify the minimum register set for probe/init/start/stop/IRQ paths.",
     "Map each driver macro to manual register/bit-field evidence.",
-    "Use find_sequence/find_caution for every register write involved in state changes.",
+    "Use get_sequence/list_cautions/get_cautions_for_register for every register write involved in state changes.",
     ...common,
   ];
 }
@@ -722,7 +722,7 @@ export async function buildDriverEvidencePack(filename, options = {}) {
       : await collectDriverPackSequencesFast(filename, moduleType, focus, keyRegisters, workflowProfile);
     markPhase("sequence-candidates");
   } else {
-    skipPhase("sequence-candidates", "time budget nearly exhausted; use get_sequence/find_sequence as follow-up");
+    skipPhase("sequence-candidates", "time budget nearly exhausted; use list_sequences/get_sequence as follow-up");
   }
 
   if (budget.hasTime(effectiveMode === "full" ? 12000 : 1800)) {
@@ -731,7 +731,7 @@ export async function buildDriverEvidencePack(filename, options = {}) {
       : await collectDriverPackCautionsFast(filename, moduleType, focus, keyRegisters, workflowProfile);
     markPhase("caution-candidates");
   } else {
-    skipPhase("caution-candidates", "time budget nearly exhausted; use get_cautions_for_register/find_caution as follow-up");
+    skipPhase("caution-candidates", "time budget nearly exhausted; use list_cautions/get_cautions_for_register as follow-up");
   }
 
   let visualEvidence = [];
@@ -1748,7 +1748,7 @@ export function formatDriverTaskPlan(plan) {
 
   lines.push("2. Mandatory MCP call sequence before editing source");
   lines.push(`- get_module_profile(filename="${filename}"${plan.moduleTypeHint ? `, module_type="${plan.moduleTypeHint}"` : ""})`);
-  if (plan.workflowProfile) lines.push(`- driver_completeness_checklist(filename="${filename}", subsystem="${normalizeDriverSubsystemHint(plan.moduleType)}", driver_family="${normalizeDriverFamilyHint(plan.moduleTypeHint)}", profile="${plan.workflowProfile.profile || ""}", task="${plan.task.replace(/"/g, "'")}")`);
+  if (plan.workflowProfile) lines.push(`- source_review_prompt_pack(filename="${filename}", subsystem="${normalizeDriverSubsystemHint(plan.moduleType)}", driver_family="${normalizeDriverFamilyHint(plan.moduleTypeHint)}", profile="${plan.workflowProfile.profile || ""}", task="${plan.task.replace(/"/g, "'")}")`);
   lines.push(`- build_driver_evidence_pack(filename="${filename}"${plan.moduleTypeHint ? `, module_type="${plan.moduleTypeHint}"` : ""}, focus="${plan.task.replace(/"/g, "'")}")`);
   lines.push(`- hybrid_search_pdf(filename="${filename}", query="${plan.task.replace(/"/g, "'")}", intent="auto")`);
   if (plan.intents.includes("register-map")) lines.push(`- extract_register_table(filename="${filename}")`);
@@ -1824,7 +1824,7 @@ export function formatDriverTaskPlan(plan) {
   lines.push("8. Approval rule before producing a patch");
   lines.push("- Do not approve or generate register/bit macros unless offsets and bit positions are backed by extract_register_table/extract_bitfield_table/read_pdf_pages evidence.");
   lines.push("- Do not approve status clear or interrupt code unless clear semantics are backed by get_sequence/get_cautions_for_register/read_pdf_pages evidence.");
-  lines.push("- Do not approve start/stop/reset paths unless operation ordering is backed by get_sequence/find_sequence evidence.");
+  lines.push("- Do not approve start/stop/reset paths unless operation ordering is backed by list_sequences/get_sequence evidence.");
   lines.push("- If evidence is incomplete, mark the item as uncertain and ask the developer to verify the exact manual page/table.");
 
   const text = lines.join("\n");
@@ -2023,7 +2023,7 @@ export function formatDriverEvidencePack(pack) {
       lines.push(`  Suggested read: read_pdf_pages(filename="${filename}", start_page=${r.page}, end_page=${Math.max(Number(r.page), Number(r.page) + DEFAULT_PAGE_RANGE - 1)})`);
     }
   } else {
-    lines.push("- No sequence candidates found. Use find_sequence with a specific topic/register.");
+    lines.push("- No sequence candidates found. Use list_sequences with a filter or get_sequence with a specific topic/register.");
   }
   lines.push("");
 
@@ -2037,7 +2037,7 @@ export function formatDriverEvidencePack(pack) {
       lines.push(`  Suggested read: read_pdf_pages(filename="${filename}", start_page=${r.page}, end_page=${Math.max(Number(r.page), Number(r.page) + DEFAULT_PAGE_RANGE - 1)})`);
     }
   } else {
-    lines.push("- No caution candidates found. Use find_caution with specific topics such as reserved bits or clear status flag.");
+    lines.push("- No caution candidates found. Use list_cautions with specific topics such as reserved bits or clear status flag.");
   }
   lines.push("");
 
@@ -2071,12 +2071,14 @@ export function formatDriverEvidencePack(pack) {
     const name = reg.displayName || reg.name;
     lines.push(`- summarize_register(filename="${filename}", register="${name}")`);
   }
-  lines.push(`- find_sequence(filename="${filename}", topic="start operation")`);
-  lines.push(`- find_caution(filename="${filename}", topic="reserved bits")`);
-  lines.push(`- find_caution(filename="${filename}", topic="clear status flag")`);
+  lines.push(`- get_sequence(filename="${filename}", topic="start operation")`);
+  lines.push(`- list_cautions(filename="${filename}", filter="reserved bits")`);
+  lines.push(`- list_cautions(filename="${filename}", filter="clear status flag")`);
   if (pack.workflowProfile) lines.push(`- source_review_prompt_pack(filename="${filename}", subsystem="${normalizeDriverSubsystemHint(pack.moduleType)}", driver_family="${normalizeDriverFamilyHint(pack.moduleTypeHint)}", profile="${pack.workflowProfile.profile || ""}")`);
   lines.push(`- visual_evidence_report(filename="${filename}", include_entries=true)`);
-  lines.push(`- visual_review_handoff_pack(filename="${filename}", query="<clock/timing/reset/pinmux/interrupt visual topic>")`);
+  lines.push(`- search_figures(filename="${filename}", query="<clock/timing/reset/pinmux/interrupt visual topic>", build_if_missing=true)`);
+  lines.push(`- get_figure_context_pack(filename="${filename}", figure_id="<figure_id_from_search_figures>")`);
+  lines.push(`- get_figure_image(filename="${filename}", figure_id="<figure_id_from_search_figures>", transport="metadata")`);
 
   return appendEvidenceContract(lines.join("\n"), buildDriverEvidencePackContract(pack));
 }

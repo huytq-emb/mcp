@@ -33,5 +33,5 @@ test("createArtifactManifest reports missing required artifacts", () => {
 
   assert.equal(manifest.health, "fail");
   assert.deepEqual(manifest.missingRequired, ["chunk-index"]);
-  assert.match(formatManifestSummary(manifest), /start_index_pdf/);
+  assert.match(formatManifestSummary(manifest), /index_pdf\(filename="manual\.pdf", mode="background"\)/);
 });

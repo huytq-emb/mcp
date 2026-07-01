@@ -616,7 +616,7 @@ export async function getSectionsIndex(filename, options = {}) {
     return buildSectionsIndex(filename, pageCache);
   }
 
-  throw new Error(`Sections index not found for ${filename}. Run index_pdf or start_index_pdf first.`);
+  throw new Error(`Sections index not found for ${filename}. Run index_pdf first; use mode="background" for large manuals.`);
 }
 
 export function detectRegisters(text) {
@@ -1129,7 +1129,7 @@ export async function getRegistersIndex(filename, options = {}) {
     return buildRegistersIndex(filename, indexData, sectionsIndex);
   }
 
-  throw new Error(`Registers index not found for ${filename}. Run index_pdf or start_index_pdf first.`);
+  throw new Error(`Registers index not found for ${filename}. Run index_pdf first; use mode="background" for large manuals.`);
 }
 
 export function scoreRegisterIndexEntry(entry, register) {
@@ -1534,7 +1534,7 @@ export async function loadPdfIndex(filename, options = {}) {
     if (options.buildIfMissing === true) {
       return buildPdfIndex(filename, options.buildOptions || {});
     }
-    throw new Error(`Index not found for ${filename}. Run index_pdf or start_index_pdf first. Large manuals should be indexed in background with start_index_pdf.`);
+    throw new Error(`Index not found for ${filename}. Run index_pdf first. Large manuals should be indexed with index_pdf(filename="${filename}", mode="background") and polled through mcp_control(action="job_status", job_id="...").`);
   }
 
   try {
@@ -1547,7 +1547,7 @@ export async function loadPdfIndex(filename, options = {}) {
     }
 
     throw new Error(
-      `Index is stale or incompatible for ${filename}. Run index_pdf with force=true or start_index_pdf. Large manuals should be indexed in background.`
+      `Index is stale or incompatible for ${filename}. Run index_pdf with force=true; use mode="background" for large manuals and poll through mcp_control(action="job_status", job_id="...").`
     );
   } catch (error) {
     if (options.rebuildIfBroken === true) return buildPdfIndex(filename, options.buildOptions || {});

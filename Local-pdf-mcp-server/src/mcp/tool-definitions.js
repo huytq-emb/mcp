@@ -284,7 +284,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "start_index_pdf",
     description:
-      `Start PDF indexing as a background job. Use this for large manuals (500/800/1000+ pages) to avoid MCP client request timeout. Poll with mcp_control(action="job_status", job_id="...") or direct job_status(job_id="...") if using the public helper.`,
+      `Hidden compatibility helper for background PDF indexing. Prefer index_pdf(filename="...", mode="background") and poll with mcp_control(action="job_status", job_id="...").`,
     inputSchema: {
       type: "object",
       properties: {
@@ -301,11 +301,11 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "job_status",
     description:
-      `Direct public helper for job polling; preferred control-plane form is mcp_control(action="job_status", job_id="...").`,
+      `Hidden compatibility helper for job polling; preferred control-plane form is mcp_control(action="job_status", job_id="...").`,
     inputSchema: {
       type: "object",
       properties: {
-        job_id: { type: "string", description: "Job ID returned by start_index_pdf/index_pdf." }
+        job_id: { type: "string", description: "Job ID returned by index_pdf(mode=\"background\") or hidden compatibility background helpers." }
       },
       required: ["job_id"],
       additionalProperties: false,
@@ -314,7 +314,7 @@ const ALL_TOOL_DEFINITIONS = [
   {
     name: "list_jobs",
     description:
-      `Direct public helper for job listing; preferred control-plane form is mcp_control(action="list_jobs").`,
+      `Hidden compatibility helper for job listing; preferred control-plane form is mcp_control(action="list_jobs").`,
     inputSchema: {
       type: "object",
       properties: {},

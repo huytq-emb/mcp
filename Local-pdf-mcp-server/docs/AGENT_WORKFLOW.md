@@ -11,10 +11,10 @@
 ## Default workflow for driver/manual tasks
 
 1. Discover available manuals: `list_pdfs`.
-2. Inspect manual/index state: `pdf_info(filename)`, `doctor(filename)`, `validate_index(filename)`.
+2. Inspect manual/index state: `pdf_info(filename)`, `doctor(filename)`, or `mcp_control(action="index_status_lite", filename="...")`.
 3. If index/artifacts are missing:
    - Small/medium PDFs: `index_pdf(filename)`.
-   - Large PDFs or timeout-prone clients: `index_pdf(filename, mode="background")`, then poll with `mcp_control(action="job_status", job_id="...")` and list with `mcp_control(action="list_jobs")`. Direct public helpers `job_status(job_id="...")` and `list_jobs()` are convenience/legacy-compatible alternatives, not the primary control-plane path.
+   - Large PDFs or timeout-prone clients: `index_pdf(filename, mode="background")`, then poll with `mcp_control(action="job_status", job_id="...")` and list with `mcp_control(action="list_jobs")`.
 4. Ask the workflow router: `plan_manual_workflow(filename, task, module_type?, driver_family?, source_files?)`.
 5. Follow the tools suggested by `plan_manual_workflow` unless the user explicitly requests another path.
 6. Produce a final response with separated evidence: manual facts, visual observations, source-code findings, engineering inference, and uncertainty/missing evidence.
@@ -38,13 +38,11 @@
 
 ### Operation sequence evidence
 
-- `find_sequence`
 - `list_sequences`
 - `get_sequence`
 
 ### Caution/restriction evidence
 
-- `find_caution`
 - `list_cautions`
 - `get_cautions_for_register`
 
@@ -53,8 +51,7 @@
 - `extract_tables_from_pages`
 - `extract_register_table`
 - `extract_bitfield_table`
-- `extract_pinmux_table` if it exists in the current public tool catalog
-- `table_coverage_report` if it exists in the current public tool catalog
+- `extract_tables_from_pages` plus `read_pdf_pages` for pinmux/table cross-checks
 
 ### Figure evidence
 
@@ -123,7 +120,7 @@ Rules:
 - For manuals larger than 350 pages or timeout-prone MCP clients, prefer background indexing.
 - Do not run long foreground rebuilds when the MCP client may cancel.
 - Use `mcp_control` for job polling and cleanup.
-- Use `doctor` and `validate_index` after rebuild completes.
+- Use `doctor` and `mcp_control(action="index_status_lite", filename="...")` after rebuild completes.
 
 ## Anti-patterns
 

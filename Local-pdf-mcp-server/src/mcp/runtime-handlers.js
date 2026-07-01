@@ -139,6 +139,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatJobsList());
       }
       if (action === "cancel_job") {
+        await refreshJobsStateFromDisk();
         const jobId = requireStringArg(args, "job_id", action);
         const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
         if (!job) return textResult(`Job not found: ${jobId}`);
@@ -372,7 +373,7 @@ async function handle_pdf_info(args = {}, meta = {}) {
       : [
           "Artifact manifest: no",
           `Manifest path: ${artifactManifestPath}`,
-          `Next action: start_index_pdf(filename="${filename}") for large manuals, then rerun pdf_info/doctor.`,
+          `Next action: index_pdf(filename="${filename}", mode="background") for large manuals, then poll with mcp_control(action="job_status", job_id="...") and rerun pdf_info/doctor.`,
         ].join("\n");
 
     const hybridQualityJsonPath = safeHybridQualityReportJsonPath(filename);
@@ -512,11 +513,12 @@ async function handle_list_jobs(args = {}, meta = {}) {
 
 async function handle_cancel_job(args = {}, meta = {}) {
   const name = meta.name || "cancel_job";
-    const jobId = String(args.job_id || "").trim();
-    if (!jobId) throw new Error("job_id is required");
-    const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
-    if (!job) return legacyTextResult(LEGACY_CONTROL_WARNING, `Job not found: ${jobId}`);
-    return legacyTextResult(LEGACY_CONTROL_WARNING, formatJobStatus(job));
+  await refreshJobsStateFromDisk();
+  const jobId = String(args.job_id || "").trim();
+  if (!jobId) throw new Error("job_id is required");
+  const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
+  if (!job) return legacyTextResult(LEGACY_CONTROL_WARNING, `Job not found: ${jobId}`);
+  return legacyTextResult(LEGACY_CONTROL_WARNING, formatJobStatus(job));
 }
 
 async function handle_cleanup_jobs(args = {}, meta = {}) {
@@ -708,7 +710,7 @@ async function handle_index_pdf(args = {}, meta = {}) {
         "",
         `Poll: mcp_control(action="job_status", job_id="${job.id}")`,
         `Persistent job state: ${safeJobsStatePath()}`,
-        `When done, rerun doctor(filename="${filename}") or validate_index(filename="${filename}").`,
+        `When done, rerun doctor(filename="${filename}") or mcp_control(action="index_status_lite", filename="${filename}").`,
         "",
         `To force blocking behavior anyway, call index_pdf(filename="${filename}", mode="foreground", force=${force ? "true" : "false"}).`,
       ].join("\n"));

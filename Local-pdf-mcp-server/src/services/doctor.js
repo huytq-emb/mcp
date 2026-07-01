@@ -533,7 +533,7 @@ export function buildDoctorRecommendations(report) {
   const coreProblem = report.checks.some((check) => isDoctorCoreCheck(check) && ["missing", "stale", "incompatible", "broken", "error"].includes(check.status));
 
   if (coreProblem) {
-    recommendations.push(`Run start_index_pdf(filename="${report.filename}", force=true) for large manuals, then poll job_status. For small manuals, index_pdf(filename="${report.filename}", mode="foreground", force=true) is also valid.`);
+    recommendations.push(`Run index_pdf(filename="${report.filename}", mode="background", force=true) for large manuals, then poll with mcp_control(action="job_status", job_id="..."). For small manuals, index_pdf(filename="${report.filename}", mode="foreground", force=true) is also valid.`);
   }
   if (["missing", "missing_optional", "stale", "incompatible", "broken"].includes(byName.get("module profile")?.status)) {
     recommendations.push(`Run analyze_module(filename="${report.filename}") to rebuild the module profile.`);
@@ -542,7 +542,7 @@ export function buildDoctorRecommendations(report) {
     recommendations.push(`Run build_driver_evidence_pack(filename="${report.filename}") before asking the agent to write/review driver code.`);
   }
   if (["missing_optional", "missing", "broken"].includes(byName.get("driver task plan")?.status)) {
-    recommendations.push(`Run prepare_driver_task(filename="${report.filename}", task="<your driver task>") before a specific debug/feature task.`);
+    recommendations.push(`Run source_review_prompt_pack(filename="${report.filename}", task="<your driver task>") before a specific debug/feature task.`);
   }
   if (!recommendations.length) recommendations.push("No immediate action required. Index artifacts look usable.");
   return recommendations;

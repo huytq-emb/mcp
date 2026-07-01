@@ -266,18 +266,18 @@ export async function buildModuleProfile(filename, options = {}) {
       "Use build_driver_evidence_pack before writing/reviewing driver code.",
       "Use summarize_register for each register used by source code macros.",
       "Use find_bitfield for every bit/mask macro used by the driver.",
-      "Use find_sequence for init/start/stop/reset/status-clear flows.",
-      "Use find_caution for reserved bits, write timing, and clear semantics.",
+      "Use list_sequences/get_sequence for init/start/stop/reset/status-clear flows.",
+      "Use list_cautions/get_cautions_for_register for reserved bits, write timing, and clear semantics.",
       "Use read_pdf_pages/read_pdf_chunk before trusting exact offset, bit range, reset value, access type, or clear semantics.",
     ],
     suggestedMcpCalls: [
       `build_driver_evidence_pack(filename="${filename}"${moduleType !== "unknown" ? `, module_type="${moduleType}"` : ""})`,
       `list_registers(filename="${filename}", top_k=100)`,
       ...keyRegisters.slice(0, 6).map((reg) => `summarize_register(filename="${filename}", register="${reg.displayName || reg.name}")`),
-      `find_sequence(filename="${filename}", topic="initialization")`,
-      `find_sequence(filename="${filename}", topic="start operation")`,
-      `find_caution(filename="${filename}", topic="reserved bits")`,
-      `find_caution(filename="${filename}", topic="clear status flag")`,
+      `get_sequence(filename="${filename}", topic="initialization")`,
+      `get_sequence(filename="${filename}", topic="start operation")`,
+      `list_cautions(filename="${filename}", filter="reserved bits")`,
+      `list_cautions(filename="${filename}", filter="clear status flag")`,
     ],
     limitations: [
       "This module profile is heuristic and depends on PDF text extraction quality.",
@@ -503,7 +503,7 @@ export function defaultDriverProfiles() {
       ],
       recommended_tools: [
         "doctor",
-        "prepare_driver_task",
+        "source_review_prompt_pack",
         "build_driver_evidence_pack",
         "verify_register_usage",
         "extract_register_table",
@@ -579,7 +579,7 @@ export function defaultDriverProfiles() {
         "MDIO clock/divider and PHY interface restrictions",
         "reset and runtime PM restrictions"
       ],
-      recommended_tools: ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
+      recommended_tools: ["source_review_prompt_pack", "build_driver_evidence_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
     },
     "ethernet-stmmac": {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -638,7 +638,7 @@ export function defaultDriverProfiles() {
         "interrupt mapping and clear semantics",
         "clock/reset/runtime PM restrictions"
       ],
-      recommended_tools: ["prepare_driver_task", "build_driver_evidence_pack", "verify_register_usage", "hybrid_search_pdf", "get_sequence", "get_cautions_for_register"]
+      recommended_tools: ["source_review_prompt_pack", "build_driver_evidence_pack", "verify_register_usage", "hybrid_search_pdf", "get_sequence", "get_cautions_for_register"]
     },
     dmaengine: {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -666,7 +666,7 @@ export function defaultDriverProfiles() {
       ],
       source_review_steps: ["Inspect prep/issue_pending/IRQ/terminate/synchronize paths.", "Call verify_register_usage for CHCTRL/CHCFG/CHSTAT/status-clear operations."],
       required_manual_checks: ["channel start/stop sequence", "status clear semantics", "reserved-bit handling", "error recovery"],
-      recommended_tools: ["prepare_driver_task", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
+      recommended_tools: ["source_review_prompt_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
     },
     watchdog: {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -712,7 +712,7 @@ export function defaultDriverProfiles() {
       ],
       source_review_steps: ["Inspect ndo_open/ndo_stop, xmit path, IRQ handler, error/bus-off handling, and bittiming setup.", "Verify controller mode, bit timing, TX/RX, error/status clear, and transceiver/pinctrl operations."],
       required_manual_checks: ["bit timing formula", "TX/RX mailbox or FIFO sequence", "interrupt clear semantics", "error state flags", "clock/reset/runtime PM restrictions"],
-      recommended_tools: ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
+      recommended_tools: ["source_review_prompt_pack", "build_driver_evidence_pack", "verify_register_usage", "get_sequence", "get_cautions_for_register"]
     },
     "can-canfd": {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -744,7 +744,7 @@ export function defaultDriverProfiles() {
       ],
       source_review_steps: ["Inspect probe/remove, role/PHY setup, IRQ handling, runtime PM, and controller core handoff.", "Verify USB clock/reset/PHY/VBUS/status operations with manual evidence."],
       required_manual_checks: ["PHY/VBUS enable sequence", "controller reset/start sequence", "endpoint/FIFO behavior", "interrupt clear semantics", "runtime PM restrictions"],
-      recommended_tools: ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "visual_review_handoff_pack"]
+      recommended_tools: ["source_review_prompt_pack", "build_driver_evidence_pack", "verify_register_usage", "search_figures", "get_figure_context_pack", "get_figure_image", "visual_evidence_report"]
     },
     "usb-xhci": {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -760,7 +760,7 @@ export function defaultDriverProfiles() {
       ],
       source_review_steps: ["Inspect xhci-plat/glue probe, hcd creation, PHY init, suspend/resume, and SoC quirks."],
       required_manual_checks: ["host controller reset/start order", "PHY lane setup", "interrupt/wakeup mapping", "runtime PM constraints"],
-      recommended_tools: ["verify_register_usage", "get_sequence", "get_cautions_for_register", "visual_review_handoff_pack"]
+      recommended_tools: ["verify_register_usage", "get_sequence", "get_cautions_for_register", "search_figures", "get_figure_context_pack", "get_figure_image", "visual_evidence_report"]
     },
     pcie: {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -776,7 +776,7 @@ export function defaultDriverProfiles() {
       ],
       source_review_steps: ["Inspect probe, host bridge setup, PHY/reset/refclk sequence, address window programming, MSI/IRQ handling, and suspend/resume."],
       required_manual_checks: ["link training sequence", "PERST/refclk/reset timing", "ATU/address window programming", "MSI/INTx mapping", "error/status clear semantics"],
-      recommended_tools: ["driver_completeness_checklist", "build_driver_evidence_pack", "verify_register_usage", "visual_review_handoff_pack"]
+      recommended_tools: ["source_review_prompt_pack", "build_driver_evidence_pack", "verify_register_usage", "search_figures", "get_figure_context_pack", "get_figure_image", "visual_evidence_report"]
     },
     "pcie-host": {
       schemaVersion: DRIVER_PROFILE_SCHEMA_VERSION,
@@ -1154,7 +1154,7 @@ export async function buildDriverCompletenessChecklist(filename, options = {}) {
 
   const profile = resolved.profile;
   const evidencePackCall = `build_driver_evidence_pack(filename="${filename}", module_type="${inferredSubsystem}", focus="${(task || profile.title || "driver completeness review").replace(/"/g, "'")}", mode="adaptive")`;
-  const driverTaskCall = `prepare_driver_task(filename="${filename}", task="${(task || profile.title || "driver completeness review").replace(/"/g, "'")}", module_type="${inferredSubsystem}")`;
+  const sourceReviewCall = `source_review_prompt_pack(filename="${filename}", task="${(task || profile.title || "driver completeness review").replace(/"/g, "'")}", subsystem="${inferredSubsystem}", driver_family="${normalizedDriverFamily || profile.driver_family || ""}")`;
   const visualGate = await collectDriverReviewVisualEvidence(filename, {
     include: options.includeVisualEvidence !== false,
     filter: options.visualFilter || task,
@@ -1186,10 +1186,9 @@ export async function buildDriverCompletenessChecklist(filename, options = {}) {
     visualEvidenceGate: visualGate,
     suggestedMcpCalls: [
       `doctor(filename="${filename}")`,
-      driverTaskCall,
+      sourceReviewCall,
       evidencePackCall,
       `visual_evidence_report(filename="${filename}", filter="${quoteForPromptCall(options.visualFilter || task || inferredSubsystem)}", include_entries=true)`,
-      `driver_completeness_checklist(filename="${filename}", subsystem="${inferredSubsystem}", driver_family="${normalizedDriverFamily || profile.driver_family || ""}")`,
       `verify_register_usage(filename="${filename}", register="<source-register>", operation="<source-operation>", bitfields=[...], access_type="<access-pattern>", intent="<intent>")`,
       `get_sequence(filename="${filename}", topic="<init/start/stop/clear/reset/irq/error topic>")`,
       `get_cautions_for_register(filename="${filename}", register="<source-register>")`,
@@ -1417,7 +1416,7 @@ export function buildRequirementSuggestedTools(filename, requirement) {
   const topic = `${requirement.area}: ${requirement.item}`.replace(/"/g, "'");
   if (/register|offset|bit|mask|access|reserved|clear|w1c|w0c|status|read|write/.test(text)) tools.push(`verify_register_usage(filename="${filename}", register="<source-register>", operation="${item}", access_type="auto", intent="auto")`);
   if (/sequence|start|stop|enable|disable|reset|init|initialize|operation|order/.test(text)) tools.push(`get_sequence(filename="${filename}", topic="${topic}")`);
-  if (/caution|restriction|reserved|clear|write|only|undefined|prohibited/.test(text)) tools.push(`find_caution(filename="${filename}", topic="${topic}")`);
+  if (/caution|restriction|reserved|clear|write|only|undefined|prohibited/.test(text)) tools.push(`list_cautions(filename="${filename}", filter="${topic}")`);
   if (/interrupt|irq|status|error|clear/.test(text)) tools.push(`hybrid_search_pdf(filename="${filename}", query="${topic}", intent="irq")`);
   if (!tools.length) tools.push(`hybrid_search_pdf(filename="${filename}", query="${topic}", intent="auto")`);
   return tools.slice(0, 4);
@@ -1474,10 +1473,11 @@ export async function compareDriverRequirements(filename, options = {}) {
   const warnings = [
     ...(checklist.warnings || []),
     ...visualEvidenceDriverWarnings(visualEvidence),
+    ...visualEvidenceGateWarnings(visualGate),
     "This comparison uses source-review input provided by the AI agent; the MCP server does not read the repository.",
     "implemented_candidate means source evidence appears to cover the item; it is not approved until register operations/manual facts are verified.",
   ];
-  return { filename, createdAt: new Date().toISOString(), task: checklist.task, subsystem: checklist.subsystem, driverFamily: checklist.driverFamily || checklist.profile.driver_family || "", selectedProfile: checklist.selectedProfile, profile: checklist.profile, profileStack: checklist.profile._profileStack || [], sourceFiles, sourceSummary, implementedFeatures, sourceObservations, missingFeatures, registerOperations, requirements: compared, implemented, unclear, missing, manualVerification: [...manualVerification.values()], operationVerificationCalls, visualEvidence, totals, completenessPercent, reviewStatus, warnings };
+  return { filename, createdAt: new Date().toISOString(), task: checklist.task, subsystem: checklist.subsystem, driverFamily: checklist.driverFamily || checklist.profile.driver_family || "", selectedProfile: checklist.selectedProfile, profile: checklist.profile, profileStack: checklist.profile._profileStack || [], sourceFiles, sourceSummary, implementedFeatures, sourceObservations, missingFeatures, registerOperations, requirements: compared, implemented, unclear, missing, manualVerification: [...manualVerification.values()], operationVerificationCalls, visualEvidence, visualEvidenceGate: visualGate, totals, completenessPercent, reviewStatus, warnings };
 }
 
 export function buildCompareDriverRequirementsContract(comparison) {
@@ -1488,7 +1488,7 @@ export function buildCompareDriverRequirementsContract(comparison) {
   for (const item of [...(comparison.unclear || []), ...(comparison.missing || [])].slice(0, 14)) needsVerification.push(makeNeedsVerification({ item: `${item.id} ${item.area}: ${item.item}`, reason: item.reason, suggestedTools: item.suggestedTools || [] }));
   if ((comparison.operationVerificationCalls || []).length) needsVerification.push(makeNeedsVerification({ item: "All register operations supplied by source review", reason: "Register operations must be verified against register/bitfield/sequence/caution evidence before approving the driver.", suggestedTools: comparison.operationVerificationCalls.slice(0, 8).map((op) => op.call) }));
   needsVerification.push(...visualEvidenceGateNeedsVerification(comparison.visualEvidenceGate || {}, comparison.filename));
-  return makeEvidenceContract({ tool: "compare_driver_requirements", filename: comparison.filename, query: comparison.task || comparison.selectedProfile, evidence, inference, needsVerification, warnings: comparison.warnings || [], recommendedNextTools: [`driver_completeness_checklist(filename="${comparison.filename}", subsystem="${comparison.subsystem}", driver_family="${comparison.driverFamily}")`, `build_driver_evidence_pack(filename="${comparison.filename}", module_type="${comparison.subsystem}", focus="${String(comparison.task || "driver completeness review").replace(/"/g, "'")}", mode="adaptive")`, ...visualEvidenceGateSuggestedCalls(comparison.filename, comparison.visualEvidenceGate || {}), ...(comparison.operationVerificationCalls || []).slice(0, 6).map((op) => op.call)] });
+  return makeEvidenceContract({ tool: "compare_driver_requirements", filename: comparison.filename, query: comparison.task || comparison.selectedProfile, evidence, inference, needsVerification, warnings: comparison.warnings || [], recommendedNextTools: [`source_review_prompt_pack(filename="${comparison.filename}", subsystem="${comparison.subsystem}", driver_family="${comparison.driverFamily}", task="${String(comparison.task || "driver completeness review").replace(/"/g, "'")}")`, `build_driver_evidence_pack(filename="${comparison.filename}", module_type="${comparison.subsystem}", focus="${String(comparison.task || "driver completeness review").replace(/"/g, "'")}", mode="adaptive")`, ...visualEvidenceGateSuggestedCalls(comparison.filename, comparison.visualEvidenceGate || {}), ...(comparison.operationVerificationCalls || []).slice(0, 6).map((op) => op.call)] });
 }
 
 export function formatRequirementRows(rows, limit = 80) {
