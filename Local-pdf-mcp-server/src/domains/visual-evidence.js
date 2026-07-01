@@ -50,23 +50,23 @@ export function visualReviewDepthRules(depth) {
   if (d === "quick") {
     return [
       "Find the most likely figure/table page and inspect caption/context first.",
-      "Open canonical image_path from get_figure_context_pack for the top candidate.",
-      "Extract only the facts needed for the current task and mark the rest as needsVerification.",
+      "Call get_figure_image transport=\"metadata\" for the top candidate to retrieve canonical_image_path/local_path, then open/attach that PNG as actual model vision input.",
+      "Extract direct visual facts only after actual PNG image input is available; if not, return NO_IMAGE_INPUT and leave direct_visual_observations empty.",
     ];
   }
   if (d === "deep") {
     return [
       "Search figure captions, nearby section text, and layout tables for all relevant visual candidates.",
-      "For each important candidate, use search_figures -> get_figure_context_pack -> get_figure_image; if image content is returned by the client, inspect pixels; otherwise open/attach the canonical local image.",
-      "Separate facts read directly from visual evidence from inferences based on caption/context.",
+      "For each important candidate, use search_figures -> get_figure_context_pack -> get_figure_image transport=\"metadata\" to retrieve canonical_image_path/local_path, then open/attach that PNG as actual model vision input; if no actual image input is available, return NO_IMAGE_INPUT.",
+      "Separate facts read directly from attached/opened actual image input from inferences based on caption/context/OCR supporting evidence.",
       "Cross-check visual evidence against register/bitfield/sequence/caution tools before proposing a patch.",
       "If the diagram is ambiguous, do not guess from text; request canonical-image review or a debug/manual fallback crop only when explicitly requested.",
     ];
   }
   return [
     "Find the relevant figure/table candidates from captions/context.",
-    "Get figure context, then call get_figure_image for canonical image path metadata for the best candidate; do not render through legacy render tools by default.",
-    "Extract concrete visual facts and list ambiguity explicitly.",
+    "Get figure context, then call get_figure_image transport=\"metadata\" for canonical_image_path/local_path for the best candidate; open/attach that PNG as actual model vision input and do not render through legacy render tools by default.",
+    "Extract concrete visual facts only from actual model vision input; if no actual image input is available, return NO_IMAGE_INPUT and list ambiguity explicitly.",
     "Use manual text/register tools to verify any driver-relevant conclusion.",
   ];
 }
@@ -101,8 +101,8 @@ export function buildVisualReviewExtractionSchema(diagramType) {
     visual_target: "<caption/page/query being reviewed>",
     figure_id: "<figure id if available>",
     page: "<page number>",
-    canonical_image_files: ["<canonical image_path from get_figure_context_pack>"],
-    direct_visual_observations: ["<facts visible in the rendered figure/diagram>"],
+    canonical_image_files: ["<canonical_image_path/local_path from get_figure_image transport=metadata>"],
+    direct_visual_observations: ["<fill only after the canonical PNG is attached/opened as actual model vision input; otherwise leave empty and return NO_IMAGE_INPUT>"],
     caption_context_facts: ["<facts from caption or nearby text>"],
     manual_text_cross_checks: ["<read_pdf_pages/get_figure_context_pack/extract_layout_tables evidence>"],
     source_implications: ["<what this means for driver/DTS/source review>"],
@@ -142,11 +142,11 @@ export function figureCandidateCommandLines(filename, figure, options = {}) {
   const lines = [];
   if (figure?.id) {
     lines.push(`get_figure_context_pack(filename="${filename}", figure_id="${figureId}")`);
-    lines.push(`call get_figure_image for canonical image path metadata; image_path from get_figure_context_pack is only a locator`);
+    lines.push(`get_figure_image(filename="${filename}", figure_id="${figureId}", transport=\"metadata\") then open/attach canonical_image_path/local_path as actual model vision input; image_path from get_figure_context_pack is only a locator`);
     if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   } else if (page) {
     lines.push(`search_figures(filename="${filename}", query="${query}", limit=5) then get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    lines.push(`call get_figure_image for canonical image path metadata; image_path from get_figure_context_pack is only a locator`);
+    lines.push(`get_figure_image(filename="${filename}", figure_id="${figureId}", transport=\"metadata\") then open/attach canonical_image_path/local_path as actual model vision input; image_path from get_figure_context_pack is only a locator`);
     if (includeRender) lines.push(`debug/manual fallback only: request render/crop only if canonical image_path is unavailable or a human explicitly asks for debug`);
   }
   if (page) {
@@ -208,7 +208,7 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
   else {
     workflow.push(`list_figures(filename="${filename}", filter="${quoteForPromptCall(query || task)}", kind="${quoteForPromptCall(kind)}", top_k=${topK})`);
     workflow.push(`get_figure_context_pack(filename="${filename}", figure_id="<figure-id>")`);
-    workflow.push(`call get_figure_image for canonical image path metadata; image_path from get_figure_context_pack is only a locator`);
+    workflow.push(`get_figure_image(filename="${filename}", figure_id="<figure-id>", transport=\"metadata\") then open/attach canonical_image_path/local_path as actual model vision input; image_path from get_figure_context_pack is only a locator`);
   }
 
   return {
@@ -230,8 +230,9 @@ export async function buildVisualReviewHandoffPack(filename, options = {}) {
     outputRules: visualReviewOutputRules(outputFormat),
     extractionSchema: buildVisualReviewExtractionSchema(diagramType),
     approvalRules: [
-      "Do not infer driver behavior solely from text/OCR/render fallback; open/attach canonical image after get_figure_image metadata response and cross-check with manual text/register/bitfield/sequence/caution evidence.",
-      "When a visual edge/arrow/timing relation is unclear, use the canonical image_path from get_figure_context_pack and record uncertainties for manual review.",
+      "Do not fill visual facts or direct_visual_observations unless canonical_image_path/local_path from get_figure_image transport=metadata has been opened/attached as actual model vision input; otherwise return NO_IMAGE_INPUT.",
+      "OCR/page text/layout extraction/caption/context are supporting evidence only, not visual semantic truth.",
+      "When a visual edge/arrow/timing relation is unclear in the actual image input, record uncertainties for manual review instead of guessing from OCR/page text/layout extraction.",
       "Separate direct visual observations from caption/context text and from engineering inference.",
       "For code or DTS changes, map each visual fact to source impact and list remaining needsVerification.",
     ],

@@ -51,6 +51,11 @@ test("public MCP catalog preserves names and schemas", () => {
   assert.equal(contextPackTool.inputSchema.properties.dpi.type, "number");
   const figureImageTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "get_figure_image");
   assert.deepEqual(figureImageTool.inputSchema.properties.transport.enum, ["metadata", "mcp_image", "image_url"]);
+  const semanticTool = PUBLIC_TOOL_DEFINITIONS.find((tool) => tool.name === "analyze_figure_semantics");
+  assert.match(semanticTool.description, /caption\/page-text\/OCR-derived semantic hints/);
+  assert.match(semanticTool.description, /does not inspect image pixels/);
+  assert.match(semanticTool.description, /visual-semantic truth/);
+  assert.match(semanticTool.description, /NO_IMAGE_INPUT/);
 });
 
 

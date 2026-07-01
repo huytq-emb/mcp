@@ -696,7 +696,7 @@ const ALL_TOOL_DEFINITIONS = [
         page: { type: "number", description: "Optional 1-based page number for the visual evidence." },
         query: { type: "string", description: "Optional visual target query/task." },
         diagram_type: { type: "string", enum: ["auto", "clock_tree", "timing", "block_diagram", "reset_flow", "interrupt_route", "pinmux", "sequence", "table", "other"], description: "Visual evidence type. Default auto." },
-        direct_visual_observations: { type: "array", items: { type: "string" }, description: "Direct facts visible in the rendered image. Do not put speculative driver conclusions here." },
+        direct_visual_observations: { type: "array", items: { type: "string" }, description: "Direct facts only after the canonical PNG has been attached/opened as actual model vision input. If no actual image input is available, leave empty and return NO_IMAGE_INPUT; do not put speculative driver conclusions here." },
         caption_context_facts: { type: "array", items: { type: "string" }, description: "Facts from caption/context text around the figure." },
         extracted_items: { type: "object", description: "Structured extraction payload, e.g. steps/clocks/signals/edges/pins/selectors/routing/timing_constraints.", additionalProperties: true },
         engineering_inferences: { type: "array", items: { type: "string" }, description: "Engineering interpretation derived from the visual evidence. Must remain separate from direct observations." },
@@ -930,7 +930,7 @@ const ALL_TOOL_DEFINITIONS = [
   },
   {
     name: "analyze_figure_semantics",
-    description: "Analyze one figure/table/page candidate into lightweight semantic evidence from caption, page text, and optional OCR. Semantics are candidate evidence and should be verified against the original manual image/text before driver decisions.",
+    description: "Analyze one figure/table/page candidate into lightweight caption/page-text/OCR-derived semantic hints only. This tool does not inspect image pixels and must not be treated as visual-semantic truth. For visual claims, use get_figure_image transport=\"metadata\" and open/attach canonical_image_path as actual model vision input; otherwise return NO_IMAGE_INPUT.",
     inputSchema: { type: "object", properties: {
       filename: { type: "string", description: "PDF filename." },
       figure_id: { type: "string", description: "Optional figure_id from list_figures/search_figures." },

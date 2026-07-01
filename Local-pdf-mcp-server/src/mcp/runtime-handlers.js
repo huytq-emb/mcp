@@ -963,8 +963,8 @@ function mimeTypeForImagePath(imagePath = "") {
   return "image/png";
 }
 
-function normalizeFigureImageTransport(value) {
-  const raw = String(value || process.env.RENESAS_MCP_IMAGE_TRANSPORT || "metadata").trim().toLowerCase();
+export function normalizeFigureImageTransport(value) {
+  const raw = String(value || "metadata").trim().toLowerCase();
   if (raw === "mcp_image") return "mcp_image";
   if (raw === "image_url" || raw === "data_uri") return "image_url";
   return "metadata";
