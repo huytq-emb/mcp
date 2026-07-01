@@ -1641,6 +1641,61 @@ const ALL_TOOL_DEFINITIONS = [
   },
 ];
 
-export const HIDDEN_TOOL_DEFINITIONS = Object.freeze([]);
-export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(ALL_TOOL_DEFINITIONS);
+const PRIMARY_PUBLIC_TOOL_NAMES = Object.freeze([
+  "list_pdfs", "pdf_info", "doctor", "index_pdf", "mcp_control",
+  "search_pdf", "hybrid_search_pdf", "read_pdf_pages", "read_pdf_chunk", "find_section",
+  "list_registers", "find_register", "summarize_register", "extract_register_table", "list_bitfields", "find_bitfield", "extract_bitfield_table", "extract_tables_from_pages",
+  "list_sequences", "get_sequence", "list_cautions", "get_cautions_for_register",
+  "rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "get_figure_image", "ocr_figure_for_search",
+  "plan_manual_workflow", "get_module_profile", "build_driver_evidence_pack", "source_review_prompt_pack", "compare_driver_requirements", "verify_register_usage",
+  "add_visual_evidence", "visual_evidence_report",
+]);
+
+const HIDDEN_COMPATIBILITY_TOOL_NAMES_FROM_DEFINITIONS = Object.freeze([
+  "validate_index", "start_index_pdf", "job_status", "list_jobs",
+  "list_eval_cases", "run_eval", "eval_health_check", "chunk_type_stats", "check_pdf_renderers",
+  "visual_review_handoff_pack", "table_coverage_report", "find_sequence", "find_caution", "analyze_module",
+  "list_driver_profiles", "driver_completeness_checklist", "list_visual_evidence", "get_visual_evidence",
+  "visual_evidence_verification_queue", "verify_visual_evidence", "analyze_figure_semantics", "get_figure_semantics",
+  "list_figure_semantics", "search_figure_semantics", "rebuild_figure_semantics", "explain_tool_usage",
+  "extract_layout_tables_from_pages", "extract_pinmux_table", "list_figures", "prepare_driver_task",
+]);
+
+// All definition-backed runtime tools are either public or hidden-callable; keep this
+// bucket empty unless a future definition is intentionally not runtime-callable.
+const INTERNAL_ONLY_TOOL_NAMES = Object.freeze([]);
+
+const LEGACY_HIDDEN_COMPATIBILITY_TOOL_DEFINITIONS = Object.freeze([
+  { name: "mcp_server_ping", description: "Deprecated hidden compatibility ping; prefer mcp_control(action=\"ping\").", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "pdf_index_status_lite", description: "Deprecated hidden compatibility index status; prefer mcp_control(action=\"index_status_lite\", filename=\"...\").", inputSchema: { type: "object", properties: { filename: { type: "string" }, json: { type: "boolean" } }, required: ["filename"], additionalProperties: false } },
+  { name: "index_status", description: "Deprecated hidden compatibility index status; prefer mcp_control(action=\"index_status_lite\", filename=\"...\").", inputSchema: { type: "object", properties: { filename: { type: "string" }, details: { type: "boolean" }, probe_pdf: { type: "boolean" }, json: { type: "boolean" } }, required: ["filename"], additionalProperties: false } },
+  { name: "rebuild_artifact", description: "Deprecated hidden compatibility artifact rebuild; prefer mcp_control(action=\"rebuild_artifact\", filename=\"...\").", inputSchema: { type: "object", properties: { filename: { type: "string" }, artifact: { type: "string" }, force_lock: { type: "boolean" }, force: { type: "boolean" }, chunk_size: { type: "number" }, chunk_overlap: { type: "number" }, allow_full_rebuild: { type: "boolean" }, cascade_dependents: { type: "boolean" }, background: { type: "boolean" } }, required: ["filename"], additionalProperties: false } },
+  { name: "cancel_job", description: "Deprecated hidden compatibility job cancellation; prefer mcp_control(action=\"cancel_job\", job_id=\"...\").", inputSchema: { type: "object", properties: { job_id: { type: "string" }, reason: { type: "string" } }, required: ["job_id"], additionalProperties: false } },
+  { name: "cleanup_jobs", description: "Deprecated hidden compatibility job cleanup; prefer mcp_control(action=\"cleanup_jobs\").", inputSchema: { type: "object", properties: { statuses: { type: "array", items: { type: "string" } }, older_than_hours: { type: "number" }, include_running: { type: "boolean" } }, additionalProperties: false } },
+]);
+
+const TOOL_DEFINITION_BY_NAME = new Map(ALL_TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
+const LEGACY_HIDDEN_DEFINITION_BY_NAME = new Map(LEGACY_HIDDEN_COMPATIBILITY_TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
+
+function mustGetDefinition(name) {
+  const definition = TOOL_DEFINITION_BY_NAME.get(name) || LEGACY_HIDDEN_DEFINITION_BY_NAME.get(name);
+  if (!definition) throw new Error(`Missing tool definition for ${name}`);
+  return definition;
+}
+
+export const HIDDEN_TOOL_NAMES = Object.freeze([
+  "mcp_server_ping", "pdf_index_status_lite", "index_status", "rebuild_artifact", "cancel_job", "cleanup_jobs",
+  ...HIDDEN_COMPATIBILITY_TOOL_NAMES_FROM_DEFINITIONS,
+]);
+
+const categorizedNames = new Set([...PRIMARY_PUBLIC_TOOL_NAMES, ...HIDDEN_TOOL_NAMES, ...INTERNAL_ONLY_TOOL_NAMES]);
+const overlap = PRIMARY_PUBLIC_TOOL_NAMES.filter((name) => HIDDEN_TOOL_NAMES.includes(name));
+if (overlap.length) throw new Error(`Tools cannot be both public and hidden: ${overlap.join(", ")}`);
+for (const name of PRIMARY_PUBLIC_TOOL_NAMES) mustGetDefinition(name);
+for (const name of HIDDEN_TOOL_NAMES) mustGetDefinition(name);
+const uncategorized = ALL_TOOL_DEFINITIONS.map((definition) => definition.name).filter((name) => !categorizedNames.has(name));
+if (uncategorized.length) throw new Error(`Uncategorized tool definitions: ${uncategorized.join(", ")}`);
+
+export const HIDDEN_TOOL_DEFINITIONS = Object.freeze(HIDDEN_TOOL_NAMES.map((name) => mustGetDefinition(name)));
+export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(PRIMARY_PUBLIC_TOOL_NAMES.map((name) => mustGetDefinition(name)));
 export const PUBLIC_TOOL_NAMES = Object.freeze(PUBLIC_TOOL_DEFINITIONS.map((tool) => tool.name));
