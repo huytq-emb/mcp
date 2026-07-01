@@ -105,7 +105,7 @@ test("public figure registry advertises only retrieval-first figure tools", () =
   for (const name of ["rebuild_figure_manifest", "search_figures", "get_figure_image", "get_figure_context_pack", "ocr_figure_for_search"]) {
     assert.equal(PUBLIC_TOOL_NAMES.includes(name), true, name);
   }
-  for (const name of ["build_figures_index", "find_figure", "get_figure_context", "inspect_figure", "render_figure", "render_figure_page", "render_figure_region", "ocr_figure"]) {
+  for (const name of ["build_figures_index", "find_figure", "get_figure_context", "inspect_figure", "render_figure", "render_figure_page", "render_figure_region", "ocr_figure", "list_figures"]) {
     assert.equal(PUBLIC_TOOL_NAMES.includes(name), false, name);
   }
   assert.equal(PUBLIC_TOOL_NAMES.includes("list_figures"), false, "list_figures");
