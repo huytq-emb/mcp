@@ -131,6 +131,27 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 ### Missing figures manifest
 
 - Run `rebuild_figure_manifest(filename="...")`.
+### Canonical figure image workflow
+
+```text
+rebuild_figure_manifest
+-> search_figures
+-> get_figure_context_pack
+-> get_figure_image transport="metadata"
+-> client/agent opens or attaches canonical_image_path as real image input
+-> only then perform visual-semantic analysis
+```
+
+Non-goals and trust rules:
+
+```text
+MCP image transports are best-effort and client-dependent.
+They are not semantic proof that the model saw the image.
+OCR output is optional search metadata, not visual truth.
+```
+
+`get_figure_image` defaults to the stable metadata contract: `canonical_image_path`, `local_path`, file existence/size, and MIME. `mcp_image` and `image_url` remain experimental/debug compatibility modes only; RICA/VS Code may reduce MCP tool results to text-only, so visual-semantic claims require the actual PNG to be opened or attached as model vision input. If no actual image input is available, return `NO_IMAGE_INPUT`.
+
 
 ### `image_path` exists=false
 

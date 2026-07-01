@@ -240,7 +240,7 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
   assert.match(text, /"include_layout_tables":true/);
-  assert.match(text, /metadata-only|open\/attach canonical image|opt-in image content/);
+  assert.match(text, /metadata-only|open\/attach canonical image|actual opened\/attached PNG image input/);
   assert.match(text, /Do not claim visual analysis|do not claim visual analysis/i);
   assert.match(text, /"verification_note":/);
   assert.match(text, /"start_page":1/);
@@ -302,6 +302,11 @@ test("get_figure_image default is RICA-safe metadata for canonical image_path", 
   const result = await registry.dispatchTool("get_figure_image", { image_path: imagePath });
   assert.equal(result.content.every((item) => item.type === "text"), true);
   assert.ok(result.content.some((item) => item.text.includes("metadata")));
+  assert.ok(result.content.some((item) => item.text.includes("canonical_image_path")));
+  assert.ok(result.content.some((item) => item.text.includes("NO_IMAGE_INPUT")));
+  assert.equal(result.structuredContent.image_transport.canonical_image_path, imagePath);
+  assert.equal(result.structuredContent.image_transport.file_exists, true);
+  assert.equal(result.structuredContent.image_transport.mimeType, "image/png");
   assert.equal(JSON.stringify(result).includes('"type":"image"'), false);
   assert.equal(JSON.stringify(result).includes("data:image"), false);
   assert.equal(result.structuredContent.image_transport.mode, "metadata");
@@ -320,6 +325,9 @@ test("get_figure_image mcp_image transport returns MCP image content for canonic
   assert.equal(image.mimeType, "image/png");
   assert.equal(result.structuredContent.image_transport.mode, "mcp_image");
   assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, true);
+  assert.equal(result.structuredContent.image_transport.experimental, true);
+  assert.equal(result.structuredContent.image_transport.client_dependent, true);
+  assert.equal(result.structuredContent.image_transport.not_guaranteed_to_reach_model_vision_input, true);
 });
 
 test("get_figure_image image_url transport returns data URI in structuredContent only", async () => {
@@ -335,6 +343,9 @@ test("get_figure_image image_url transport returns data URI in structuredContent
   assert.equal(result.structuredContent.image_transport.imageUrl.url.startsWith("data:image/png;base64,"), true);
   assert.equal(result.structuredContent.image_transport.imageUrls[0].startsWith("data:image/png;base64,"), true);
   assert.equal(result.structuredContent.image_transport.mcp_image_content_returned, false);
+  assert.equal(result.structuredContent.image_transport.experimental, true);
+  assert.equal(result.structuredContent.image_transport.client_dependent, true);
+  assert.equal(result.structuredContent.image_transport.not_guaranteed_to_reach_model_vision_input, true);
 });
 
 test("get_figure_image image_url transport rejects oversized data URI safely", async () => {

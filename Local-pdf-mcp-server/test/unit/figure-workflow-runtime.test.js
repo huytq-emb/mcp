@@ -175,7 +175,7 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.equal(pack.visual_contract.image_path_role, "locator_only");
   assert.equal(pack.visual_contract.required_next_tool, "get_figure_image");
   assert.deepEqual(pack.visual_contract.image_transport_modes, ["metadata", "mcp_image", "image_url"]);
-  assert.equal(pack.visual_contract.preferred_rica_transport, "image_url");
+  assert.deepEqual(pack.visual_contract.experimental_transports, ["mcp_image", "image_url"]);
   assert.equal(pack.visual_contract.default_transport, "metadata");
   assert.equal(pack.visual_contract.text_context_role, "locator_support_only");
   assert.equal(pack.visual_contract.must_not_answer_from_text_only, true);
@@ -183,8 +183,8 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   assert.equal(pack.agent_instruction.includes("get_figure_image"), true);
   assert.equal(pack.agent_instruction.includes("metadata-only"), true);
   assert.equal(pack.agent_instruction.includes("open/attach"), true);
-  assert.equal(pack.agent_instruction.includes('transport="image_url"'), true);
-  assert.equal(pack.agent_instruction.includes("structuredContent.image_transport.imageUrls"), true);
+  assert.equal(pack.agent_instruction.includes('transport="metadata"'), true);
+  assert.equal(pack.agent_instruction.includes("experimental/client-dependent"), true);
   assert.match(pack.image_path.replace(/\\/g, "/"), /indexes\/cache\/figure-images\//);
   assert.doesNotMatch(pack.image_path.replace(/\\/g, "/"), /(^|\/)renders?\//);
 });
