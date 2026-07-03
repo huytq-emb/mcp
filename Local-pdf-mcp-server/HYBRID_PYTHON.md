@@ -9,6 +9,8 @@ MCP SDK.
 
 Install CPython 3.12 x64 first. The Windows Store `python.exe` alias is not a
 real interpreter; disable the alias if it shadows the installed Python.
+The current validated local baseline is Node.js 24.17.x, npm 11.13.x, and
+CPython 3.12.x.
 
 ```powershell
 npm.cmd ci
@@ -116,11 +118,15 @@ install hint instead of crashing the server.
 capability-level status for text OCR, structure parsing, and VL parsing. Missing
 structure/VL dependencies are advisory unless an explicit structure/VL call is
 made, and those calls return structured warnings with install hints.
+OCR health uses `RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS` when set and otherwise gives
+PaddleOCR up to 30000 ms to start on Windows.
 
 The JSON-line worker sets `PADDLE_PDX_CACHE_HOME` to
 `indexes/cache/paddlex` by default so PaddleX model files stay in the project
 workspace on Windows. Set `PADDLE_PDX_CACHE_HOME` yourself before starting the
 server if you want to use a shared pre-downloaded PaddleX model cache.
+After dependencies and model cache are present, normal server runtime does not
+require network access.
 
 After installing the OCR packages, prewarm the local model cache before judging
 OCR quality on real manuals:

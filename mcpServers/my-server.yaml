@@ -1,5 +1,5 @@
 name: Local PDF MCP Server
-version: 1.0.0
+version: 7.1.0
 schema: v1
 mcpServers:
   - name: Local Renesas Manual MCP Server

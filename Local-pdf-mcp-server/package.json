@@ -1,6 +1,6 @@
 {
   "name": "local-renesas-manual-mcp-server",
-  "version": "1.0.0",
+  "version": "7.1.0",
   "description": "Local MCP server for extracting Linux-driver evidence from Renesas hardware manuals.",
   "main": "index.js",
   "scripts": {

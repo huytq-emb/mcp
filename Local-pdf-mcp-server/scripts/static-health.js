@@ -9,6 +9,7 @@ import {
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS } from "../src/mcp/tool-definitions.js";
 import { validateToolRegistryContract } from "../src/mcp/registry.js";
 import { createRuntimeToolRegistry } from "../src/mcp/runtime-registry.js";
+import { SERVER_VERSION } from "../src/core/runtime-constants.js";
 
 const root = process.cwd();
 const indexPath = path.join(root, "index.js");
@@ -129,8 +130,15 @@ try {
 } catch (e) {
   failures.push(`Invalid package.json: ${e.message}`);
 }
+let pkgLock = null;
+try {
+  pkgLock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf-8"));
+} catch (e) {
+  failures.push(`Invalid package-lock.json: ${e.message}`);
+}
 
 if (pkg) {
+  if (pkg.version !== SERVER_VERSION) failures.push(`package.json version ${pkg.version || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
   if (pkg.type !== "module") failures.push(`package.json type must be module for index.js ESM imports; got ${pkg.type || "missing"}`);
   for (const script of ["start", "health", "smoke", "test", "check", "static-health", "architecture-health", "startup-smoke", "test:unit", "test:eval", "test:profiles", "golden:bootstrap", "golden:seed-report", "golden:eval", "test:golden", "test:tools", "python:setup", "python:health", "test:python", "test:hybrid", "benchmark:extraction"]) {
     if (!pkg.scripts?.[script]) failures.push(`Missing package script: ${script}`);
@@ -138,6 +146,19 @@ if (pkg) {
   for (const dep of ["@modelcontextprotocol/sdk", "pdfjs-dist", "pdf-parse"]) {
     if (!pkg.dependencies?.[dep]) failures.push(`Missing dependency in package.json: ${dep}`);
   }
+}
+if (pkgLock) {
+  if (pkgLock.version !== SERVER_VERSION) failures.push(`package-lock.json root version ${pkgLock.version || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
+  const rootPackageVersion = pkgLock.packages?.[""]?.version;
+  if (rootPackageVersion !== SERVER_VERSION) failures.push(`package-lock.json package version ${rootPackageVersion || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
+}
+
+const serverConfigPath = path.resolve(root, "..", "mcpServers", "my-server.yaml");
+if (fs.existsSync(serverConfigPath)) {
+  const configText = fs.readFileSync(serverConfigPath, "utf-8");
+  const versionMatch = configText.match(/^version:\s*([^\r\n#]+)/m);
+  const configVersion = versionMatch?.[1]?.trim().replace(/^["']|["']$/g, "");
+  if (configVersion !== SERVER_VERSION) failures.push(`mcpServers/my-server.yaml version ${configVersion || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
 }
 
 const requirements = fs.readFileSync(path.join(root, "requirements.txt"), "utf-8");

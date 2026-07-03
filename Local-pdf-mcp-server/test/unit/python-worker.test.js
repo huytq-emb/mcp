@@ -16,7 +16,7 @@ import {
   validateWorkerArtifact,
 } from "../../src/services/python-worker.js";
 import { cancelBackgroundJob, jobs, normalizeArtifactName } from "../../src/services/jobs.js";
-import { formatOcrHealthReport } from "../../src/services/ocr.js";
+import { clearOcrHealthCache, formatOcrHealthReport, getOcrHealth, resolveOcrHealthTimeoutMs } from "../../src/services/ocr.js";
 import { searchFigureOcr } from "../../src/services/search.js";
 
 const fakeWorker = path.resolve("test/fixtures/fake-python-worker.js");
@@ -133,6 +133,64 @@ test("OCR health formatter reports optional dependency hints without failing cor
   assert.match(text, /ocr:prewarm/);
   assert.match(text, /requirements-ocr\.txt/);
   assert.match(text, /Machine summary JSON/);
+});
+
+test("OCR health timeout is configurable and keeps available OCR status", async () => {
+  clearOcrHealthCache();
+  const calls = [];
+  const status = await getOcrHealth({
+    force: true,
+    env: { RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS: "45000" },
+    runWorker: async (request, options) => {
+      calls.push({ request, options });
+      return {
+        interpreter: nodeInterpreter,
+        result: {
+          versions: { python: "3.12-test", pymupdf: "1.0-test" },
+          ocr: {
+            enabled: true,
+            engine: "paddleocr",
+            available: true,
+            text: { available: true },
+            structure: { available: true },
+            vl: { available: true },
+          },
+        },
+      };
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].request.operation, "ocr.health");
+  assert.equal(calls[0].options.timeoutMs, 45000);
+  assert.equal(status.python.ok, true);
+  assert.equal(status.ocr.available, true);
+  assert.equal(status.ocr.text.available, true);
+  assert.equal(resolveOcrHealthTimeoutMs({}, {}), 30000);
+  assert.equal(resolveOcrHealthTimeoutMs({}, { RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS: "bad" }), 30000);
+  assert.equal(resolveOcrHealthTimeoutMs({ timeoutMs: 250 }, { RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS: "45000" }), 250);
+  clearOcrHealthCache();
+});
+
+test("OCR health timeout is advisory and does not fail core status", async () => {
+  clearOcrHealthCache();
+  const timeout = new Error("Python worker exceeded 50 ms");
+  timeout.code = "WORKER_TIMEOUT";
+  const status = await getOcrHealth({
+    force: true,
+    timeoutMs: 50,
+    runWorker: async () => {
+      throw timeout;
+    },
+  });
+  assert.equal(status.ok, true);
+  assert.equal(status.python.ok, false);
+  assert.equal(status.python.code, "WORKER_TIMEOUT");
+  assert.equal(status.ocr.available, false);
+  assert.equal(status.ocr.advisory, true);
+  assert.match(status.ocr.reason, /timed out after 50 ms/);
+  assert.match(status.ocr.hint, /RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS/);
+  assert.match(formatOcrHealthReport(status), /PaddleOCR: unavailable \(advisory\)/);
+  clearOcrHealthCache();
 });
 
 test("search can include cached figure OCR as supplemental evidence", async () => {

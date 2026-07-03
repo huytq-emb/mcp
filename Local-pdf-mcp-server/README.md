@@ -26,6 +26,13 @@ python_worker/                     optional Python worker
 
 ## Windows setup
 
+Validated local baseline:
+
+- Node.js 24.17.x with npm 11.13.x.
+- CPython 3.12.x for the optional project `.venv` worker.
+- Runtime is offline-first after npm/Python dependencies and optional PaddleX
+  OCR model cache have been installed or prewarmed.
+
 ```powershell
 cd Local-pdf-mcp-server
 npm install
@@ -56,6 +63,12 @@ Relevant environment variables:
 - `PDF_MANUAL_MCP_ROOT`
 - `RENESAS_MCP_EXTRACTION_ENGINE`
 - `RENESAS_MCP_PYTHON_OPERATIONS`
+- `RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS` (optional OCR health timeout; default
+  `30000` on Windows-friendly setups)
+
+OCR/text/structure/VL model files should live in the project-local PaddleX cache
+at `indexes/cache/paddlex` when you want offline OCR operation. Run
+`npm.cmd run python:health` to confirm Python extraction and optional OCR health.
 
 ## MCP client config example
 

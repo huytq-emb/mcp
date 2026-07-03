@@ -40,6 +40,7 @@ const FIGURE_LOOKUP_SCHEMA_VERSION = 1;
 const PAGE_CONTEXT_CACHE_SCHEMA_VERSION = 1;
 const FIGURE_SEMANTIC_SCHEMA_VERSION = 1;
 const OCR_HEALTH_TTL_MS = 60_000;
+const OCR_HEALTH_DEFAULT_TIMEOUT_MS = 30_000;
 const PAGE_CONTEXT_CACHE_KIND = "page-context";
 const FIGURE_STRUCTURE_CACHE_KIND = "figure-structure";
 const FIGURE_VL_CACHE_KIND = "figure-vl";
@@ -85,6 +86,40 @@ function capabilityStatus(raw = {}, fallback = {}) {
     hint: available ? "" : String(raw.hint || fallback.hint || ""),
     missing: Array.isArray(raw.missing) ? raw.missing : Array.isArray(fallback.missing) ? fallback.missing : [],
     ...Object.fromEntries(Object.entries(raw).filter(([key]) => !["available", "reason", "hint", "missing"].includes(key))),
+  };
+}
+
+export function resolveOcrHealthTimeoutMs(options = {}, env = process.env) {
+  if (options.timeoutMs !== undefined && options.timeoutMs !== null) {
+    const value = Number(options.timeoutMs);
+    return Number.isFinite(value) && value > 0 ? Math.max(50, value) : OCR_HEALTH_DEFAULT_TIMEOUT_MS;
+  }
+  const raw = env.RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return OCR_HEALTH_DEFAULT_TIMEOUT_MS;
+  const value = Number(String(raw).trim());
+  return Number.isFinite(value) && value >= 1_000 ? value : OCR_HEALTH_DEFAULT_TIMEOUT_MS;
+}
+
+function unavailableOcrHealthStatus(error, timeoutMs) {
+  const code = error?.code || "PYTHON_UNAVAILABLE";
+  const timedOut = code === "WORKER_TIMEOUT";
+  const reason = timedOut ? `ocr health probe timed out after ${timeoutMs} ms` : "python worker unavailable";
+  const hint = timedOut ? "Set RENESAS_MCP_OCR_HEALTH_TIMEOUT_MS to a larger value if PaddleOCR startup is slow on this machine." : OCR_INSTALL_HINT;
+  return {
+    ok: true,
+    node: { ok: true },
+    python: { ok: false, reason: error instanceof Error ? error.message : String(error), code },
+    ocr: {
+      enabled: false,
+      engine: "paddleocr",
+      available: false,
+      reason,
+      hint,
+      advisory: timedOut,
+      text: { available: false, reason, hint, missing: [], advisory: timedOut },
+      structure: { available: false, reason, hint: timedOut ? hint : OCR_STRUCTURE_INSTALL_HINT, missing: [], advisory: timedOut },
+      vl: { available: false, reason, hint: timedOut ? hint : OCR_VL_INSTALL_HINT, missing: [], advisory: timedOut },
+    },
   };
 }
 
@@ -137,8 +172,10 @@ export async function getOcrHealth(options = {}) {
     };
   }
   let status;
+  const timeoutMs = resolveOcrHealthTimeoutMs(options, options.env || process.env);
+  const runWorker = options.runWorker || runPythonWorker;
   try {
-    const worker = await runPythonWorker({ operation: "ocr.health", allowedRoots: [] }, { timeoutMs: options.timeoutMs || 10_000 });
+    const worker = await runWorker({ operation: "ocr.health", allowedRoots: [] }, { timeoutMs, env: options.workerEnv || options.env });
     status = {
       ok: true,
       node: { ok: true },
@@ -146,21 +183,7 @@ export async function getOcrHealth(options = {}) {
       ...(worker.result || {}),
     };
   } catch (error) {
-    status = {
-      ok: true,
-      node: { ok: true },
-      python: { ok: false, reason: error instanceof Error ? error.message : String(error), code: error.code || "PYTHON_UNAVAILABLE" },
-      ocr: {
-        enabled: false,
-        engine: "paddleocr",
-        available: false,
-        reason: "python worker unavailable",
-        hint: OCR_INSTALL_HINT,
-        text: { available: false, reason: "python worker unavailable", hint: OCR_INSTALL_HINT, missing: [] },
-        structure: { available: false, reason: "python worker unavailable", hint: OCR_STRUCTURE_INSTALL_HINT, missing: [] },
-        vl: { available: false, reason: "python worker unavailable", hint: OCR_VL_INSTALL_HINT, missing: [] },
-      },
-    };
+    status = unavailableOcrHealthStatus(error, timeoutMs);
   }
   status = normalizeOcrHealthStatus(status);
   cachedOcrHealth = { checkedAtMs: now, status };
@@ -177,15 +200,16 @@ export function formatOcrHealthReport(status) {
   const structure = ocr.structure || {};
   const vl = ocr.vl || {};
   const modelCache = ocr.modelCache || {};
+  const capabilityLabel = (available, advisory) => available ? "available" : advisory ? "unavailable (advisory)" : "missing";
   const lines = [
     "OCR health via eval_health_check: OK",
     `Node.js: ${status.node?.ok === false ? "unavailable" : "OK"}`,
     `Python worker: ${status.python?.ok === false ? `unavailable (${status.python.reason || "unknown"})` : "OK"}`,
     `PyMuPDF: ${status.python?.versions?.pymupdf || status.versions?.pymupdf || "unknown"}`,
-    `PaddleOCR: ${ocr.available ? "available" : "missing"}`,
-    `PaddleOCR text OCR: ${text.available ?? ocr.available ? "available" : "missing"}`,
-    `PP-Structure/document parser: ${structure.available ? "available" : "missing"}`,
-    `PaddleOCR-VL parser: ${vl.available ? "available" : "missing"}`,
+    `PaddleOCR: ${capabilityLabel(ocr.available, ocr.advisory)}`,
+    `PaddleOCR text OCR: ${capabilityLabel(text.available ?? ocr.available, text.advisory || ocr.advisory)}`,
+    `PP-Structure/document parser: ${capabilityLabel(structure.available, structure.advisory)}`,
+    `PaddleOCR-VL parser: ${capabilityLabel(vl.available, vl.advisory)}`,
     `PaddleX model cache: ${modelCache.path || "unknown"}`,
     `Cached PaddleX models: ${Number(modelCache.modelCount || 0)}`,
     `OCR enabled: ${ocr.enabled ? "true" : "false"}`,
