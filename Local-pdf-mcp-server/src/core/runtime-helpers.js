@@ -4,6 +4,10 @@ import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import { normalizeEvidenceContract } from "../evidence/contract.js";
 import { sanitizeDriverProfileName } from "../driver-profiles/catalog.js";
+import {
+  ensureDirectPdfFilename,
+  ensureInsideRoot as ensurePathInsideRoot,
+} from "./path-safety.js";
 
 // -----------------------------------------------------------------------------
 // Generic helpers
@@ -293,7 +297,21 @@ export async function atomicWriteFile(targetPath, data, encoding = "utf-8") {
 }
 
 export async function atomicWriteJson(targetPath, value) {
-  await atomicWriteFile(targetPath, JSON.stringify(value, null, 2), "utf-8");
+  let payload = value;
+  const indexRelativePath = path.relative(INDEX_DIR, path.resolve(targetPath));
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value.partial !== true &&
+    indexRelativePath !== "" &&
+    !indexRelativePath.startsWith("..") &&
+    !path.isAbsolute(indexRelativePath) &&
+    !Object.prototype.hasOwnProperty.call(value, "artifactComplete")
+  ) {
+    payload = { ...value, artifactComplete: true };
+  }
+  await atomicWriteFile(targetPath, JSON.stringify(payload, null, 2), "utf-8");
 }
 
 export async function readIndexLock(filename) {
@@ -430,39 +448,12 @@ export function isSamePdfSource(cacheSource, currentSource) {
 }
 
 export function ensurePdfFilename(filename) {
-  if (!filename || typeof filename !== "string") {
-    throw new Error("filename is required");
-  }
-
-  if (!filename.toLowerCase().endsWith(".pdf")) {
-    throw new Error("Only .pdf files are allowed");
-  }
-
-  if (
-    filename.includes("/") ||
-    filename.includes("\\") ||
-    filename.includes("..") ||
-    path.basename(filename) !== filename
-  ) {
-    throw new Error(
-      "Invalid filename. Only files directly inside the documents folder are allowed."
-    );
-  }
+  ensureDirectPdfFilename(filename);
 }
 
 
 export function ensurePdfFilenameLite(filename) {
-  if (!filename || typeof filename !== "string") {
-    throw new Error("filename is required");
-  }
-  const value = filename.trim();
-  if (!value.toLowerCase().endsWith(".pdf")) {
-    throw new Error("Only .pdf files are allowed");
-  }
-  if (value.includes("/") || value.includes("\\") || value.includes("..")) {
-    throw new Error("Invalid filename. Only a direct PDF filename is allowed.");
-  }
-  return value;
+  return ensureDirectPdfFilename(filename);
 }
 
 export function getIndexStatusUltraMinimal(filename) {
@@ -495,18 +486,7 @@ export function formatIndexStatusUltraMinimal(status) {
 }
 
 export function ensureInsideRoot(candidatePath, rootDir, what) {
-  const resolvedRoot = path.resolve(rootDir);
-  const resolvedCandidate = path.resolve(candidatePath);
-  const relative = path.relative(resolvedRoot, resolvedCandidate);
-
-  if (
-    relative === "" ||
-    (!relative.startsWith("..") && !path.isAbsolute(relative))
-  ) {
-    return resolvedCandidate;
-  }
-
-  throw new Error(`Invalid ${what} path`);
+  return ensurePathInsideRoot(candidatePath, rootDir, what);
 }
 
 export function safePdfPath(filename) {

@@ -500,6 +500,12 @@ export function jsonHeadNumber(head, key) {
   return match ? Number(match[1]) : null;
 }
 
+export function jsonHeadBoolean(head, key) {
+  const re = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*(true|false)`);
+  const match = head.match(re);
+  return match ? match[1] === "true" : null;
+}
+
 export async function readFileHead(filePath, maxBytes = STATUS_FAST_READ_BYTES) {
   const handle = await fs.open(filePath, "r");
   try {
@@ -564,6 +570,7 @@ export async function readArtifactStatus(entry, filename) {
     status.schemaVersion = jsonHeadNumber(head, "schemaVersion");
     status.createdAt = jsonHeadString(head, "createdAt") || jsonHeadString(head, "updatedAt") || status.modifiedAt;
     status.count = entry.countKey ? jsonHeadNumber(head, entry.countKey) : null;
+    status.artifactComplete = jsonHeadBoolean(head, "artifactComplete");
     const artifactFilename = jsonHeadString(head, "filename");
 
     status.ok = entry.schemaVersion === undefined || status.schemaVersion === entry.schemaVersion;
@@ -790,8 +797,11 @@ export function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
     }
   }
   const workerPid = Number(job.metadata?.workerPid || 0);
-  if (workerPid > 0) {
-    try { process.kill(workerPid); } catch { /* Process may have completed between refresh and cancellation. */ }
+  const orchestratorPid = Number(job.metadata?.orchestratorPid || 0);
+  for (const pid of [workerPid, orchestratorPid]) {
+    if (pid > 0) {
+      try { process.kill(pid); } catch { /* Process may have completed between refresh and cancellation. */ }
+    }
   }
   return cancelled;
 }
