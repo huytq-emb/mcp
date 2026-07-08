@@ -75,6 +75,37 @@ for (const definition of HIDDEN_TOOL_DEFINITIONS) {
   if (definition.inputSchema?.type !== "object") failures.push(`Hidden tool missing object input schema: ${definition.name}`);
 }
 
+const handlerImportHygieneFiles = [
+  "src/mcp/handlers/control.js",
+  "src/mcp/handlers/manual-evidence.js",
+  "src/mcp/handlers/figures.js",
+  "src/mcp/handlers/driver.js",
+];
+for (const rel of handlerImportHygieneFiles) {
+  const full = path.join(root, rel);
+  if (!fs.existsSync(full)) {
+    failures.push(`Missing handler for import hygiene check: ${rel}`);
+    continue;
+  }
+  const text = fs.readFileSync(full, "utf-8");
+  const body = text.replace(/^(import[\s\S]*?;\s*)+/m, "");
+  const importMatches = [...text.matchAll(/^import\s+\{([^}]+)\}\s+from\s+["'][^"']+["'];/gm)];
+  for (const match of importMatches) {
+    const specifiers = match[1].split(",").map((s) => s.trim()).filter(Boolean);
+    if (specifiers.length > 24) failures.push(`${rel} has an overly broad named import (${specifiers.length} specifiers)`);
+    for (const specifier of specifiers) {
+      const localName = specifier.split(/\s+as\s+/).pop().trim();
+      if (localName && !new RegExp(`\\b${localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(body)) {
+        failures.push(`${rel} imports unused symbol: ${localName}`);
+      }
+    }
+  }
+  for (const match of text.matchAll(/^import\s+([A-Za-z_$][\w$]*)\s+from\s+["'][^"']+["'];/gm)) {
+    const localName = match[1];
+    if (!new RegExp(`\\b${localName}\\b`).test(body)) failures.push(`${rel} imports unused default: ${localName}`);
+  }
+}
+
 for (const rel of ["driver_profiles", "driver_profiles/fragments", "eval", "eval/profiles", "eval/fixtures", "eval/golden"]) {
   const dir = path.join(root, rel);
   if (!fs.existsSync(dir)) failures.push(`Missing directory: ${rel}`);

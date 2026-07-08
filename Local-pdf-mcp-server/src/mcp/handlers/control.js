@@ -1,32 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_DRIVER_PACK_MODE, DEFAULT_INDEX_JOB_MODE, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, MAX_PAGE_RANGE, SERVER_VERSION } from "../../core/runtime-constants.js";
-import { formatManifestSummary, sourceFingerprint } from "../../artifacts/manifest.js";
-import { atomicWriteFile, atomicWriteJson, clampBitfieldListTopK, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../../core/runtime-helpers.js";
+import { DEFAULT_INDEX_JOB_MODE, DOCUMENTS_DIR, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, SERVER_VERSION } from "../../core/runtime-constants.js";
+import { formatManifestSummary } from "../../artifacts/manifest.js";
+import { clampChunkOverlap, clampChunkSize, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../../core/runtime-helpers.js";
 import { createRuntimePort } from "../../core/runtime-ports.js";
-import { clampCautionListTopK, formatCautionsForRegister, formatPersistentCautionList, getCautionsForRegister, getCautionsIndex, listCautionsFromIndex, loadCautionsIndex, persistentCautionFallbackForRegister } from "../../domains/cautions.js";
-import { formatFigureList, listFigures, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, rebuildFigureManifest, ocrFigureForSearch, tableCoverageReport } from "../../domains/figures.js";
-import { analyzeFigureSemantics, figureSemanticSummary, getFigureSemantics, listFigureSemantics, rebuildFigureSemanticsArtifact, searchFigureSemantics } from "../../domains/figure-semantics.js";
-import { clampRegisterSummaryTopK, extractBitfieldTable, extractPinmuxTable, extractRegisterTable, extractTablesFromPages, findBitfieldInIndex, formatBitfieldResults, formatExtractedPinmuxTable, formatExtractedRegisterTable, formatExtractedTables, formatLayoutExtractedTables, formatRegisterSummary, summarizeRegister } from "../../domains/manual-intelligence.js";
-import { clampSequenceListTopK, findSequenceInIndex, formatPersistentSequenceResult, formatSequenceListResults, formatSequenceResults, getSequenceFromIndex, listSequencesFromIndex, loadSequencesIndex } from "../../domains/sequences.js";
-import { findCautionInIndex, formatCautionResults } from "../../domains/caution-search.js";
-import { detectPdfRenderers, formatRendererAvailability } from "../../domains/rendering.js";
-import { detectVisualSemanticIntent, withVisualSemanticGuard } from "../../core/visual-guard.js";
-import { addVisualEvidence, buildVisualEvidenceReport, buildVisualEvidenceVerificationQueue, buildVisualReviewHandoffPack, formatAddVisualEvidence, formatGetVisualEvidence, formatListVisualEvidence, formatVerifyVisualEvidence, formatVisualEvidenceReport, formatVisualEvidenceVerificationQueue, formatVisualReviewHandoffPack, getVisualEvidence, listVisualEvidence, updateVisualEvidenceVerification } from "../../domains/visual-evidence.js";
+import { loadCautionsIndex } from "../../domains/cautions.js";
+import { loadSequencesIndex } from "../../domains/sequences.js";
 import { DEFAULT_GOLDEN_PROFILE } from "../../eval/golden.js";
 import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalCases, maybeWriteEvalReport, runEvalSuite } from "../../eval/runtime.js";
 import { doctorPdfs, formatDoctorReport, maybeWriteDoctorReports } from "../../services/doctor.js";
-import { buildPdfIndex, formatChunkTypeStats, formatRegisterIndexResults, formatRegisterListResults, getChunkTypeStats, isIndexUsable, listRegistersFromIndex, loadPdfIndex, loadRegistersIndex, loadSectionsIndex, looksLikeRegisterSymbol, searchRegistersIndex } from "../../services/indexing.js";
-import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob, writeArtifactManifest } from "../../services/jobs.js";
+import { buildPdfIndex, isIndexUsable, loadRegistersIndex, loadSectionsIndex } from "../../services/indexing.js";
+import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob } from "../../services/jobs.js";
 import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth } from "../../services/ocr.js";
 import { getHybridRuntimeStatus } from "../../services/python-worker.js";
 import { loadPagesCache } from "../../services/pdf.js";
-import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, loadBitfieldsIndex, searchPdfIndex, searchSectionsIndex } from "../../services/search.js";
-import { buildDriverEvidencePack, buildDriverEvidencePackContract, buildDriverTaskPlan, buildDriverTaskPlanEvidenceContract, buildSectionQueries, formatDriverEvidencePack, formatDriverTaskPlan, formatVerifyRegisterUsage, multiQuerySearch, normalizeStringArray, verifyRegisterUsage } from "../../workflows/driver-pack.js";
+import { loadBitfieldsIndex } from "../../services/search.js";
 import { buildManualWorkflowPlan, buildStep407CompatibilityReport, formatEvalHealthReport, formatManualWorkflowPlan, formatStep407CompatibilityReport, formatToolUsage, maybeWriteEvalHealthReport, runEvalHealthCheck } from "../../workflows/manual-workflow.js";
-import { buildDriverCompletenessChecklist, compareDriverRequirements, formatCompareDriverRequirements, formatDriverCompletenessChecklist, formatDriverProfilesList, formatModuleProfile, getModuleProfile, listDriverProfiles, saveModuleProfile } from "../../workflows/profiles.js";
-import { buildSourceReviewPromptPack, formatSourceReviewPromptPack } from "../../workflows/source-review.js";
-import { LEGACY_CONTROL_WARNING, legacyJsonResult, legacyTextResult, requireStringArg } from "./shared.js";
+import { LEGACY_CONTROL_WARNING, legacyJsonResult, legacyTextResult } from "./shared.js";
+import { validateMcpControlArgs } from "./control-validation.js";
 
 const extractPdfPages = createRuntimePort("extractPdfPages");
 const getPdfPageCount = createRuntimePort("getPdfPageCount");
@@ -59,7 +50,7 @@ async function handle_explain_tool_usage(args = {}, meta = {}) {
 
 async function handle_mcp_control(args = {}, meta = {}) {
   const name = meta.name || "mcp_control";
-    const action = String(args.action || "").trim().toLowerCase();
+    const { action } = validateMcpControlArgs(args);
     if (action) {
       // Keep all control-plane actions behind the single public mcp_control tool
       // instead of advertising separate direct Step 40 tools.
@@ -77,7 +68,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatStep407CompatibilityReport(report));
       }
       if (action === "index_status_lite") {
-        const filename = requireStringArg(args, "filename", action);
+        const filename = args.filename.trim();
         const status = getIndexStatusUltraMinimal(filename);
         if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
         return textResult(formatIndexStatusUltraMinimal(status));
@@ -88,7 +79,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
         return textResult(formatOcrHealthReport(status));
       }
       if (action === "rebuild_artifact") {
-        const filename = requireStringArg(args, "filename", action);
+        const filename = args.filename.trim();
         const artifact = normalizeArtifactName(args.artifact || "pages");
         const job = await startRebuildArtifactJob(filename, artifact, {
           forceLock: Boolean(args.force_lock),
@@ -112,7 +103,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
       }
       if (action === "job_status") {
         await refreshJobsStateFromDisk();
-        const jobId = requireStringArg(args, "job_id", action);
+        const jobId = args.job_id.trim();
         const job = jobs.get(jobId);
         return textResult(formatJobStatus(job));
       }
@@ -122,7 +113,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
       }
       if (action === "cancel_job") {
         await refreshJobsStateFromDisk();
-        const jobId = requireStringArg(args, "job_id", action);
+        const jobId = args.job_id.trim();
         const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
         if (!job) return textResult(`Job not found: ${jobId}`);
         return textResult(formatJobStatus(job));
@@ -140,29 +131,23 @@ async function handle_mcp_control(args = {}, meta = {}) {
         ].join("\n"));
       }
       if (action === "cache_status") {
-        requireStringArg(args, "filename", action);
         const status = await getCacheStatus(args);
         return jsonResult(status);
       }
       if (action === "cleanup_cache") {
-        requireStringArg(args, "filename", action);
         const status = await cleanupCache(args);
         return jsonResult(status);
       }
       if (action === "figure_cache_status") {
-        requireStringArg(args, "filename", action);
         const status = await getFigureCacheStatus(args);
         return jsonResult(status);
       }
       if (action === "cleanup_figure_cache") {
-        requireStringArg(args, "filename", action);
         const status = await cleanupFigureCache(args);
         return jsonResult(status);
       }
       throw new Error(`Unknown mcp_control action: ${args.action}`);
     }
-  
-    throw new Error("mcp_control action is required");
 }
 
 async function handle_eval_health_check(args = {}, meta = {}) {
