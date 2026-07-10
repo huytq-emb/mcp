@@ -10,6 +10,7 @@ export const ARTIFACT_DEPENDENCIES = {
   sequences: ["chunk-index", "sections", "tables", "registers", "bitfields", "cautions"],
   cautions: ["chunk-index", "sections", "registers"],
   figures: ["pages"],
+  "evidence-graph": ["chunk-index", "sections", "tables", "registers", "bitfields", "sequences", "cautions", "figures"],
   figure_ocr: ["figures"],
   "visual-evidence": ["figures"],
   "module-profile": ["registers", "sections"],

@@ -120,6 +120,7 @@ export function wireRuntimePorts(context) {
     "groupRegistersForDriverPack": module7.groupRegistersForDriverPack,
     "hybridSearchPdf": module6.hybridSearchPdf,
     "inferModuleType": module7.inferModuleType,
+    "inferModuleCandidates": module7.inferModuleCandidates,
     "isDoctorCoreCheck": module10.isDoctorCoreCheck,
 
     "isNonRegisterSignal": module2.isNonRegisterSignal,

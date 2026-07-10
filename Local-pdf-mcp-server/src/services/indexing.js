@@ -3,6 +3,7 @@ import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_DIR, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { buildEvidenceGraph } from "./evidence-graph.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -71,6 +72,54 @@ export function chunkText(text, chunkSize, overlap) {
   }
 
   return chunks;
+}
+
+function structuralBoundary(line = "") {
+  const text = String(line || "").trim();
+  if (!text) return "paragraph";
+  if (/\b(?:Register|Control Register|Status Register|Data Register)\b.*\([A-Za-z][A-Za-z0-9_]*\)/i.test(text)) return "register";
+  if (/^(?:Caution|CAUTION|Note|NOTE|Restriction|Restrictions)\b/.test(text)) return "caution";
+  if (/^(?:\(?\d+\)?[.)]|Step\s+\d+)\s+/i.test(text)) return "procedure";
+  if (/^(?:Figure|Table)\s+\d+/i.test(text)) return "caption";
+  if (/^(?:\d+(?:\.\d+){0,6}\s+)?[A-Z][A-Za-z0-9/()\- ]{6,}/.test(text) && text.length < 180) return "section";
+  return "paragraph";
+}
+
+// Chunk definitions and procedure/caution blocks on their own before falling
+// back to the legacy character splitter. IDs retain p<page>:c<index> form so
+// existing callers can migrate without a second identifier namespace.
+export function chunkPageHierarchically(text, chunkSize, overlap) {
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const blocks = [];
+  let current = [];
+  let currentType = "paragraph";
+  const flush = () => {
+    const block = current.join("\n").trim();
+    if (block) blocks.push({ text: block, chunkTypeHint: currentType });
+    current = [];
+  };
+  for (const line of lines) {
+    const type = structuralBoundary(line);
+    const startsDedicatedBlock = ["section", "register", "caution", "procedure", "caption"].includes(type);
+    if (current.length && startsDedicatedBlock && type !== currentType) {
+      // A section heading introduces the following register definition; keep
+      // that heading with the register instead of turning it into a tiny chunk.
+      if (currentType === "section" && type === "register") currentType = "register";
+      else flush();
+    }
+    if (!current.length && startsDedicatedBlock) currentType = type;
+    current.push(line);
+    if (!String(line || "").trim() && current.length && currentType !== "paragraph") flush();
+  }
+  flush();
+  const chunks = [];
+  for (const block of blocks) {
+    const parts = block.text.length <= chunkSize
+      ? [block.text]
+      : chunkText(block.text, chunkSize, overlap);
+    for (const part of parts) chunks.push({ text: part, chunkTypeHint: block.chunkTypeHint });
+  }
+  return chunks.length ? chunks : chunkText(text, chunkSize, overlap).map((value) => ({ text: value, chunkTypeHint: "paragraph" }));
 }
 
 
@@ -1422,9 +1471,10 @@ export async function buildPdfIndex(filename, options = {}) {
       onProgress({ phase: "chunk-pages", current: page.page, total: pdfData.pageCount, unit: "pages" });
     }
     const pageHeadings = detectHeadings(page.text);
-    const pageChunks = chunkText(page.text, chunkSize, chunkOverlap);
+    const pageChunks = chunkPageHierarchically(page.text, chunkSize, chunkOverlap);
 
-    pageChunks.forEach((chunkTextValue, index) => {
+    pageChunks.forEach((chunkSpec, index) => {
+      const chunkTextValue = chunkSpec.text;
       const headings = [...new Set([...pageHeadings, ...detectHeadings(chunkTextValue)])].slice(0, 12);
       const registers = detectRegisters(chunkTextValue);
       const bitFields = detectBitFields(chunkTextValue);
@@ -1442,8 +1492,14 @@ export async function buildPdfIndex(filename, options = {}) {
         page: page.page,
         chunkIndex: index,
         headings,
+        sectionPath: headings,
         registers,
         bitFields,
+        entityIds: [],
+        boundingBoxes: [],
+        previousChunkId: index > 0 ? `${filename}:p${page.page}:c${index - 1}` : null,
+        nextChunkId: index + 1 < pageChunks.length ? `${filename}:p${page.page}:c${index + 1}` : null,
+        structuralChunkType: chunkSpec.chunkTypeHint,
         chunkType: chunkProfile.chunkType,
         chunkTypes: chunkProfile.chunkTypes,
         chunkTypeSignals: chunkProfile.signals,
@@ -1465,6 +1521,8 @@ export async function buildPdfIndex(filename, options = {}) {
     sourceModifiedMs: pdfStat.mtimeMs,
     pageCount: pdfData.pageCount,
     chunkCount: chunks.length,
+    chunkingVersion: 2,
+    legacyCompatibleChunkIds: true,
     chunkTypeStats: summarizeChunkTypes(chunks),
     chunkSize,
     chunkOverlap,
@@ -1504,10 +1562,17 @@ export async function buildPdfIndex(filename, options = {}) {
   const figuresIndex = await buildFiguresIndex(filename, pageCache);
   indexData.figureCount = figuresIndex.figureCount;
 
+  // The graph intentionally reads the normalized on-disk artifacts, including
+  // the chunk index. Persist this generation before linking it.
+  const indexPath = safeIndexPath(filename);
+  await atomicWriteJson(indexPath, indexData);
+  if (onProgress) onProgress({ phase: "build-evidence-graph", current: 0, total: 0, unit: "" });
+  const evidenceGraph = await buildEvidenceGraph(filename);
+  indexData.evidenceGraphEntityCount = evidenceGraph.entities.length;
+
     if (onProgress) onProgress({ phase: "write-index", current: 0, total: 0, unit: "" });
-    const indexPath = safeIndexPath(filename);
     await atomicWriteJson(indexPath, indexData);
-    await writeArtifactManifest(filename, { buildStatus: "ready", notes: ["full index build completed"], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
+    await writeArtifactManifest(filename, { buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
 
     return indexData;
   });

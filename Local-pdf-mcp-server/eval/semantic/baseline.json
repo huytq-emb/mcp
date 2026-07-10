@@ -1,0 +1,8 @@
+{
+  "rzg3e-ethernet": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 1, "registerExactMatchAccuracy": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 },
+  "rzg3e-dma": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 0.75, "registerExactMatchAccuracy": 1, "bitfieldExactMatchAccuracy": 1, "offsetResetAccessExactMatchAccuracy": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 },
+  "rzg3e-gpio-pfc": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 1, "registerExactMatchAccuracy": 1, "cautionRecall": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 },
+  "rzg3e-watchdog": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 0.75, "registerExactMatchAccuracy": 1, "offsetResetAccessExactMatchAccuracy": 1, "sequenceStepCoverage": 1, "figureLocatorAccuracy": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 },
+  "rzg3e-pwm": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 1, "registerExactMatchAccuracy": 1, "offsetResetAccessExactMatchAccuracy": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 },
+  "rzg3e-usb": { "recallAt5": 1, "recallAt10": 1, "meanReciprocalRank": 1, "registerExactMatchAccuracy": 1, "offsetResetAccessExactMatchAccuracy": 1, "evidencePageCorrectness": 1, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 }
+}

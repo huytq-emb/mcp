@@ -36,7 +36,11 @@ export const STEP40_CONTROL_ACTIONS = [
   "figure_cache_status",
   "cleanup_figure_cache"
 ];
+// V1 evidence contracts are retained in legacy formatted responses. New
+// machine-facing evidence tools return EvidenceBundle v2 directly.
 export const EVIDENCE_CONTRACT_SCHEMA_VERSION = 1;
+export const EVIDENCE_BUNDLE_SCHEMA_VERSION = 2;
+export const EVIDENCE_GRAPH_SCHEMA_VERSION = 1;
 export const EVAL_CASES_SCHEMA_VERSION = 1;
 export const EVAL_PROFILE_SCHEMA_VERSION = 1;
 export const EVAL_FIXTURE_SCHEMA_VERSION = 1;

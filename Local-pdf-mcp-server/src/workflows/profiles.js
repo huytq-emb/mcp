@@ -13,6 +13,7 @@ const formatDriverVisualEvidenceSection = createRuntimePort("formatDriverVisualE
 const formatVisualEvidenceGateSection = createRuntimePort("formatVisualEvidenceGateSection");
 const groupRegistersForDriverPack = createRuntimePort("groupRegistersForDriverPack");
 const inferModuleType = createRuntimePort("inferModuleType");
+const inferModuleCandidates = createRuntimePort("inferModuleCandidates");
 const likelyLinuxSubsystem = createRuntimePort("likelyLinuxSubsystem");
 const listRegistersFromIndex = createRuntimePort("listRegistersFromIndex");
 const loadPdfIndex = createRuntimePort("loadPdfIndex");
@@ -218,7 +219,8 @@ export async function buildModuleProfile(filename, options = {}) {
   }
 
   const sections = collectProfileSections(sectionSearches);
-  const moduleType = inferModuleType(filename, registers, sections, moduleTypeHint);
+  const moduleCandidates = inferModuleCandidates(filename, registers, sections, moduleTypeHint);
+  const moduleType = moduleCandidates[0]?.module || inferModuleType(filename, registers, sections, moduleTypeHint);
   const linuxSubsystem = likelyLinuxSubsystem(moduleType);
   const groups = groupRegistersForDriverPack(registers);
   const keyRegisters = selectKeyRegistersForDriverPack(registers, moduleType, Math.min(16, registers.length));
@@ -231,6 +233,7 @@ export async function buildModuleProfile(filename, options = {}) {
     filename,
     createdAt: new Date().toISOString(),
     moduleType,
+    moduleCandidates,
     moduleTypeHint,
     linuxSubsystem,
     focus,
@@ -336,6 +339,9 @@ export function formatModuleProfile(profile) {
 
   lines.push("1. Module identity");
   lines.push(`- Inferred module type: ${profile.moduleType}`);
+  if ((profile.moduleCandidates || []).length) {
+    lines.push(`- Module candidates: ${(profile.moduleCandidates || []).map((candidate) => `${candidate.module} (${candidate.confidence})`).join(", ")}`);
+  }
   if (profile.moduleTypeHint) lines.push(`- User module type hint: ${profile.moduleTypeHint}`);
   if (profile.focus) lines.push(`- Focus: ${profile.focus}`);
   lines.push(`- Likely Linux subsystem: ${profile.linuxSubsystem}`);

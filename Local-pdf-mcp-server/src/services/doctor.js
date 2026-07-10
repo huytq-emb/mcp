@@ -1,6 +1,6 @@
-import { atomicWriteFile, atomicWriteJson, getPdfSourceInfo, isIndexLockStale, isSamePdfSource, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDoctorReportJsonPath, safeDoctorReportMarkdownPath, safeDoctorReportPath, safeDriverPackPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeIndexLockPath, safeIndexPath, safeModuleProfileJsonPath, safeModuleProfileTextPath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
+import { atomicWriteFile, atomicWriteJson, getPdfSourceInfo, isIndexLockStale, isSamePdfSource, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDoctorReportJsonPath, safeDoctorReportMarkdownPath, safeDoctorReportPath, safeDriverPackPath, safeDriverTaskPlanPath, safeEvidenceGraphPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeIndexLockPath, safeIndexPath, safeModuleProfileJsonPath, safeModuleProfileTextPath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.js";
@@ -457,12 +457,13 @@ export async function doctorOnePdf(filename, options = {}) {
     ["sequences index", safeSequencesIndexPath(filename), SEQUENCE_INDEX_SCHEMA_VERSION, "sequences"],
     ["cautions index", safeCautionsIndexPath(filename), CAUTION_INDEX_SCHEMA_VERSION, "cautions"],
     ["figures index", safeFiguresIndexPath(filename), FIGURE_INDEX_SCHEMA_VERSION, "figures"],
+    ["evidence graph", safeEvidenceGraphPath(filename), EVIDENCE_GRAPH_SCHEMA_VERSION, "evidence-graph", true],
     ["figure OCR index", safeFigureOcrIndexPath(filename), FIGURE_OCR_SCHEMA_VERSION, "figure-ocr"],
     ["visual evidence", safeVisualEvidencePath(filename), VISUAL_EVIDENCE_SCHEMA_VERSION, "visualEvidence", true],
     ["module profile", safeModuleProfileJsonPath(filename), MODULE_PROFILE_SCHEMA_VERSION, "module-profile"],
   ];
 
-  for (const [name, filePath, schema, kind] of jsonSpecs) {
+  for (const [name, filePath, schema, kind, optional] of jsonSpecs) {
     const useFastHeader = !deep && !["artifact-manifest", "module-profile", "visualEvidence"].includes(kind);
     let check = useFastHeader ? await readJsonHeaderForDoctor(filePath, schema, name) : await readJsonForDoctor(filePath, schema, name);
     check = validateFilenameForDoctor(check, filename);
@@ -480,6 +481,11 @@ export async function doctorOnePdf(filename, options = {}) {
     }
 
     if (kind === "figure-ocr" && check.status === "missing") {
+      check.status = "missing_optional";
+      check.severity = doctorStatusSeverity(check.status);
+    }
+
+    if (optional && check.status === "missing") {
       check.status = "missing_optional";
       check.severity = doctorStatusSeverity(check.status);
     }

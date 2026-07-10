@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "type": "semantic-golden-dataset",
+  "id": "rzg3e-watchdog",
+  "subsystem": "watchdog",
+  "manual": { "filename": "r01uh1069ej0115-rzg3e.pdf", "verification": { "status": "manually-verified", "reviewedAt": "2026-06-21", "source": "RZ/G3E pages 1007 and 1016" } },
+  "cases": [{ "id": "watchdog-refresh", "query": "How must Linux refresh the watchdog and what WDTCR reset/access details apply?", "expectedFacts": [{ "id": "wdtcr", "kind": "register", "canonicalName": "WDTm_WDTCR", "page": 1007, "offset": "02h", "reset": "33F3h", "accessSize": "16" }, { "id": "watchdog-refresh-sequence", "kind": "sequence", "canonicalName": "watchdog refresh", "page": 1016, "sequenceSteps": ["WDTm_WDTRR 00h", "WDTm_WDTRR FFh"], "figureLocator": { "page": 1016 } }] }],
+  "thresholds": { "metrics": { "recallAt5": { "min": 1 }, "recallAt10": { "min": 1 }, "meanReciprocalRank": { "min": 0.75 }, "registerExactMatchAccuracy": { "min": 1 }, "offsetResetAccessExactMatchAccuracy": { "min": 1 }, "sequenceStepCoverage": { "min": 1 }, "figureLocatorAccuracy": { "min": 1 }, "evidencePageCorrectness": { "min": 1 }, "duplicateEvidenceRate": { "max": 0 }, "unsupportedClaimRate": { "max": 0 } } },
+  "regressionTolerances": { "recallAt5": 0, "recallAt10": 0, "meanReciprocalRank": 0, "registerExactMatchAccuracy": 0, "offsetResetAccessExactMatchAccuracy": 0, "sequenceStepCoverage": 0, "figureLocatorAccuracy": 0, "evidencePageCorrectness": 0, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 }
+}

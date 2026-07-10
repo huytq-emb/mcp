@@ -1,0 +1,63 @@
+{
+  "rzg3e-ethernet": {
+    "ethernet-module-locator": {
+      "latencyMs": 18,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [{ "id": "gbeth-module", "kind": "register", "canonicalName": "GBETH", "evidenceIds": ["e-gbeth"] }], "evidence": [{ "id": "e-gbeth", "kind": "register", "statement": "GBETH Ethernet module", "page": 35 }] }
+    }
+  },
+  "rzg3e-dma": {
+    "dma-dctrl": {
+      "latencyMs": 21,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [
+        { "id": "dmac-dctrl", "kind": "register", "canonicalName": "DMACm_DCTRL", "properties": { "offsets": ["0300h"], "resets": ["0000_0000h"], "accessSizes": ["32"] }, "evidenceIds": ["e-dctrl"] },
+        { "id": "dmac-dctrl-lwca", "kind": "bitfield", "canonicalName": "LWCA", "properties": { "access": "R/W", "reset": "0" }, "evidenceIds": ["e-lwca"] }
+      ], "evidence": [
+        { "id": "e-dctrl", "kind": "register", "statement": "DMACm_DCTRL", "page": 843 },
+        { "id": "e-lwca", "kind": "bitfield", "statement": "LWCA", "page": 843 }
+      ] }
+    }
+  },
+  "rzg3e-gpio-pfc": {
+    "pfc-write-protection": {
+      "latencyMs": 17,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [{ "id": "pfc-pwpr", "kind": "register", "canonicalName": "PFC_PWPR", "evidenceIds": ["e-pfc"] }], "evidence": [{ "id": "e-pfc", "kind": "register", "statement": "PFC_PWPR write-protected pin-function control", "page": 239 }] }
+    }
+  },
+  "rzg3e-watchdog": {
+    "watchdog-refresh": {
+      "latencyMs": 19,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [
+        { "id": "wdtcr", "kind": "register", "canonicalName": "WDTm_WDTCR", "properties": { "offsets": ["02h"], "resets": ["33F3h"], "accessSizes": ["16"] }, "evidenceIds": ["e-wdtcr"] },
+        { "id": "watchdog-refresh-sequence", "kind": "sequence", "canonicalName": "watchdog refresh", "page": 1016, "evidenceIds": ["e-wdt-sequence"] }
+      ], "evidence": [
+        { "id": "e-wdtcr", "kind": "register", "statement": "WDTm_WDTCR", "page": 1007 },
+        { "id": "e-wdt-sequence", "kind": "sequence", "statement": "WDTm_WDTRR 00h then WDTm_WDTRR FFh", "page": 1016 },
+        { "id": "e-wdt-figure", "kind": "figure", "statement": "Watchdog refresh flow locator", "page": 1016 }
+      ] }
+    }
+  },
+  "rzg3e-pwm": {
+    "gpt-control": {
+      "latencyMs": 20,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [{ "id": "gpt-gtcr", "kind": "register", "canonicalName": "GPTm_n_GTCR", "properties": { "offsets": ["002Ch + n x 0100h"], "resets": ["0000_0000h"], "accessSizes": ["32"] }, "evidenceIds": ["e-gtcr"] }], "evidence": [{ "id": "e-gtcr", "kind": "register", "statement": "GPTm_n_GTCR", "page": 1111 }] }
+    }
+  },
+  "rzg3e-usb": {
+    "usb-host-suspend": {
+      "latencyMs": 22,
+      "indexingDurationMs": 220,
+      "peakRssMb": 82,
+      "bundle": { "facts": [{ "id": "usb-host-spd-ctrl", "kind": "register", "canonicalName": "USB2m_HOST_SPD_CTRL", "properties": { "offsets": ["0308h"], "resets": ["0000_0000h"], "accessSizes": ["32"] }, "evidenceIds": ["e-usb"] }], "evidence": [{ "id": "e-usb", "kind": "register", "statement": "USB2m_HOST_SPD_CTRL", "page": 1604 }] }
+    }
+  }
+}

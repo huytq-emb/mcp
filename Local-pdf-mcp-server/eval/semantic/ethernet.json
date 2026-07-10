@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "type": "semantic-golden-dataset",
+  "id": "rzg3e-ethernet",
+  "subsystem": "ethernet",
+  "manual": { "filename": "r01uh1069ej0115-rzg3e.pdf", "verification": { "status": "manually-verified", "reviewedAt": "2026-06-21", "source": "RZ/G3E manual page review" } },
+  "cases": [{ "id": "ethernet-module-locator", "query": "Where is the GBETH Ethernet module described in the RZ/G3E manual?", "expectedFacts": [{ "id": "gbeth-module", "kind": "register", "canonicalName": "GBETH", "page": 35 }] }],
+  "thresholds": { "metrics": { "recallAt5": { "min": 1 }, "recallAt10": { "min": 1 }, "meanReciprocalRank": { "min": 1 }, "registerExactMatchAccuracy": { "min": 1 }, "evidencePageCorrectness": { "min": 1 }, "duplicateEvidenceRate": { "max": 0 }, "unsupportedClaimRate": { "max": 0 } } },
+  "regressionTolerances": { "recallAt5": 0, "recallAt10": 0, "meanReciprocalRank": 0, "registerExactMatchAccuracy": 0, "evidencePageCorrectness": 0, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 }
+}

@@ -4,6 +4,7 @@ import { DEFAULT_DRIVER_PACK_BUDGET_MS, DEFAULT_DRIVER_PACK_CAUTION_TOPICS, DEFA
 import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import { normalizeDriverFamilyHint, normalizeDriverSubsystemHint } from "../driver-profiles/catalog.js";
+import { MODULE_INFERENCE_PROFILES } from "../driver-profiles/module-inference.js";
 
 
 const cautionMatchesFilter = createRuntimePort("cautionMatchesFilter");
@@ -50,9 +51,9 @@ const visualEvidenceGateWarnings = createRuntimePort("visualEvidenceGateWarnings
 // Driver evidence pack
 // -----------------------------------------------------------------------------
 
-export function inferModuleType(filename, registers = [], sections = [], providedType = "") {
+export function inferModuleCandidates(filename, registers = [], sections = [], providedType = "") {
   const provided = String(providedType || "").trim().toLowerCase();
-  if (provided) return provided;
+  if (provided) return [{ module: provided, confidence: 1, reasons: ["explicit module hint"] }];
 
   const haystack = normalizeForSearch([
     filename,
@@ -60,27 +61,24 @@ export function inferModuleType(filename, registers = [], sections = [], provide
     ...sections.slice(0, 40).map((s) => s.title || ""),
   ].join("\n"));
 
-  const rules = [
-    { type: "dmaengine", patterns: ["dma", "dmac", "direct memory access"] },
-    { type: "watchdog", patterns: ["watchdog", "wdt"] },
-    { type: "pwm/timer", patterns: ["pwm", "gpt", "general pwm timer", "timer"] },
-    { type: "gpio", patterns: ["gpio", "port", "pin"] },
-    { type: "i2c", patterns: ["i2c", "iic", "riic"] },
-    { type: "spi", patterns: ["spi", "rsci", "serial peripheral"] },
-    { type: "uart", patterns: ["uart", "scif", "sci", "serial communication"] },
-    { type: "ethernet", patterns: ["ethernet", "geth", "gbeth", "mac", "phy"] },
-    { type: "can", patterns: ["can", "canfd"] },
-    { type: "usb", patterns: ["usb", "xhci", "ehci", "ohci", "dwc3"] },
-    { type: "pcie", patterns: ["pcie", "pci express", "root complex", "host bridge"] },
-    { type: "adc", patterns: ["adc", "analog digital", "a d converter"] },
-    { type: "rtc", patterns: ["rtc", "real time clock"] },
-  ];
+  const candidates = MODULE_INFERENCE_PROFILES.map((profile) => {
+    const symbolHits = (profile.symbols || []).filter((pattern) => haystack.includes(pattern));
+    const phraseHits = (profile.phrases || []).filter((pattern) => haystack.includes(pattern));
+    const score = symbolHits.length * 18 + phraseHits.length * 28;
+    return { module: profile.module, score, reasons: [...symbolHits.map((hit) => `symbol:${hit}`), ...phraseHits.map((hit) => `phrase:${hit}`)] };
+  }).filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.module.localeCompare(right.module));
+  if (!candidates.length) return [{ module: "unknown", confidence: 0, reasons: ["no declarative profile match"] }];
+  const maxScore = candidates[0].score;
+  return candidates.slice(0, 5).map((candidate) => ({
+    module: candidate.module,
+    confidence: Number(Math.min(0.99, 0.35 + (candidate.score / Math.max(maxScore, 1)) * 0.64).toFixed(2)),
+    reasons: candidate.reasons,
+  }));
+}
 
-  for (const rule of rules) {
-    if (rule.patterns.some((pattern) => haystack.includes(pattern))) return rule.type;
-  }
-
-  return "unknown";
+export function inferModuleType(filename, registers = [], sections = [], providedType = "") {
+  return inferModuleCandidates(filename, registers, sections, providedType)[0]?.module || "unknown";
 }
 
 export function likelyLinuxSubsystem(moduleType) {

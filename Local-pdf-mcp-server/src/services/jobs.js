@@ -1,11 +1,12 @@
-import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeFigureOcrIndexPath, safeFigureSemanticIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
+import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeEvidenceGraphPath, safeFigureOcrIndexPath, safeFigureSemanticIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
+import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
 import { spawn } from "../core/process-runner.js";
 import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
+import { buildEvidenceGraph } from "./evidence-graph.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -456,6 +457,7 @@ export function normalizeArtifactName(value) {
     ["figure", "figures"], ["figures", "figures"], ["figures-index", "figures"],
     ["figure-ocr", "figure_ocr"], ["figure_ocr", "figure_ocr"], ["ocr", "figure_ocr"], ["figures-ocr", "figure_ocr"],
     ["figure-semantic", "figure_semantic"], ["figure_semantic", "figure_semantic"], ["figure-semantics", "figure_semantic"], ["semantics", "figure_semantic"],
+    ["evidence-graph", "evidence-graph"], ["graph", "evidence-graph"], ["evidence_graph", "evidence-graph"],
     ["all", "all"], ["core", "core"], ["driver", "driver"],
   ]);
   return aliases.get(raw) || raw;
@@ -474,6 +476,7 @@ export function artifactPathsForStatus(filename) {
     { key: "sequences", label: "Sequences index", path: safeSequencesIndexPath(filename), schemaVersion: SEQUENCE_INDEX_SCHEMA_VERSION, rootKey: "sequences", countKey: "sequenceCount" },
     { key: "cautions", label: "Cautions index", path: safeCautionsIndexPath(filename), schemaVersion: CAUTION_INDEX_SCHEMA_VERSION, rootKey: "cautions", countKey: "cautionCount" },
     { key: "figures", label: "Figures index", path: safeFiguresIndexPath(filename), schemaVersion: FIGURE_INDEX_SCHEMA_VERSION, rootKey: "figures", countKey: "figureCount" },
+    { key: "evidence-graph", label: "Evidence graph", path: safeEvidenceGraphPath(filename), schemaVersion: EVIDENCE_GRAPH_SCHEMA_VERSION, rootKey: "entities", countKey: "entityCount", optional: true },
     { key: "figure_ocr", label: "Figure OCR index", path: safeFigureOcrIndexPath(filename), schemaVersion: FIGURE_OCR_SCHEMA_VERSION, rootKey: "figures", countKey: "figureOcrCount", optional: true },
     { key: "figure_semantic", label: "Figure semantic index", path: safeFigureSemanticIndexPath(filename), schemaVersion: FIGURE_SEMANTIC_SCHEMA_VERSION, rootKey: "records", countKey: "semanticCount", optional: true },
     { key: "visual-evidence", label: "Visual evidence", path: safeVisualEvidencePath(filename), schemaVersion: VISUAL_EVIDENCE_SCHEMA_VERSION, rootKey: "entries", countKey: "entryCount", optional: true },
@@ -843,7 +846,7 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
     if (onProgress) onProgress({ phase: normalized === "chunk-index" ? "rebuild-chunk-index" : "rebuild-core", current: 0, total: 0, unit: "" });
     const indexData = await buildPdfIndex(filename, { forceLock, chunkSize, chunkOverlap, reusePageCache: true, onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine });
     await writeArtifactManifest(filename, { buildStatus: "ready", notes: [`rebuilt ${normalized}`], clearStale: true });
-    return { artifact: normalized, rebuilt: ["pages", "sections", "chunk-index", "tables", "registers", "bitfields", "cautions", "sequences", "figures"], counts: { pages: indexData.pageCount, chunks: indexData.chunkCount, tables: indexData.tableCount, registers: indexData.registerCount, bitfields: indexData.bitfieldCount, sequences: indexData.sequenceCount, cautions: indexData.cautionCount, figures: indexData.figureCount } };
+    return { artifact: normalized, rebuilt: ["pages", "sections", "chunk-index", "tables", "registers", "bitfields", "cautions", "sequences", "figures", "evidence-graph"], counts: { pages: indexData.pageCount, chunks: indexData.chunkCount, tables: indexData.tableCount, registers: indexData.registerCount, bitfields: indexData.bitfieldCount, sequences: indexData.sequenceCount, cautions: indexData.cautionCount, figures: indexData.figureCount, evidenceGraphEntities: indexData.evidenceGraphEntityCount || 0 } };
   }
   if (normalized === "pages") {
     if (onProgress) onProgress({ phase: "rebuild-pages", current: 0, total: 0, unit: "" });
@@ -880,6 +883,7 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
   if (normalized === "sequences") { const bitfieldsIndex = await getBitfieldsIndex(filename, { buildIfMissing: true }); const cautionsIndex = await loadCautionsIndex(filename); const sequences = await buildSequencesIndex(filename, indexData, sectionsIndex, registersIndex, { tablesIndex, bitfieldsIndex, cautionsIndex }); await rewriteMainIndexCounts(filename, { sequenceCount: sequences.sequenceCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt sequences index"], rebuiltArtifacts: ["sequences"] }); return { artifact: normalized, rebuilt: ["sequences"], counts: { sequences: sequences.sequenceCount } }; }
   if (normalized === "cautions") { const cautions = await buildCautionsIndex(filename, indexData, sectionsIndex, registersIndex); await rewriteMainIndexCounts(filename, { cautionCount: cautions.cautionCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt cautions index"], rebuiltArtifacts: ["cautions"] }); return { artifact: normalized, rebuilt: ["cautions"], counts: { cautions: cautions.cautionCount } }; }
   if (normalized === "figures") { const figures = await buildFiguresIndex(filename, pageCache, { force }); await rewriteMainIndexCounts(filename, { figureCount: figures.figureCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt figures index"], rebuiltArtifacts: ["figures"], producer: figures.producer || { engine: figures.generatedBy?.includes("python") ? "python" : "node", operation: "figures.extract" } }); return { artifact: normalized, rebuilt: ["figures"], counts: { figures: figures.figureCount } }; }
+  if (normalized === "evidence-graph") { const graph = await buildEvidenceGraph(filename); await rewriteMainIndexCounts(filename, { evidenceGraphEntityCount: graph.entities.length }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt normalized evidence graph"], rebuiltArtifacts: ["evidence-graph"] }); return { artifact: normalized, rebuilt: ["evidence-graph"], counts: { entities: graph.entities.length, relationships: graph.relationships.length, conflicts: graph.conflicts.length } }; }
   if (normalized === "figure_ocr") {
     const result = await buildFigureOcrWithPython(filename, { force, onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr });
     if (result.ok === false) {
@@ -895,7 +899,7 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
     return result;
   }
   if (normalized === "driver") throw new Error("driver artifact rebuild is intentionally not automatic. Use build_driver_evidence_pack or source_review_prompt_pack with explicit module/focus inputs.");
-  throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, figure_ocr, figure_semantic, core/all.`);
+  throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, evidence-graph, figure_ocr, figure_semantic, core/all.`);
 }
 
 export async function startRebuildArtifactJob(filename, artifact, options = {}) {

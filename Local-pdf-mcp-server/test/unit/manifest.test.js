@@ -7,7 +7,7 @@ test("sourceFingerprint uses size and mtime", () => {
 });
 
 test("manifest marks rebuilt dependency descendants stale", () => {
-  assert.deepEqual(new Set(artifactDescendants("tables")), new Set(["registers", "bitfields", "sequences", "cautions", "module-profile", "driver-pack", "driver-task-plan"]));
+  assert.deepEqual(new Set(artifactDescendants("tables")), new Set(["registers", "bitfields", "sequences", "cautions", "evidence-graph", "module-profile", "driver-pack", "driver-task-plan"]));
   const manifest = createArtifactManifest({
     filename: "manual.pdf",
     artifacts: [

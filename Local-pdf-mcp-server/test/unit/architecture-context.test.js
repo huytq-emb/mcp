@@ -3,6 +3,7 @@ import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
 import { createRuntimeConfig } from "../../src/core/runtime-config.js";
 import { appendEvidenceContract, textResult } from "../../src/core/runtime-helpers.js";
+import { chunkPageHierarchically } from "../../src/services/indexing.js";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { createToolRegistry, validateToolRegistryContract } from "../../src/mcp/registry.js";
 
@@ -154,4 +155,31 @@ test("hidden compatibility names remain explicit and stable", () => {
   ]) {
     assert.equal(HIDDEN_COMPATIBILITY_TOOL_NAMES.includes(name), true, name);
   }
+});
+
+test("structured registry rejects an invalid direct EvidenceBundle v2", async () => {
+  const registry = createToolRegistry({
+    definitions: [{ name: "evidence", description: "evidence", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    handlers: { evidence: async () => ({ content: [], structuredContent: { schemaVersion: 2 } }) },
+    hiddenHandlers: {},
+    expectedAdvertisedCount: 1,
+  });
+  await assert.rejects(registry.dispatchTool("evidence", {}), /Invalid EvidenceBundle v2 returned by evidence/);
+});
+
+test("hierarchical chunking preserves register and caution blocks before character splitting", () => {
+  const chunks = chunkPageHierarchically([
+    "4.1 Register Description",
+    "DMA Control Register (DMAC_DCTRL)",
+    "Access Size: 32 bits",
+    "Address: +0300h",
+    "",
+    "Caution: Do not change reserved bits while transfer is active.",
+    "",
+    "1. Disable the channel.",
+    "2. Clear the status flag.",
+  ].join("\n"), 300, 30);
+  assert.equal(chunks.some((chunk) => chunk.chunkTypeHint === "register" && /DMAC_DCTRL/.test(chunk.text)), true);
+  assert.equal(chunks.some((chunk) => chunk.chunkTypeHint === "caution" && /reserved bits/.test(chunk.text)), true);
+  assert.equal(chunks.some((chunk) => chunk.chunkTypeHint === "procedure" && /Disable the channel/.test(chunk.text)), true);
 });

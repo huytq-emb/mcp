@@ -1,4 +1,5 @@
 import Ajv from "ajv";
+import { validateEvidenceBundleV2 } from "../evidence/contract.js";
 
 function validateDefinition(definition) {
   if (!definition || typeof definition !== "object") throw new Error("Tool definition must be an object");
@@ -87,7 +88,12 @@ export function createToolRegistry({
       if (entry.validateArgs && !entry.validateArgs(normalizedArgs)) {
         throw new Error(formatValidationErrors(normalizedName, entry.validateArgs.errors));
       }
-      return entry.handler(normalizedArgs || {}, { name: normalizedName });
+      const result = await entry.handler(normalizedArgs || {}, { name: normalizedName });
+      if (result?.structuredContent?.schemaVersion === 2) {
+        const validation = validateEvidenceBundleV2(result.structuredContent);
+        if (!validation.ok) throw new Error(`Invalid EvidenceBundle v2 returned by ${normalizedName}: ${validation.errors.join("; ")}`);
+      }
+      return result;
     },
   });
 }

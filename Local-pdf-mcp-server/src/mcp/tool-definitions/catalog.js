@@ -2,10 +2,12 @@ import { CONTROL_TOOL_DEFINITIONS } from "./control.js";
 import { DRIVER_TOOL_DEFINITIONS } from "./driver.js";
 import { FIGURE_TOOL_DEFINITIONS } from "./figures.js";
 import { MANUAL_EVIDENCE_TOOL_DEFINITIONS } from "./manual-evidence.js";
+import { EVIDENCE_V2_TOOL_DEFINITIONS } from "./evidence-v2.js";
 
 export const ALL_TOOL_DEFINITIONS = Object.freeze([
   ...CONTROL_TOOL_DEFINITIONS,
   ...MANUAL_EVIDENCE_TOOL_DEFINITIONS,
+  ...EVIDENCE_V2_TOOL_DEFINITIONS,
   ...FIGURE_TOOL_DEFINITIONS,
   ...DRIVER_TOOL_DEFINITIONS,
 ]);
@@ -45,7 +47,11 @@ export const PRIMARY_PUBLIC_TOOL_NAMES = Object.freeze([
   "compare_driver_requirements",
   "verify_register_usage",
   "add_visual_evidence",
-  "visual_evidence_report"
+  "visual_evidence_report",
+  "query_manual",
+  "get_manual_entity",
+  "read_manual_evidence",
+  "collect_manual_evidence",
 ]);
 export const HIDDEN_TOOL_NAMES = Object.freeze([
   "mcp_server_ping",

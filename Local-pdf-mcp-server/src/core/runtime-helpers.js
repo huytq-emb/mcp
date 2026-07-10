@@ -611,6 +611,20 @@ export function safeFigureOcrIndexPath(filename) {
   );
 }
 
+// New evidence tools must pass their structured payload directly rather than
+// recovering it from the human-readable Markdown compatibility block.
+export function evidenceBundleResult(text, bundle) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: limitOutput(String(text ?? "")),
+      },
+    ],
+    structuredContent: bundle,
+  };
+}
+
 export function safeFigureSemanticIndexPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
@@ -635,6 +649,15 @@ export function safeArtifactManifestPath(filename) {
     path.join(INDEX_DIR, `${filename}.manifest.json`),
     INDEX_DIR,
     "artifact manifest"
+  );
+}
+
+export function safeEvidenceGraphPath(filename) {
+  ensurePdfFilename(filename);
+  return ensureInsideRoot(
+    path.join(INDEX_DIR, `${filename}.evidence-graph.json`),
+    INDEX_DIR,
+    "evidence graph"
   );
 }
 

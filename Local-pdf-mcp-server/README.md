@@ -92,6 +92,19 @@ at `indexes/cache/paddlex` when you want offline OCR operation. Run
 
 See [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md) for the canonical AI-agent workflow. In short, keep manual facts, visual observations, source-code findings, and engineering inference separate.
 
+For new agent integrations, use the direct structured EvidenceBundle v2 tools:
+
+```text
+query_manual(filename="...", query="DMACm_DCTRL reset and LWCA")
+get_manual_entity(filename="...", entity_id="register:...")
+read_manual_evidence(filename="...", entity_id="register:...")
+collect_manual_evidence(filename="...", task="Review DMA driver IRQ clear handling", module_type="dmaengine", depth="deep")
+```
+
+These tools use exact-symbol, lexical, graph, and page-neighborhood retrieval,
+then return provenance, conflicts, gaps, verification requirements, and
+pagination in `structuredContent`. See [EvidenceBundle v2 migration](docs/EVIDENCE_BUNDLE_V2.md).
+
 ## First commands after adding a PDF
 
 ```text

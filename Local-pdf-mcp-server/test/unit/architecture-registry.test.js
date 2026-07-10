@@ -8,6 +8,7 @@ import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_D
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { createAppContext } from "../../src/core/app-context.js";
 import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
+import { buildManualWorkflowPlan, validateWorkflowCalls } from "../../src/workflows/manual-workflow.js";
 
 const execFileAsync = promisify(execFile);
 const REMOVED_PUBLIC_FIGURE_TOOLS = [
@@ -271,15 +272,16 @@ test("plan_manual_workflow recommends canonical figure flow for visual tasks", a
   assert.match(text, /include_ocr":false/);
   assert.match(text, /<figure_id_from_search_figures>/);
   assert.match(text, /"query":"analyze timing diagram \/ figure"/);
-  assert.match(text, /extract_tables_from_pages/);
   assert.match(text, /add_visual_evidence/);
   assert.match(text, /visual_evidence_report/);
   assert.match(text, /metadata-only|open\/attach canonical image|actual opened\/attached PNG image input/);
   assert.match(text, /Do not claim visual analysis|do not claim visual analysis/i);
   assert.match(text, /"direct_visual_observations":/);
   assert.match(text, /"verification_status":"needs_verification"/);
-  assert.match(text, /"start_page":1/);
-  assert.match(text, /"end_page":1/);
+  assert.match(text, /template — substitute placeholders before execution/);
+  assert.doesNotMatch(text, /extract_tables_from_pages/);
+  assert.doesNotMatch(text, /"start_page":1/);
+  assert.doesNotMatch(text, /"end_page":1/);
   assert.doesNotMatch(text, /"pages":\[\]/);
   assert.doesNotMatch(text, /"note":"<human-checked table\/figure meaning>"/);
   assert.doesNotMatch(text, /\bfind_figure\b/);
@@ -316,6 +318,26 @@ test("visual table planner uses visual-first workflow without render tools", asy
   }
   assert.doesNotMatch(text, HIDDEN_DIRECT_CALL_RE);
   if (/read_pdf_pages/.test(text)) assert.match(text, /supporting|cross-check|locator/i);
+});
+
+test("workflow planner emits schema-valid calls and marks placeholders as templates", async () => {
+  const context = createAppContext();
+  wireRuntimePorts(context);
+  const plan = await buildManualWorkflowPlan({
+    filename: "manual.pdf",
+    task: "review DMA interrupt clear timing figure",
+    module_type: "dmaengine",
+    include_visual: true,
+    include_eval: false,
+  });
+  const validation = validateWorkflowCalls(plan.recommendedCalls, PUBLIC_TOOL_DEFINITIONS);
+  assert.deepEqual(validation, { ok: true, errors: [] });
+  const listRegisters = plan.recommendedCalls.find((call) => call.tool === "list_registers");
+  assert.equal(Object.hasOwn(listRegisters.args, "filter"), true);
+  assert.equal(Object.hasOwn(listRegisters.args, "query"), false);
+  assert.equal(plan.recommendedCalls.some((call) => call.tool === "mcp_control"), false);
+  assert.equal(plan.recommendedCalls.filter((call) => call.executable).every((call) => !JSON.stringify(call.args).includes("<")), true);
+  assert.equal(plan.recommendedCalls.some((call) => call.tool === "get_figure_context_pack" && call.kind === "template"), true);
 });
 
 test("public workflow outputs do not recommend hidden direct helper calls", async () => {

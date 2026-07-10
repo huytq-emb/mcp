@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "type": "semantic-golden-dataset",
+  "id": "rzg3e-gpio-pfc",
+  "subsystem": "gpio-pinctrl",
+  "manual": { "filename": "r01uh1069ej0115-rzg3e.pdf", "verification": { "status": "manually-verified", "reviewedAt": "2026-06-21", "source": "RZ/G3E PFC chapter page review" } },
+  "cases": [{ "id": "pfc-write-protection", "query": "Locate the PFC PWPR write-protection register before changing GPIO or multiplexed pin functions.", "expectedFacts": [{ "id": "pfc-pwpr", "kind": "register", "canonicalName": "PFC_PWPR", "page": 239, "caution": "write-protected" }] }],
+  "thresholds": { "metrics": { "recallAt5": { "min": 1 }, "recallAt10": { "min": 1 }, "meanReciprocalRank": { "min": 1 }, "registerExactMatchAccuracy": { "min": 1 }, "cautionRecall": { "min": 1 }, "evidencePageCorrectness": { "min": 1 }, "duplicateEvidenceRate": { "max": 0 }, "unsupportedClaimRate": { "max": 0 } } },
+  "regressionTolerances": { "recallAt5": 0, "recallAt10": 0, "meanReciprocalRank": 0, "registerExactMatchAccuracy": 0, "cautionRecall": 0, "evidencePageCorrectness": 0, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 }
+}

@@ -6,6 +6,7 @@ import { getOcrHealth } from "../services/ocr.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeDriverProfileHint } from "../driver-profiles/catalog.js";
+import Ajv from "ajv";
 
 
 const doctorOnePdf = createRuntimePort("doctorOnePdf");
@@ -45,8 +46,54 @@ export function q(value) {
   return JSON.stringify(value);
 }
 
-export function workflowCall(tool, args = {}, why = "") {
-  return { tool, args, why };
+function removeUndefined(value) {
+  if (Array.isArray(value)) return value.map(removeUndefined);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .map(([key, child]) => [key, removeUndefined(child)]));
+}
+
+function hasPlaceholder(value) {
+  if (Array.isArray(value)) return value.some(hasPlaceholder);
+  if (value && typeof value === "object") return Object.values(value).some(hasPlaceholder);
+  return typeof value === "string" && /<[^>]+>/.test(value);
+}
+
+export function workflowCall(tool, args = {}, why = "", options = {}) {
+  const normalizedArgs = removeUndefined(args);
+  const template = options.template === true || hasPlaceholder(normalizedArgs);
+  return {
+    tool,
+    args: normalizedArgs,
+    why,
+    kind: template ? "template" : "executable",
+    executable: !template,
+    ...(options.dependsOn?.length ? { dependsOn: options.dependsOn } : {}),
+  };
+}
+
+// Planner tests call this against the public MCP catalog. Template calls still
+// validate their shape; callers must substitute placeholders before execution.
+export function validateWorkflowCalls(calls = [], definitions = []) {
+  const definitionsByName = new Map((definitions || []).map((definition) => [definition.name, definition]));
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  const errors = [];
+  for (const [index, call] of calls.entries()) {
+    const definition = definitionsByName.get(call.tool);
+    if (!definition) {
+      errors.push(`call ${index + 1}: unknown tool ${call.tool}`);
+      continue;
+    }
+    const validate = ajv.compile(definition.inputSchema);
+    if (!validate(call.args || {})) {
+      const detail = (validate.errors || []).map((error) => `${error.instancePath || "/"} ${error.message || "invalid"}`).join("; ");
+      errors.push(`call ${index + 1} (${call.tool}): ${detail}`);
+    }
+    if (call.executable === true && hasPlaceholder(call.args || {})) errors.push(`call ${index + 1} (${call.tool}) is executable but contains placeholders`);
+    if (call.executable === false && call.kind !== "template") errors.push(`call ${index + 1} (${call.tool}) has inconsistent template metadata`);
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 export async function buildManualWorkflowPlan(options = {}) {
@@ -59,7 +106,9 @@ export async function buildManualWorkflowPlan(options = {}) {
   const focusBitfields = uniqueNonEmptyStrings(options.focus_bitfields || options.focusBitfields || []);
   const depth = ["quick", "standard", "deep"].includes(String(options.depth || "").toLowerCase()) ? String(options.depth).toLowerCase() : "standard";
   const outputFormat = ["report", "checklist", "patch_plan", "debug_plan"].includes(String(options.output_format || "").toLowerCase()) ? String(options.output_format).toLowerCase() : "report";
-  const includeEval = options.include_eval === undefined ? true : Boolean(options.include_eval);
+  // Evaluation/control actions are intentionally opt-in. A normal driver
+  // workflow must not spend calls on MCP regression infrastructure.
+  const includeEval = options.include_eval === true;
   const includeVisual = options.include_visual === undefined ? true : Boolean(options.include_visual);
   const flags = inferWorkflowFlags(task, moduleType, sourceFiles);
 
@@ -104,21 +153,20 @@ export async function buildManualWorkflowPlan(options = {}) {
     if (focusRegisters.length) {
       for (const register of focusRegisters.slice(0, depth === "deep" ? 12 : 6)) {
         calls.push(workflowCall("find_register", { filename, register, top_k: 8 }, `Locate manual evidence for ${register}.`));
-        calls.push(workflowCall("verify_register_usage", { filename, register, operation: "verify source-code register operation", bitfields: focusBitfields, access_type: "auto", intent: "auto" }, `Verify source operation semantics for ${register}; required before driver-critical conclusions.`));
+        calls.push(workflowCall("verify_register_usage", { filename, register, operation: "verify source-code register operation", bitfields: focusBitfields, access_type: "auto", intent: "auto" }, `Template: replace the operation with the source-code read/write seen for ${register}; required before driver-critical conclusions.`, { template: true, dependsOn: ["source inspection"] }));
       }
     } else if (flags.needsRegisterVerification || depth === "deep") {
-      calls.push(workflowCall("list_registers", { filename, query: task, top_k: depth === "deep" ? 30 : 15, include_low_confidence: false }, "Find candidate registers, then verify each source-code read/write operation explicitly."));
-      calls.push(workflowCall("verify_register_usage", { filename, register: "<register_seen_in_source>", operation: "<readl/writel/regmap operation from source>", bitfields: ["<bitfields_seen_in_source>"], access_type: "auto", intent: "auto", source_snippet: "<short source snippet>" }, "Repeat once per driver-critical register operation observed in the source tree."));
+      calls.push(workflowCall("list_registers", { filename, filter: task, top_k: depth === "deep" ? 30 : 15, include_low_confidence: false }, "Find candidate registers, then verify each source-code read/write operation explicitly."));
+      calls.push(workflowCall("verify_register_usage", { filename, register: "<register_seen_in_source>", operation: "<readl/writel/regmap operation from source>", bitfields: ["<bitfields_seen_in_source>"], access_type: "auto", intent: "auto", source_snippet: "<short source snippet>" }, "Repeat once per driver-critical register operation observed in the source tree.", { dependsOn: ["source inspection", "find_register"] }));
     }
 
     if (includeVisual && flags.needsVisual) {
       calls.push(workflowCall("rebuild_figure_manifest", { filename }, "Build/update canonical figure manifest before visual retrieval."));
       calls.push(workflowCall("search_figures", { filename, query: task, build_if_missing: true }, "Find candidate visual artifacts only; this does not provide visual semantics."));
-      calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Get locator/support context. image_path alone is only a locator; do not claim visual analysis from text extraction only."));
-      calls.push(workflowCall("get_figure_image", { filename, figure_id: "<figure_id_from_search_figures>" }, "Load canonical image metadata by default. Use metadata to retrieve canonical_image_path/local_path, then open/attach the actual PNG as model vision input. mcp_image/image_url are experimental/client-dependent and not guaranteed to reach model vision input. Do not claim visual observation from path only."));
-      calls.push(workflowCall("extract_tables_from_pages", { filename, start_page: 1, end_page: 1 }, "Optional supporting/cross-check/locator evidence only. Replace page 1 with the page identified by search_figures/get_figure_context_pack; do not use as primary visual semantic source."));
-      calls.push(workflowCall("add_visual_evidence", { filename, figure_id: "<figure_id_from_search_figures>", query: task, direct_visual_observations: ["<facts observed from the opened/attached PNG>"], verification_status: "needs_verification" }, "Persist observations only after the actual canonical image has been opened/attached as model vision input."));
-      calls.push(workflowCall("visual_evidence_report", { filename, filter: task, status: "all", include_entries: true }, "Review persisted visual evidence and resolve unverified entries before driver-critical conclusions."));
+      calls.push(workflowCall("get_figure_context_pack", { filename, figure_id: "<figure_id_from_search_figures>", include_ocr: false }, "Template: replace the figure ID returned by search_figures. image_path alone is only a locator; do not claim visual analysis from text extraction only.", { dependsOn: ["search_figures"] }));
+      calls.push(workflowCall("get_figure_image", { filename, figure_id: "<figure_id_from_search_figures>" }, "Template: replace the figure ID, then use metadata to retrieve canonical_image_path/local_path and open/attach the actual PNG as model vision input.", { dependsOn: ["get_figure_context_pack"] }));
+      calls.push(workflowCall("add_visual_evidence", { filename, figure_id: "<figure_id_from_search_figures>", query: task, direct_visual_observations: ["<facts observed from the opened/attached PNG>"], verification_status: "needs_verification" }, "Template: persist observations only after the actual canonical image has been opened/attached as model vision input.", { dependsOn: ["get_figure_image", "opened canonical PNG"] }));
+      calls.push(workflowCall("visual_evidence_report", { filename, filter: task, status: "all", include_entries: true }, "Review persisted visual evidence after template steps are completed and resolve unverified entries before driver-critical conclusions.", { dependsOn: ["add_visual_evidence"] }));
     }
 
     calls.push(workflowCall("compare_driver_requirements", {
@@ -131,10 +179,10 @@ export async function buildManualWorkflowPlan(options = {}) {
       missing_features: ["<facts proven missing in source>"],
       source_observations: ["<unclear/TODO/source notes>"],
       register_operations: [{ register: "<register>", operation: "<operation>", bitfields: ["<bitfield>"], access_type: "auto", intent: "auto" }],
-    }, "Final manual-vs-source matrix after the VS Code agent has inspected source files."));
+    }, "Template: final manual-vs-source matrix after the VS Code agent has inspected source files.", { dependsOn: ["source inspection", "verify_register_usage"] }));
   }
 
-  if (includeEval || flags.needsEval) {
+  if (includeEval) {
     calls.push(workflowCall("mcp_control", { action: "compat_report" }, "Check public/hidden compatibility routing through the primary control plane. Run npm-based evals from the repository shell when doing MCP code changes."));
   }
 
@@ -145,7 +193,7 @@ export async function buildManualWorkflowPlan(options = {}) {
     "MCP does not read the source repo; source observations must come from the VS Code agent and be passed back into compare_driver_requirements.",
   ];
 
-  return { schemaVersion: "step39.workflow.v1", serverVersion: SERVER_VERSION, createdAt: new Date().toISOString(), task, filename: filename || null, moduleType, driverFamily, sourceFiles, depth, outputFormat, flags, pdfHealth, recommendedCalls: calls, evidenceGates: gates };
+  return { schemaVersion: "workflow-plan.v2", serverVersion: SERVER_VERSION, createdAt: new Date().toISOString(), task, filename: filename || null, moduleType, driverFamily, sourceFiles, depth, outputFormat, flags, pdfHealth, recommendedCalls: calls, evidenceGates: gates };
 }
 
 export function formatManualWorkflowPlan(plan) {
@@ -178,8 +226,9 @@ export function formatManualWorkflowPlan(plan) {
   }
   lines.push("Recommended MCP call sequence:");
   plan.recommendedCalls.forEach((call, index) => {
-    lines.push(`${index + 1}. ${call.tool}(${JSON.stringify(call.args)})`);
+    lines.push(`${index + 1}. [${call.executable ? "executable" : "template — substitute placeholders before execution"}] ${call.tool}(${JSON.stringify(call.args)})`);
     if (call.why) lines.push(`   why: ${call.why}`);
+    if (call.dependsOn?.length) lines.push(`   depends on: ${call.dependsOn.join(" -> ")}`);
   });
   lines.push("", "Evidence gates:");
   for (const gate of plan.evidenceGates) lines.push(`- ${gate}`);

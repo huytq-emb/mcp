@@ -122,6 +122,9 @@ for (const rel of [
   "src/bitfields/semantics.js",
   "src/driver-profiles/catalog.js",
   "src/evidence/contract.js",
+  "src/services/evidence-graph.js",
+  "src/workflows/evidence-orchestrator.js",
+  "src/eval/semantic.js",
   "src/eval/golden.js",
   "src/mcp/registry.js",
   "src/mcp/runtime-registry.js",
@@ -146,11 +149,19 @@ for (const rel of [
   "scripts/golden-bootstrap.js",
   "scripts/golden-seed-report.js",
   "scripts/golden-eval.js",
+  "scripts/semantic-eval.js",
   "scripts/python-setup.js",
   "scripts/python-health.js",
   "scripts/python-test.js",
   "scripts/benchmark-extraction.js",
   "eval/golden/rzg3e-core.json",
+  "eval/semantic/ethernet.json",
+  "eval/semantic/dma.json",
+  "eval/semantic/gpio.json",
+  "eval/semantic/watchdog.json",
+  "eval/semantic/pwm.json",
+  "eval/semantic/usb.json",
+  "docs/EVIDENCE_BUNDLE_V2.md",
 ]) {
   if (!fs.existsSync(path.join(root, rel))) failures.push(`Missing file: ${rel}`);
 }
@@ -171,7 +182,7 @@ try {
 if (pkg) {
   if (pkg.version !== SERVER_VERSION) failures.push(`package.json version ${pkg.version || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
   if (pkg.type !== "module") failures.push(`package.json type must be module for index.js ESM imports; got ${pkg.type || "missing"}`);
-  for (const script of ["start", "health", "smoke", "test", "check", "static-health", "architecture-health", "startup-smoke", "test:unit", "test:eval", "test:profiles", "golden:bootstrap", "golden:seed-report", "golden:eval", "test:golden", "test:tools", "python:setup", "python:health", "test:python", "test:hybrid", "benchmark:extraction"]) {
+  for (const script of ["start", "health", "smoke", "test", "check", "static-health", "architecture-health", "startup-smoke", "test:unit", "test:eval", "test:profiles", "golden:bootstrap", "golden:seed-report", "golden:eval", "test:golden", "test:semantic", "test:tools", "python:setup", "python:health", "test:python", "test:hybrid", "benchmark:extraction"]) {
     if (!pkg.scripts?.[script]) failures.push(`Missing package script: ${script}`);
   }
   for (const dep of ["@modelcontextprotocol/sdk", "pdfjs-dist", "pdf-parse"]) {
@@ -217,10 +228,10 @@ for (const probe of dependencyProbes) {
   }
 }
 
-for (const rel of ["driver_profiles", "driver_profiles/fragments", "eval/profiles", "eval/fixtures", "eval/golden"]) {
+for (const rel of ["driver_profiles", "driver_profiles/fragments", "eval/profiles", "eval/fixtures", "eval/golden", "eval/semantic"]) {
   const dir = path.join(root, rel);
   if (!fs.existsSync(dir)) continue;
-  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json") && !(rel === "eval/semantic" && ["baseline.json", "expected-results.json"].includes(f)))) {
     const full = path.join(dir, file);
     try {
       const data = JSON.parse(fs.readFileSync(full, "utf-8"));
