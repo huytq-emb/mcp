@@ -40,7 +40,9 @@ export const STEP40_CONTROL_ACTIONS = [
 // machine-facing evidence tools return EvidenceBundle v2 directly.
 export const EVIDENCE_CONTRACT_SCHEMA_VERSION = 1;
 export const EVIDENCE_BUNDLE_SCHEMA_VERSION = 2;
-export const EVIDENCE_GRAPH_SCHEMA_VERSION = 1;
+// v2 requires generation metadata, reverse provenance maps, alias variants,
+// and relationship resolution properties. Earlier graphs must be rebuilt.
+export const EVIDENCE_GRAPH_SCHEMA_VERSION = 2;
 export const EVAL_CASES_SCHEMA_VERSION = 1;
 export const EVAL_PROFILE_SCHEMA_VERSION = 1;
 export const EVAL_FIXTURE_SCHEMA_VERSION = 1;

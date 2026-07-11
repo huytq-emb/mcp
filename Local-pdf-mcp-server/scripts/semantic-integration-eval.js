@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createAppContext } from "../src/core/app-context.js";
 import { wireRuntimePorts } from "../src/app/runtime-wiring.js";
-import { compareSemanticRegression, evaluateSemanticGoldenDataset } from "../src/eval/semantic.js";
+import { compareSemanticRegression, evaluateCoverageQueries, evaluateSemanticGoldenDataset } from "../src/eval/semantic.js";
 import { ensureSemanticManualReady, runSemanticRuntimeQuery } from "../src/eval/semantic-integration.js";
 import { buildPdfIndex } from "../src/services/indexing.js";
 import { loadEvidenceGraph } from "../src/services/evidence-graph.js";
@@ -69,12 +69,13 @@ for (const dataset of resolvedDatasets) {
   const coverageResults = [];
   for (const queryCase of coverageQueries) coverageResults.push(await runSemanticRuntimeQuery({ filename, queryCase, indexingDurationMs, queryManual: queryManualEvidenceBundle }));
   const report = evaluateSemanticGoldenDataset(dataset, caseResults);
+  const coverageCorrectness = evaluateCoverageQueries(coverageQueries, coverageResults);
   const runtimeErrors = [
     ...Object.entries(caseResults).filter(([, result]) => result.runtimeError).map(([id, result]) => `${id}: ${result.runtimeError}`),
     ...coverageResults.map((result, index) => [coverageQueries[index], result]).filter(([, result]) => result.runtimeError).map(([queryCase, result]) => `coverage ${queryCase.id || queryCase.query}: ${result.runtimeError}`),
   ];
   const regression = compareSemanticRegression(report.metrics, baseline[dataset.id] || {}, dataset.regressionTolerances || {});
-  reports.push({ dataset: dataset.id, subsystem: dataset.subsystem, status: report.health === "ok" && regression.ok && !runtimeErrors.length ? "ok" : "fail", report, regression, runtimeErrors, coverage: { queryCount: coverageResults.length, p95LatencyMs: coverageResults.sort((left, right) => left.latencyMs - right.latencyMs)[Math.max(0, Math.ceil(coverageResults.length * 0.95) - 1)]?.latencyMs || 0, peakRssMb: Math.max(0, ...coverageResults.map((result) => result.peakRssMb || 0)) } });
+  reports.push({ dataset: dataset.id, subsystem: dataset.subsystem, status: report.health === "ok" && regression.ok && !runtimeErrors.length && coverageCorrectness.correctnessRate === 1 ? "ok" : "fail", report, regression, runtimeErrors, coverageCorrectness, runtimePerformance: { queryCount: coverageResults.length, p95LatencyMs: coverageResults.sort((left, right) => left.latencyMs - right.latencyMs)[Math.max(0, Math.ceil(coverageResults.length * 0.95) - 1)]?.latencyMs || 0, peakRssMb: Math.max(0, ...coverageResults.map((result) => result.peakRssMb || 0)) } });
 }
 
 if (writeReport) {
@@ -88,8 +89,8 @@ for (const item of reports) {
     continue;
   }
   if (!item.report) { console.error(`FAIL ${item.dataset}: ${item.reason || "integration setup failed"}`); failed = true; continue; }
-  console.log(`${item.status.toUpperCase()}: ${item.dataset}; Recall@5=${item.report.metrics.recallAt5}; MRR=${item.report.metrics.meanReciprocalRank}; p95=${item.report.metrics.p95LatencyMs}ms`);
-  for (const failure of [...item.report.failures, ...item.regression.failures, ...item.runtimeErrors]) { console.error(`FAIL ${item.dataset}: ${failure}`); failed = true; }
+  console.log(`${item.status.toUpperCase()}: ${item.dataset}; golden Recall@5=${item.report.metrics.recallAt5}; golden MRR=${item.report.metrics.meanReciprocalRank}; coverage correctness=${item.coverageCorrectness.correctnessRate} (${item.coverageCorrectness.correctnessQueryCount} semantic, ${item.coverageCorrectness.runtimeOnlyQueryCount} runtime-only); runtime p95=${item.runtimePerformance.p95LatencyMs}ms`);
+  for (const failure of [...item.report.failures, ...item.regression.failures, ...item.runtimeErrors, ...item.coverageCorrectness.failures.map((id) => `coverage ${id}: expectation not satisfied`)]) { console.error(`FAIL ${item.dataset}: ${failure}`); failed = true; }
   if (item.status !== "ok") failed = true;
 }
 if (failed) process.exit(1);

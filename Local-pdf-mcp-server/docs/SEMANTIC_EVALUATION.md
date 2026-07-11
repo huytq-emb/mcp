@@ -1,6 +1,8 @@
 # Semantic evaluation
 
-The semantic gate evaluates evidence correctness rather than response formatting. Six manually verified datasets cover Ethernet, DMA, GPIO/PFC, watchdog, PWM/timer, and USB. Their expectations include entity identity, register properties, bitfields, cautions, ordered sequence steps, figure locations, and evidence pages.
+The semantic gate evaluates evidence correctness rather than response formatting. Six manually verified golden datasets cover Ethernet, DMA, GPIO/PFC, watchdog, PWM/timer, and USB. Their expectations include entity identity, register properties, bitfields, cautions, ordered sequence steps, figure identity/relationships, and evidence pages.
+
+The integration catalog also executes 20 coverage probes per subsystem (120 total). Each probe is either a lightweight correctness case with an explicit expectation or is labeled `runtime-only`. Runtime-only probes are reported only in the runtime/performance summary and are never counted as semantic correctness. The report therefore has three separate summaries: golden correctness, coverage correctness, and runtime/performance.
 
 Run the fast schema/evaluator tests with:
 
@@ -14,7 +16,7 @@ Run the real-manual gate with a local copy of the verified RZ/G3E manual with:
 npm run test:semantic:integration -- --require-manuals --write
 ```
 
-Without `--require-manuals`, unavailable proprietary manuals are explicitly reported as skipped. They are never counted as successful semantic queries. The integration runner records Recall@5, Recall@10, MRR, exact property accuracy, sequence/caution/figure/page accuracy, duplicate and unsupported-claim rates, p50/p95 latency, indexing duration, and peak RSS.
+Without `--require-manuals`, unavailable proprietary manuals are explicitly reported as skipped. They are never counted as successful semantic queries. Golden Recall@5, Recall@10, and MRR use retrieval evidence order (`retrieval.rank`) only; verified facts are used only for verification and property checks. Runtime reports record p50/p95 latency, indexing duration, and sampled peak RSS (`rssBeforeMb`, `rssAfterMb`, and `peakRssMb`).
 
 ## Measured improvement
 

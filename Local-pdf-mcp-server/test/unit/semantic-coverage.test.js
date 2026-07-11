@@ -14,6 +14,8 @@ for (const subsystem of ["ethernet", "dma", "gpio-pinctrl", "watchdog", "pwm-tim
     assert.equal(queries.some((entry) => /caution|restriction|must not|avoid/i.test(entry.query)), true);
     assert.equal(queries.some((entry) => entry.includeOcr), true);
     assert.equal(queries.some((entry) => entry.id === "short-symbol" && entry.register), true);
-    assert.equal(queries.some((entry) => entry.expectation === "negative"), true);
+    assert.equal(queries.every((entry) => entry.expectation && typeof entry.expectation === "object" && entry.expectation.type), true);
+    assert.equal(queries.some((entry) => entry.expectation.type === "negative"), true);
+    assert.equal(queries.filter((entry) => entry.expectation.type !== "runtime-only").every((entry) => Object.keys(entry.expectation).length > 1), true);
   });
 }

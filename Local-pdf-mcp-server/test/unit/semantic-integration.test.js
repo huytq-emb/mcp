@@ -48,6 +48,22 @@ test("semantic integration executes the real query dependency and records latenc
   assert.equal(result.peakRssMb, 112);
 });
 
+test("semantic integration reports a sampled in-query peak RSS", async () => {
+  const values = [100, 150, 112].map((mb) => mb * 1024 * 1024);
+  let sample;
+  const result = await runSemanticRuntimeQuery({
+    filename: "manual.pdf",
+    queryCase: { query: "DCTRL" },
+    rss: () => values.shift(),
+    setIntervalFn: (callback) => { sample = callback; return "timer"; },
+    clearIntervalFn: () => {},
+    queryManual: async () => { sample(); return { facts: [], evidence: [] }; },
+  });
+  assert.equal(result.rssBeforeMb, 100);
+  assert.equal(result.rssAfterMb, 112);
+  assert.equal(result.peakRssMb, 150);
+});
+
 test("semantic integration exposes retrieval and negative-control failures", async () => {
   const failure = await runSemanticRuntimeQuery({ filename: "manual.pdf", queryCase: { query: "DCTRL" }, queryManual: async () => { throw new Error("retrieval failed"); } });
   assert.match(failure.runtimeError, /retrieval failed/);
@@ -55,5 +71,5 @@ test("semantic integration exposes retrieval and negative-control failures", asy
   const negative = await runSemanticRuntimeQuery({ filename: "manual.pdf", queryCase: { query: "missing", expectation: "negative" }, queryManual: async () => ({ facts: [], evidence: [{ id: "unexpected" }] }) });
   assert.equal(negative.runtimeError, undefined);
   const falseFact = await runSemanticRuntimeQuery({ filename: "manual.pdf", queryCase: { query: "missing", expectation: "negative" }, queryManual: async () => ({ facts: [{ id: "false" }], evidence: [] }) });
-  assert.match(falseFact.runtimeError, /negative query returned a supported fact/);
+  assert.match(falseFact.runtimeError, /negative query returned meaningful evidence/);
 });

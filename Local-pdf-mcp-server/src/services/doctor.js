@@ -285,6 +285,15 @@ export function validateShapeForDoctor(check, kind) {
     }
   } else if (kind === "visualEvidence") {
     expectArray("entries");
+  } else if (kind === "evidence-graph") {
+    expectArray("entities");
+    expectArray("relationships");
+    expectArray("conflicts");
+    if (!d.generation?.generationId || !d.generation?.sourceFingerprint) markCheck(check, "incompatible", "evidence graph missing generation metadata");
+    if (!d.artifactGenerations || typeof d.artifactGenerations !== "object") markCheck(check, "incompatible", "evidence graph missing artifact generation map");
+    for (const field of ["chunkEntityIds", "entityChunkIds", "pageEntityIds", "symbolEntityIds"]) {
+      if (!d[field] || typeof d[field] !== "object") markCheck(check, "incompatible", `evidence graph missing reverse map: ${field}`);
+    }
   } else if (kind === "module-profile") {
     if (!d.moduleType) markCheck(check, "warning", "module profile missing moduleType", "warnings");
     if (!d.linuxSubsystem) markCheck(check, "warning", "module profile missing linuxSubsystem", "warnings");
@@ -294,6 +303,28 @@ export function validateShapeForDoctor(check, kind) {
     if (!d.dependencyGraph || typeof d.dependencyGraph !== "object") markCheck(check, "warning", "manifest missing dependencyGraph", "warnings");
   }
 
+  return check;
+}
+
+function validateEvidenceGraphDeepForDoctor(check, currentSource) {
+  if (!check.data || check.status !== "ok") return check;
+  const graph = check.data;
+  const expectedFingerprint = sourceFingerprint(currentSource);
+  if (graph.sourceFingerprint !== expectedFingerprint || graph.generation?.sourceFingerprint !== expectedFingerprint) {
+    markCheck(check, "incompatible", "evidence graph generation/source fingerprint does not match the current PDF");
+  }
+  for (const [name, generation] of Object.entries(graph.artifactGenerations || {})) {
+    if (!generation?.generationId) markCheck(check, "incompatible", `evidence graph artifact ${name} is missing a generation ID`);
+    if (generation?.sourceFingerprint && generation.sourceFingerprint !== expectedFingerprint) markCheck(check, "incompatible", `evidence graph artifact ${name} has a stale source fingerprint`);
+    if (graph.generation?.dependencyGenerations?.[name] !== generation?.generationId) markCheck(check, "incompatible", `evidence graph dependency generation mismatch: ${name}`);
+  }
+  const entityIds = new Set((graph.entities || []).map((entity) => entity.id));
+  for (const [entityId, chunkIds] of Object.entries(graph.entityChunkIds || {})) {
+    if (!entityIds.has(entityId) || !Array.isArray(chunkIds)) markCheck(check, "incompatible", `invalid entity-to-chunk reverse map entry: ${entityId}`);
+  }
+  for (const [chunkId, ids] of Object.entries(graph.chunkEntityIds || {})) {
+    if (!Array.isArray(ids) || ids.some((id) => !entityIds.has(id))) markCheck(check, "incompatible", `invalid chunk-to-entity reverse map entry: ${chunkId}`);
+  }
   return check;
 }
 
@@ -469,6 +500,7 @@ export async function doctorOnePdf(filename, options = {}) {
     check = validateFilenameForDoctor(check, filename);
     if (!useFastHeader) check = validateShapeForDoctor(check, kind);
     if (!useFastHeader && currentSource && check.data) check = validateSourceForDoctor(check, currentSource, kind, { strict });
+    if (deep && kind === "evidence-graph" && currentSource) check = validateEvidenceGraphDeepForDoctor(check, currentSource);
 
     if (kind === "module-profile" && check.status === "missing") {
       check.status = strict ? "missing" : "missing_optional";
@@ -540,6 +572,9 @@ export function buildDoctorRecommendations(report) {
 
   if (coreProblem) {
     recommendations.push(`Run index_pdf(filename="${report.filename}", mode="background", force=true) for large manuals, then poll with mcp_control(action="job_status", job_id="..."). For small manuals, index_pdf(filename="${report.filename}", mode="foreground", force=true) is also valid.`);
+  }
+  if (["incompatible", "stale", "broken"].includes(byName.get("evidence graph")?.status)) {
+    recommendations.push("Incompatible evidence graph: full index rebuild required.");
   }
   if (["missing", "missing_optional", "stale", "incompatible", "broken"].includes(byName.get("module profile")?.status)) {
     recommendations.push(`Run analyze_module(filename="${report.filename}") to rebuild the module profile.`);

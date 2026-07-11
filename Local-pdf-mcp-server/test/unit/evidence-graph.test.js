@@ -32,7 +32,7 @@ import {
 } from "../../src/core/runtime-constants.js";
 import { stampCoreArtifactGenerations } from "../../src/artifacts/generation.js";
 import { buildEvidenceGraph, getEvidenceGraphEntity, loadEvidenceGraph, validateEvidenceGraph } from "../../src/services/evidence-graph.js";
-import { getManualEntityBundle, queryManualEvidenceBundle, readManualEvidenceBundle } from "../../src/workflows/evidence-orchestrator.js";
+import { collectManualEvidenceBundle, getManualEntityBundle, queryManualEvidenceBundle, readManualEvidenceBundle } from "../../src/workflows/evidence-orchestrator.js";
 
 const filename = "unit-evidence-graph.pdf";
 wireRuntimePorts(createAppContext());
@@ -95,6 +95,10 @@ test("normalized evidence graph links entities and preserves conflicts", async (
     assert.equal(bundle.evidence[0].retrieval.sourceChannels.includes("lexical"), true, JSON.stringify({ evidence: bundle.evidence, warnings: bundle.warnings }));
     assert.equal(bundle.evidence[0].retrieval.entityId, loadedRegister.id);
     assert.equal(bundle.evidence[0].retrieval.channelRanks.exact, 1);
+    const conflictBundle = await collectManualEvidenceBundle({ filename, task: "Find DMAC_DCTRL offset conflict", evidenceTypes: ["register"] });
+    assert.equal(conflictBundle.conflicts.some((conflict) => conflict.field === "offset"), true);
+    assert.equal(conflictBundle.recommendedNextActions.every((action) => action && typeof action === "object" && !Array.isArray(action)), true);
+    assert.equal(conflictBundle.recommendedNextActions.some((action) => action.tool === "read_pdf_pages" && action.arguments.start_page === 1 && action.arguments.end_page === 1), true);
     const aliasBundle = await queryManualEvidenceBundle({ filename, query: "DCTRL", topK: 5 });
     assert.equal(aliasBundle.evidence.some((item) => item.entityId === loadedRegister.id && item.retrieval.sourceChannels.includes("exact")), true);
     const entityBundle = await getManualEntityBundle({ filename, entityId: "dctrl" });
@@ -106,6 +110,26 @@ test("normalized evidence graph links entities and preserves conflicts", async (
     assert.equal(figureEvidence.figureId, "p1_f001");
     assert.equal(figureEvidence.chunkId, null);
     assert.equal(figureBundle.recommendedNextActions.some((action) => action.tool === "get_figure_context_pack" && action.arguments.figure_id === "p1_f001"), true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("multi-page locations retain page-specific chunk provenance", async () => {
+  await setup();
+  try {
+    const bitfieldsPath = safeBitfieldsIndexPath(filename);
+    const bitfields = JSON.parse(await fs.readFile(bitfieldsPath, "utf8"));
+    bitfields.bitfields.push({ register: "DCTRL", bitfield: "MULTI", pages: [1, 2], chunks: [`${filename}:p1:c0`, `${filename}:p2:c0`], bitRange: "5:4", confidence: 90 });
+    await atomicWriteJson(bitfieldsPath, bitfields);
+    const source = await getPdfSourceInfo(filename);
+    await stampCoreArtifactGenerations(filename, { source, chunkingVersion: 2 });
+    const graph = await buildEvidenceGraph(filename);
+    const multi = graph.entities.find((entity) => entity.canonicalName === "MULTI");
+    assert.deepEqual(multi.sourceLocations.map((location) => [location.page, location.chunkIds]), [
+      [1, [`${filename}:p1:c0`]],
+      [2, [`${filename}:p2:c0`]],
+    ]);
   } finally {
     await cleanup();
   }
@@ -124,11 +148,16 @@ test("ambiguous aliases are conflicted rather than silently resolved", async () 
     const resolved = getEvidenceGraphEntity(graph, "DCTRL");
     assert.ok(resolved.ambiguity);
     assert.equal(resolved.ambiguity.candidateEntityIds.length, 2);
+    assert.equal(resolved.conflicts[0].id, "alias-conflict:dctrl");
+    assert.deepEqual(resolved.conflicts[0].candidateEntityIds, resolved.ambiguity.candidateEntityIds);
+    const canonical = getEvidenceGraphEntity(graph, graph.entities.find((entity) => entity.canonicalName === "ALT_DCTRL").id);
+    assert.notEqual(canonical.entity.verificationStatus, "conflicted");
     const en = graph.entities.find((entity) => entity.type === "bitfield" && entity.canonicalName === "EN");
     const ambiguousLinks = graph.relationships.filter((relationship) => relationship.type === "register-has-bitfield" && relationship.to === en.id);
     assert.equal(ambiguousLinks.length, 2);
     assert.equal(ambiguousLinks.every((relationship) => relationship.properties.resolutionStatus === "conflicted"), true);
     assert.ok(graph.conflicts.some((conflict) => conflict.entityId === en.id && conflict.field === "registerReference"));
+    assert.equal(graph.relationships.some((relationship) => relationship.type === "register-has-caution" && relationship.properties.resolutionStatus === "resolved"), true);
     await assert.rejects(() => getManualEntityBundle({ filename, entityId: "DCTRL" }), /ambiguous/i);
   } finally {
     await cleanup();

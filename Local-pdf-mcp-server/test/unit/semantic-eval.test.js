@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareSemanticRegression, evaluateSemanticGoldenDataset, validateSemanticGoldenDataset } from "../../src/eval/semantic.js";
+import { compareSemanticRegression, evaluateCoverageExpectation, evaluateSemanticGoldenDataset, validateSemanticGoldenDataset } from "../../src/eval/semantic.js";
 
 const dataset = {
   schemaVersion: 1,
@@ -77,4 +77,30 @@ test("semantic evaluator fails incorrect verified pages and register properties"
   assert.equal(report.health, "fail");
   assert.equal(report.metrics.evidencePageCorrectness, 0);
   assert.equal(report.metrics.offsetResetAccessExactMatchAccuracy, 0);
+});
+
+test("semantic MRR follows retrieval order even when facts contain the expected entity", () => {
+  const eightRows = Array.from({ length: 8 }, (_, index) => ({ id: `e${index + 1}`, kind: "register", canonicalName: index === 7 ? "DCTRL" : `OTHER_${index}`, statement: index === 7 ? "DCTRL" : `OTHER_${index}`, page: 4, retrieval: { rank: index + 1 } }));
+  const report = evaluateSemanticGoldenDataset(dataset, { dctrl: { bundle: { facts: [{ id: "dctrl", kind: "register", canonicalName: "DCTRL", aliases: [], properties: {}, confidence: "high", verificationStatus: "verified", evidenceIds: ["e8"] }], evidence: [...eightRows, { id: "b1", kind: "bitfield", canonicalName: "LWCA", statement: "LWCA", page: 4, retrieval: { rank: 9 } }] } } });
+  // The register is rank 8 and the bitfield rank 9; verified facts never
+  // promote either retrieval result to rank one.
+  assert.equal(report.metrics.meanReciprocalRank, Number(((1 / 8 + 1 / 9) / 2).toFixed(6)));
+});
+
+test("hardware entities require exact canonical symbols or declared aliases", () => {
+  assert.equal(evaluateCoverageExpectation({ expectation: { type: "entity", canonicalName: "EN", requiredEntityTypes: ["bitfield"] } }, { bundle: { evidence: [{ id: "e1", kind: "bitfield", canonicalName: "ENABLE", statement: "ENABLE", page: 1 }] } }).passed, false);
+  assert.equal(evaluateCoverageExpectation({ expectation: { type: "entity", canonicalName: "EN", aliases: ["ENABLE"], requiredEntityTypes: ["bitfield"] } }, { bundle: { evidence: [{ id: "e1", kind: "bitfield", canonicalName: "ENABLE", statement: "ENABLE", page: 1 }] } }).passed, true);
+});
+
+test("sequence, caution, figure, and negative checks stay bound to their entities", () => {
+  const bundle = {
+    evidence: [{ id: "s", entityId: "sequence:target", kind: "sequence", canonicalName: "Target sequence", statement: "Target sequence", page: 2 }, { id: "c", entityId: "caution:other", kind: "caution", canonicalName: "Other caution", statement: "do not write", page: 2 }, { id: "f", entityId: "figure:other", kind: "figure", canonicalName: "Other figure", statement: "Other", page: 2, figureId: "fig-other" }],
+    entities: [{ id: "sequence:target", type: "sequence", canonicalName: "Target sequence", properties: {}, aliases: [] }, { id: "sequence:other", type: "sequence", canonicalName: "Other sequence", properties: {}, aliases: [] }, { id: "step:other", type: "sequence-step", canonicalName: "write 1", properties: { order: 1 }, aliases: [] }, { id: "caution:other", type: "caution", canonicalName: "Other caution", properties: {}, aliases: [] }, { id: "figure:other", type: "figure", canonicalName: "Other figure", properties: { figureId: "fig-other", caption: "Other" }, aliases: [] }],
+    relationships: [{ id: "r1", from: "sequence:other", to: "step:other", type: "sequence-has-step", properties: {} }],
+  };
+  const sequenceDataset = { ...dataset, cases: [{ ...dataset.cases[0], expectedFacts: [{ id: "target", kind: "sequence", canonicalName: "Target sequence", page: 2, sequenceSteps: ["write 1"], figureLocator: { figureId: "fig-target" } }] }], thresholds: { metrics: { sequenceStepCoverage: { min: 1 }, figureLocatorAccuracy: { min: 1 } } } };
+  const report = evaluateSemanticGoldenDataset(sequenceDataset, { dctrl: { bundle } });
+  assert.equal(report.metrics.sequenceStepCoverage, 0);
+  assert.equal(report.metrics.figureLocatorAccuracy, 0);
+  assert.equal(evaluateCoverageExpectation({ expectation: { type: "negative", forbiddenCanonicalNames: ["NO_SUCH_REG"], maxAcceptedRrfScore: 0.01, allowGenericCandidateEvidence: false } }, { bundle: { facts: [], evidence: [{ id: "e", entityId: "register:wrong", kind: "register", canonicalName: "REAL_REG", verificationStatus: "high-confidence", retrieval: { rrfScore: 0.5 } }] } }).passed, false);
 });

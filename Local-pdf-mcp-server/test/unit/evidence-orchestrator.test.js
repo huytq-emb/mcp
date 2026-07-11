@@ -2,12 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chunkEvidence,
+  conflictVerificationActions,
   factsForEvidencePage,
   paginateEvidenceItems,
   reciprocalRankFuse,
   symbolVariantMatches,
   taskQuestions,
 } from "../../src/workflows/evidence-orchestrator.js";
+
+test("conflict verification actions are typed and omit conflicts without pages", () => {
+  assert.deepEqual(conflictVerificationActions({ entityId: "register:dctrl", field: "offset", pages: [7] }, "manual.pdf"), [{
+    tool: "read_pdf_pages",
+    arguments: { filename: "manual.pdf", start_page: 7, end_page: 7 },
+    reason: "Resolve offset conflict for register:dctrl.",
+  }]);
+  assert.deepEqual(conflictVerificationActions({ entityId: "register:dctrl", field: "offset", pages: [] }, "manual.pdf"), []);
+});
 
 test("evidence pagination covers first, middle, final, empty, and request-bound cursors", () => {
   const items = Array.from({ length: 5 }, (_, index) => ({ id: `e${index + 1}` }));
@@ -64,6 +74,18 @@ test("RRF contributes only once per entity in each retrieval channel", () => {
   assert.equal(fused.length, 1);
   assert.equal(fused[0].channelRanks.lexical, 1);
   assert.equal(fused[0].score, 1 / 61);
+});
+
+test("RRF retains the distinct provenance location for every contributing channel", () => {
+  const entity = { id: "register:dctrl", confidence: "high" };
+  const fused = reciprocalRankFuse([
+    { name: "exact", results: [{ entity, evidence: { id: "exact-evidence", page: 1, chunkId: "manual.pdf:p1:c0", sourceArtifact: "registers" } }] },
+    { name: "lexical", results: [{ entity, evidence: { id: "lexical-evidence", page: 2, chunkId: "manual.pdf:p2:c0", sourceArtifact: "chunk-index" } }] },
+  ]);
+  assert.deepEqual(fused[0].channelEvidence, {
+    exact: [{ id: "exact-evidence", page: 1, chunkId: "manual.pdf:p1:c0", sourceArtifact: "registers" }],
+    lexical: [{ id: "lexical-evidence", page: 2, chunkId: "manual.pdf:p2:c0", sourceArtifact: "chunk-index" }],
+  });
 });
 
 test("symbol variants require a complete segment instead of a shared module prefix", () => {

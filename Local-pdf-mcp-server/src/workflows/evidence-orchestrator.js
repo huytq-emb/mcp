@@ -20,6 +20,16 @@ function unique(values) {
   return [...new Set((values || []).filter(Boolean))];
 }
 
+// Conflicts retain their human-readable verification hints for compatibility,
+// but EvidenceBundle v2 next actions are a typed tool-call contract.
+export function conflictVerificationActions(conflict, filename) {
+  return unique(conflict?.pages || []).map(Number).filter((page) => Number.isFinite(page) && page > 0).map((page) => ({
+    tool: "read_pdf_pages",
+    arguments: { filename, start_page: page, end_page: page },
+    reason: `Resolve ${conflict.field || "evidence"} conflict for ${conflict.entityId || "the selected entity"}.`,
+  }));
+}
+
 function confidenceRank(value) {
   return value === "high" ? 3 : value === "medium" ? 2 : 1;
 }
@@ -205,12 +215,14 @@ export function reciprocalRankFuse(channels) {
     for (const [index, item] of (channel.results || []).entries()) {
       const key = resultKey(item);
       if (!key) continue;
-      const existing = byKey.get(key) || { ...item, score: 0, sourceChannels: [], channelRanks: {}, retrievalReasons: [] };
+      const existing = byKey.get(key) || { ...item, score: 0, sourceChannels: [], channelRanks: {}, channelEvidence: {}, retrievalReasons: [] };
       if (!existing.channelRanks[channel.name]) {
         existing.score += (RRF_CHANNEL_WEIGHTS[channel.name] || 1) / (RRF_K + index + 1);
         existing.channelRanks[channel.name] = index + 1;
       }
       existing.sourceChannels = unique([...existing.sourceChannels, channel.name]);
+      const provenance = item.evidence ? { id: item.evidence.id, page: item.evidence.page ?? null, chunkId: item.evidence.chunkId ?? null, sourceArtifact: item.evidence.sourceArtifact || "" } : null;
+      if (provenance) existing.channelEvidence[channel.name] = unique([...(existing.channelEvidence[channel.name] || []).map((entry) => JSON.stringify(entry)), JSON.stringify(provenance)]).map((entry) => JSON.parse(entry));
       existing.retrievalReasons = unique([...existing.retrievalReasons, ...(item.retrievalReasons || []), `${channel.name} rank ${index + 1}`]);
       if (!existing.entity && item.entity) existing.entity = item.entity;
       if (!existing.evidence && item.evidence) existing.evidence = item.evidence;
@@ -367,6 +379,7 @@ export async function retrieveManualEvidence(filename, query, options = {}) {
           sourceChannels: item.sourceChannels,
           ...((item.entity?.id || evidence.entityId || evidence.relatedEntityIds?.[0]) ? { entityId: item.entity?.id || evidence.entityId || evidence.relatedEntityIds[0] } : {}),
           channelRanks: item.channelRanks,
+          channelEvidence: item.channelEvidence,
           reasons: item.retrievalReasons,
           rank: index + 1,
           rrfScore: Number(item.score.toFixed(6)),
@@ -520,7 +533,7 @@ export async function collectManualEvidenceBundle({ filename, task, moduleType =
       "The MCP server does not inspect Linux source code; source-code checks are recommendations only.",
     ]),
     recommendedNextActions: unique([
-      ...conflicts.flatMap((conflict) => conflict.recommendedVerification || []),
+      ...conflicts.flatMap((conflict) => conflictVerificationActions(conflict, filename)),
       ...candidateOnly.slice(0, 5).map((item) => item.chunkId ? { tool: "read_pdf_chunk", arguments: { filename, chunk_id: item.chunkId }, reason: "Read candidate evidence in context." } : { tool: "read_pdf_pages", arguments: { filename, start_page: item.page, end_page: item.page }, reason: "Verify page-level candidate evidence." }),
       ...paged.rows.filter((item) => item.kind === "figure" || item.kind === "figure-ocr-locator").filter((item) => item.figureId).slice(0, 3).map((item) => ({ tool: "get_figure_context_pack", arguments: { filename, figure_id: item.figureId }, reason: "Locate canonical image before visual verification." })),
     ]),
@@ -551,21 +564,31 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
   });
 }
 
-export async function getManualEntityBundle({ filename, entityId } = {}) {
+export async function getManualEntityBundle({ filename, entityId, relatedEntityTypes = [], relationshipTypes = [], topK = 20, cursor = null, includePageEntities = false } = {}) {
   const graph = await loadEvidenceGraph(filename, { buildIfMissing: true });
   const result = getEvidenceGraphEntity(graph, entityId);
   if (!result) throw new Error(`Manual entity not found: ${entityId}`);
   if (result.ambiguity) throw new Error(`Manual entity alias is ambiguous: ${entityId}. Use one of: ${result.ambiguity.candidateEntityIds.join(", ")}`);
+  const entityTypes = new Set((relatedEntityTypes || []).map((type) => String(type).toLowerCase()));
+  const relationTypes = new Set((relationshipTypes || []).map((type) => String(type).toLowerCase()));
+  const allowedRelatedIds = new Set(result.relatedEntities.filter((entity) => (includePageEntities || entity.type !== "page") && (!entityTypes.size || entityTypes.has(String(entity.type).toLowerCase()))).map((entity) => entity.id));
+  const relationships = result.relationships
+    .filter((relation) => !relationTypes.size || relationTypes.has(String(relation.type).toLowerCase()))
+    .filter((relation) => allowedRelatedIds.has(relation.from === result.entity.id ? relation.to : relation.from))
+    .sort((left, right) => left.type.localeCompare(right.type) || left.id.localeCompare(right.id));
+  const relationshipPage = paginateEvidenceItems(relationships, Math.max(1, Math.min(100, Number(topK) || 20)), cursor, JSON.stringify({ filename, entityId: result.entity.id, relatedEntityTypes: [...entityTypes].sort(), relationshipTypes: [...relationTypes].sort(), includePageEntities: Boolean(includePageEntities) }));
+  const selectedIds = new Set(relationshipPage.rows.map((relation) => relation.from === result.entity.id ? relation.to : relation.from));
+  const relatedEntities = result.relatedEntities.filter((entity) => selectedIds.has(entity.id));
   const evidence = [entityEvidence(result.entity, { reason: "direct entity lookup" })];
   return createEvidenceBundleV2({
     serverVersion: SERVER_VERSION,
     tool: "get_manual_entity",
     filename,
     sourceFingerprint: graph.sourceFingerprint,
-    input: { filename, entity_id: entityId },
-    summary: { entityType: result.entity.type, relatedEntityCount: result.relatedEntities.length, relationshipCount: result.relationships.length },
-    entities: [result.entity, ...result.relatedEntities],
-    relationships: result.relationships,
+    input: { filename, entity_id: entityId, related_entity_types: relatedEntityTypes, relationship_types: relationshipTypes, top_k: topK, cursor, include_page_entities: Boolean(includePageEntities) },
+    summary: { entityType: result.entity.type, relatedEntityCount: result.relatedEntities.length, relationshipCount: result.relationships.length, relationshipPagination: relationshipPage.pagination },
+    entities: [result.entity, ...relatedEntities],
+    relationships: relationshipPage.rows,
     facts: [evidenceFactFromResult({ entity: result.entity, evidence: evidence[0] })].filter(Boolean),
     evidence,
     inferences: [],
@@ -573,7 +596,7 @@ export async function getManualEntityBundle({ filename, entityId } = {}) {
     gaps: [],
     needsVerification: result.entity.verificationStatus === "verified" ? [] : [{ item: result.entity.canonicalName, reason: `Entity status is ${result.entity.verificationStatus}.`, recommendedActions: ["read_manual_evidence"] }],
     warnings: result.entity.type === "figure" ? ["Figure semantic claims require opening the canonical PNG; graph caption metadata is not visual truth."] : [],
-    recommendedNextActions: result.relatedEntities.slice(0, 12).map((entity) => ({ tool: "get_manual_entity", arguments: { filename, entity_id: entity.id }, reason: "Follow an evidence-graph relationship." })),
+    recommendedNextActions: relatedEntities.slice(0, 12).map((entity) => ({ tool: "get_manual_entity", arguments: { filename, entity_id: entity.id }, reason: "Follow an evidence-graph relationship." })),
     pagination: { total: 1, returned: 1, truncated: false, nextCursor: null },
   });
 }

@@ -24,6 +24,11 @@ export const EVIDENCE_V2_TOOL_DEFINITIONS = Object.freeze([
       properties: {
         filename: { type: "string", description: "PDF filename." },
         entity_id: { type: "string", description: "Stable entity ID returned by query_manual or read_manual_evidence." },
+        related_entity_types: { type: "array", items: { type: "string" }, description: "Optional related entity types to include." },
+        relationship_types: { type: "array", items: { type: "string" }, description: "Optional relationship types to include." },
+        top_k: { type: "number", description: "Related relationships per page; default 20, maximum 100." },
+        cursor: { type: "string", description: "Request-bound cursor for related relationships." },
+        include_page_entities: { type: "boolean", description: "Include page entities; false by default." },
       },
       required: ["filename", "entity_id"],
       additionalProperties: false,

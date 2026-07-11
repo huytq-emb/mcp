@@ -99,20 +99,30 @@ function confidence(value, fallback = "medium") {
 
 function locations({ pages = [], chunkIds = [], sectionPath = [], bbox = [], artifact, extractionMethod, verification = "candidate" } = {}) {
   const resolvedPages = pagesFrom(pages);
-  const resolvedChunkIds = unique((chunkIds || []).map((chunk) => {
-    if (typeof chunk === "string") return chunk;
-    if (chunk && typeof chunk === "object") return chunk.id || chunk.chunkId || "";
-    return "";
-  }).filter((chunkId) => typeof chunkId === "string" && chunkId.trim()));
-  return resolvedPages.length ? resolvedPages.map((page) => ({
+  const chunkPage = (chunk) => {
+    if (Number.isFinite(Number(chunk?.page))) return Number(chunk.page);
+    const id = typeof chunk === "string" ? chunk : (chunk?.id || chunk?.chunkId || "");
+    const match = String(id).match(/:p(\d+):c\d+(?:$|:)/i);
+    return match ? Number(match[1]) : null;
+  };
+  const normalizedChunks = (chunkIds || []).map((chunk) => ({
+    id: typeof chunk === "string" ? chunk : (chunk?.id || chunk?.chunkId || ""),
+    page: chunkPage(chunk),
+  })).filter((chunk) => typeof chunk.id === "string" && chunk.id.trim());
+  const resolvedChunkIds = unique(normalizedChunks.map((chunk) => chunk.id));
+  const locationForPage = (page) => ({
     page,
-    chunkIds: resolvedChunkIds,
+    // A chunk with explicit provenance belongs only to that page. Chunks
+    // without page metadata remain attached to every supplied page because
+    // their provenance cannot be narrowed further.
+    chunkIds: unique(normalizedChunks.filter((chunk) => chunk.page === null || chunk.page === page).map((chunk) => chunk.id)),
     sectionPath: Array.isArray(sectionPath) ? sectionPath.filter(Boolean) : [],
     boundingBox: Array.isArray(bbox) ? bbox : [],
     sourceArtifact: artifact || "",
     extractionMethod: extractionMethod || "artifact-import",
     verificationStatus: verificationStatus(verification),
-  })) : [{
+  });
+  return resolvedPages.length ? resolvedPages.map(locationForPage) : [{
     page: null,
     chunkIds: resolvedChunkIds,
     sectionPath: Array.isArray(sectionPath) ? sectionPath.filter(Boolean) : [],
@@ -186,7 +196,7 @@ function normalizedPhrase(value) {
 }
 
 function sequenceTopicConcepts(topic) {
-  return normalizedPhrase(topic).split(" ").filter((term) => term.length >= 3).map((term) => term === "watchdog" ? ["watchdog", "wdt"] : [term]);
+  return normalizedPhrase(topic).split(" ").filter((term) => term.length >= 3).map((term) => [term]);
 }
 
 function sequenceEvidenceMatchesTopic(sequence) {
@@ -196,7 +206,28 @@ function sequenceEvidenceMatchesTopic(sequence) {
     ...(sequence.chunks || []).flatMap((chunk) => [chunk.preview, ...(chunk.headings || []), ...(chunk.evidenceLines || [])]),
     ...(sequence.steps || []).map((step) => step.text || step.action || ""),
   ].join(" "));
-  return evidence.includes(topic) || (topic.includes("watchdog") && evidence.includes(topic.replace("watchdog", "wdt")));
+  return evidence.includes(topic);
+}
+
+function extractGenericOrderedWriteSteps(chunks) {
+  const steps = [];
+  const valuePattern = "(?:0x[0-9a-f]+|[0-9a-f]+h|\\d+)";
+  for (const chunk of chunks || []) {
+    const lines = String(chunk.text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const numbered = line.match(/^\s*(?:step\s*)?(\d+)[.):]\s*(.+)$/i);
+      const connective = line.match(/^\s*(first|then|next|after|before|finally)[,:]?\s*(.+)$/i);
+      const text = numbered?.[2] || connective?.[2] || line;
+      const register = text.match(/\b[A-Z][A-Z0-9_]{2,}\b/)?.[0] || "";
+      const values = [...text.matchAll(new RegExp(valuePattern, "gi"))].map((match) => match[0]);
+      const isWrite = /\b(write|written|program|set|clear)\b/i.test(text);
+      if (!isWrite || (!numbered && !connective && !/\b(?:first|then|after|before|->|→)\b/i.test(text))) continue;
+      for (const value of values.slice(0, 2)) {
+        steps.push({ id: `recovered-${steps.length + 1}`, action: text, text, register, value, page: Number(chunk.page) || null, chunkId: chunk.id || "", confidence: "low", explicitOrder: Boolean(numbered || connective) });
+      }
+    }
+  }
+  return steps;
 }
 
 function recoverSequenceFromSections(sequence, sections) {
@@ -204,35 +235,31 @@ function recoverSequenceFromSections(sequence, sections) {
   const concepts = sequenceTopicConcepts(sequence.topic || sequence.title);
   if (!concepts.length) return null;
   const candidates = (sections || []).map((section) => {
-    const text = normalizedPhrase(section.title);
+    const sourceText = [section.title, section.text, section.preview, ...(section.evidenceLines || [])].filter(Boolean).join(" ");
+    const text = normalizedPhrase(sourceText);
     if (!concepts.every((alternatives) => alternatives.some((term) => text.includes(term)))) return null;
     let score = Number(section.confidence || 0);
     if (/\b(operation|procedure|sequence)\b/.test(text)) score += 35;
-    if (/\b(write|writing|written|order|then|start)\b/.test(text)) score += 30;
-    if (/\b(00h|ffh)\b/.test(text)) score += 20;
-    if (Number(section.page) < 100) score -= 100;
+    if (/\b(write|writing|written|order|then|first|after|before|next|step)\b/.test(text)) score += 30;
+    if (/\b(?:0x[0-9a-f]+|[0-9a-f]+h|\d+)\b/i.test(sourceText)) score += 15;
     return { section, score };
-  }).filter((item) => item && item.score >= 70);
+  }).filter((item) => item && item.score >= 35);
   if (!candidates.length) return null;
   const pageScores = new Map();
   for (const candidate of candidates) pageScores.set(Number(candidate.section.page), (pageScores.get(Number(candidate.section.page)) || 0) + candidate.score);
   const rankedPages = [...pageScores].sort((left, right) => right[1] - left[1] || left[0] - right[0]).map(([page]) => page);
   const primaryPage = rankedPages[0];
   const pages = rankedPages.filter((page) => page === primaryPage || Math.abs(page - primaryPage) <= 1).slice(0, 4);
-  const primaryPageSections = (sections || []).filter((section) => Number(section.page) === primaryPage);
-  const orderedValueSource = primaryPageSections
-    .map((section) => section.title)
-    .find((title) => /\b00h\b/i.test(title) && /\bFFh\b/i.test(title))
-    || candidates.map((candidate) => candidate.section.title).find((title) => /\b00h\b/i.test(title) && /\bFFh\b/i.test(title));
-  const orderedPair = String(orderedValueSource || "").match(/\b(00h)\b.*?(?:then|→).*?\b(FFh)\b/i);
-  const values = orderedPair
-    ? [orderedPair[1], orderedPair[2]].map((value) => value.toUpperCase().replace("H", "h"))
-    : unique((String(orderedValueSource || "").match(/\b(?:00|FF)h\b/gi) || []).map((value) => value.toUpperCase().replace("H", "h")));
-  const registerText = primaryPageSections.map((section) => section.title).join(" ");
-  const register = (registerText.match(/\b[A-Z][A-Za-z0-9_]*RR\b/g) || []).sort((left, right) => right.length - left.length)[0]
-    || (registerText.match(/\b[A-Z][A-Z0-9_]{3,}\b/) || [""])[0];
-  const steps = values.slice(0, 2).map((value, index) => ({ action: `write ${value}`, text: `write ${value} to ${register || "the refresh register"}`, register, value, page: primaryPage, confidence: "medium", id: `recovered-${index + 1}` }));
-  return { pages, primaryPage, candidates, steps };
+  const genericChunks = (sections || []).filter((section) => pages.includes(Number(section.page))).map((section) => ({
+    id: section.id ? `section:${section.id}` : `section:p${section.page}`,
+    page: section.page,
+    text: [section.title, section.text, section.preview, ...(section.evidenceLines || [])].filter(Boolean).join("\n"),
+    registers: section.registers || [],
+  }));
+  const genericSteps = extractGenericOrderedWriteSteps(genericChunks);
+  // Prefer the shared, generic parser. Legacy heading-only hints are retained
+  // as candidates only when no reliable ordered write was extracted.
+  return { pages, primaryPage, candidates, steps: genericSteps.length ? genericSteps : [], recoveryStatus: genericSteps.length ? "candidate-ordered-write-extraction" : "candidate-needs-verification" };
 }
 
 function addRegisterLookup(lookup, registerEntity) {
@@ -356,32 +383,28 @@ function addAliasConflicts(entities, relationships, conflicts) {
       aliases.set(key, entries);
     }
   }
-  const conflictedEntityIds = new Set();
   for (const [alias, entries] of aliases) {
     const distinct = unique(entries.map((entry) => entry.id));
     if (distinct.length < 2) continue;
     const values = entries.map((entry) => `${entry.type}:${entry.canonicalName}`);
     const pages = entries.flatMap((entry) => entry.sourceLocations || []).map((location) => location.page);
-    for (const entry of entries) {
-      conflicts.push({
-        id: `conflict:${entry.id}:alias:${alias}`,
-        entityId: entry.id,
-        field: "alias",
-        alias,
-        values: unique(values),
-        pages: pagesFrom(pages),
-        reason: `Alias \"${alias}\" resolves to multiple entities; use a canonical entity ID or qualified alias.`,
-        verificationStatus: "conflicted",
-        recommendedVerification: ["query_manual with a canonical register/module qualifier", "get_manual_entity with the canonical entity_id"],
-      });
-      entry.verificationStatus = "conflicted";
-      conflictedEntityIds.add(entry.id);
-    }
-  }
-  for (const relation of relationships) {
-    if (conflictedEntityIds.has(relation.from) || conflictedEntityIds.has(relation.to)) {
-      relation.properties = { ...relation.properties, resolutionStatus: "conflicted", resolutionReason: "An endpoint has an ambiguous alias." };
-    }
+    const candidateEntityIds = unique(entries.map((entry) => entry.id));
+    // Alias ambiguity is metadata about this lookup key, not a defect in the
+    // canonical records. Relationships created through this alias are already
+    // marked conflicted by resolveRegisterReference; canonical-ID links stay
+    // valid and retain their original resolution status.
+    conflicts.push({
+      id: `alias-conflict:${alias}`,
+      entityId: `alias-conflict:${alias}`,
+      field: "alias",
+      alias,
+      candidateEntityIds,
+      values: unique(values),
+      pages: pagesFrom(pages),
+      reason: `Alias \"${alias}\" resolves to multiple entities; use a canonical entity ID or qualified alias.`,
+      verificationStatus: "conflicted",
+      recommendedVerification: ["query_manual with a canonical register/module qualifier", "get_manual_entity with the canonical entity_id"],
+    });
   }
 }
 
@@ -625,7 +648,7 @@ export async function buildEvidenceGraph(filename) {
       confidence: sequence.confidence || sequence.score,
       extractionMethod: recovered ? "section-sequence-recovery" : (sequence.source || "sequence-index"),
       verificationStatus: sequence.verificationStatus || "candidate",
-      properties: { kind: sequence.kind || "generic", ...(recovered ? { recoveryStatus: "topic-mismatch-recovered", sourceSectionIds: recovered.candidates.map((candidate) => candidate.section.id) } : {}) },
+      properties: { kind: sequence.kind || "generic", ...(recovered ? { recoveryStatus: recovered.recoveryStatus, sourceSectionIds: recovered.candidates.map((candidate) => candidate.section.id) } : {}) },
     });
     entities.push(sequenceEntity);
     addRelationship(relationships, documentId, id, "document-has-sequence");
@@ -793,7 +816,7 @@ export async function loadEvidenceGraph(filename, { buildIfMissing = false } = {
   await validateManifestFreshness(filename, currentSourceFingerprint);
   if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== filename || graph.sourceFingerprint !== currentSourceFingerprint) {
     if (buildIfMissing) return buildEvidenceGraph(filename);
-    throw new Error(`Evidence graph is stale or incompatible for ${filename}. Rebuild the graph after indexing.`);
+    throw new Error(`Incompatible evidence graph for ${filename}; full index rebuild required.`);
   }
   try {
     const artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
@@ -829,7 +852,7 @@ export function getEvidenceGraphEntity(graph, entityId) {
       entity: null,
       relationships: [],
       relatedEntities: [],
-      conflicts: matches.flatMap((candidate) => (graph.conflicts || []).filter((conflict) => conflict.entityId === candidate.id && conflict.field === "alias")),
+      conflicts: (graph.conflicts || []).filter((conflict) => conflict.field === "alias" && (conflict.candidateEntityIds || []).some((id) => matches.some((candidate) => candidate.id === id))),
       ambiguity: { query: requested, candidateEntityIds: matches.map((candidate) => candidate.id), candidates: matches.map((candidate) => ({ id: candidate.id, type: candidate.type, canonicalName: candidate.canonicalName, displayName: candidate.displayName, aliases: candidate.aliases })) },
     };
   }

@@ -20,7 +20,7 @@ async function handle_query_manual(args = {}) {
 }
 
 async function handle_get_manual_entity(args = {}) {
-  const bundle = await getManualEntityBundle({ filename: args.filename, entityId: String(args.entity_id || "").trim() });
+  const bundle = await getManualEntityBundle({ filename: args.filename, entityId: String(args.entity_id || "").trim(), relatedEntityTypes: args.related_entity_types || [], relationshipTypes: args.relationship_types || [], topK: args.top_k, cursor: args.cursor || null, includePageEntities: Boolean(args.include_page_entities) });
   return evidenceBundleResult(formatEvidenceBundle(bundle), bundle);
 }
 

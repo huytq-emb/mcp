@@ -1,5 +1,9 @@
 # EvidenceBundle v2 migration
 
+## Evidence graph v2 migration
+
+Evidence graph schema v2 adds generation metadata, artifact generation IDs, reverse provenance maps, alias variants, and relationship-resolution properties. Existing 7.1/7.2 graph files built with schema v1 are incompatible and must not be reused. Run `index_pdf(filename="...", mode="background", force=true)` (or foreground for a small manual), then rerun `doctor(filename="...", deep=true)`. Doctor reports `incompatible evidence graph` and `full index rebuild required` for an old graph.
+
 The compatibility tools remain available and continue to return their existing
 human-readable reports. New evidence workflows should use these direct
 structured tools first:

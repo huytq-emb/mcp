@@ -19,6 +19,30 @@ const coverage = Object.freeze({
   ],
 });
 
+function expectationFor(id, query, register, legacyExpectation) {
+  if (legacyExpectation === "negative") {
+    const symbol = (String(query).match(/[A-Z][A-Z0-9_]*ZZZ_NEVER_EXISTS_123/) || [""])[0];
+    return { type: "negative", forbiddenCanonicalNames: symbol ? [symbol] : [], maxAcceptedRrfScore: 0.01, allowGenericCandidateEvidence: false };
+  }
+  // These broad figure-discovery probes have no manually verified figure
+  // identity in the redistributable coverage catalog. Keep them explicitly
+  // runtime-only instead of presenting page presence as semantic correctness.
+  if (/figure/.test(id)) return { type: "runtime-only", reason: "figure identity is not manually declared for this coverage probe" };
+  if (/table/.test(id)) return { type: "entity", requiredEntityTypes: ["table"] };
+  if (/sequence|refresh|stop|clear|lock/.test(id)) return { type: "sequence", requiredEntityTypes: ["sequence"] };
+  if (/caution|reserved/.test(id)) return { type: "caution", requiredEntityTypes: ["caution"] };
+  if (/locator|page/.test(id)) return { type: "page", requiredEntityTypes: ["section"] };
+  if (/bitfield|short-symbol|lwca/.test(id)) return { type: "entity", requiredEntityTypes: ["bitfield"], ...(register ? { relatedCanonicalName: register } : {}) };
+  if (/properties|reset|access|address/.test(id)) return { type: "property", requiredEntityTypes: ["register"] };
+  return { type: "entity", requiredEntityTypes: ["register"] };
+}
+
 export function coverageQueriesFor(subsystem) {
-  return (coverage[subsystem] || []).map(([id, query, register = "", includeOcr = false, expectation = "positive"]) => ({ id, query, register, includeOcr, expectation }));
+  return (coverage[subsystem] || []).map(([id, query, register = "", includeOcr = false, legacyExpectation = "positive"]) => ({
+    id,
+    query,
+    register,
+    includeOcr,
+    expectation: expectationFor(id, query, register, legacyExpectation),
+  }));
 }
