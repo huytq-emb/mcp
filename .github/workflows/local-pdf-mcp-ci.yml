@@ -37,6 +37,6 @@ jobs:
       - name: Python worker checks
         run: npm run test:python
       - name: Semantic golden regression gate
-        run: npm run test:semantic
+        run: npm run test:semantic:unit && npm run test:semantic:integration
       - name: Existing evaluation/profile/golden checks
         run: npm run test:eval && npm run test:profiles && npm run test:golden

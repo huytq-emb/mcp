@@ -16,6 +16,33 @@ export const MODULE_INFERENCE_PROFILES = Object.freeze([
   { module: "rtc", symbols: ["rtc"], phrases: ["real time clock", "calendar"] },
 ]);
 
+export function normalizeInferenceText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function inferenceTokenSet(value) {
+  return new Set(normalizeInferenceText(value).split(" ").filter(Boolean));
+}
+
+export function matchModuleInferenceProfile(value, profile) {
+  const normalized = ` ${normalizeInferenceText(value)} `;
+  const tokens = inferenceTokenSet(value);
+  const symbolHits = (profile.symbols || []).filter((symbol) => {
+    const normalizedSymbol = normalizeInferenceText(symbol);
+    return normalizedSymbol && !normalizedSymbol.includes(" ") && tokens.has(normalizedSymbol);
+  });
+  const phraseHits = (profile.phrases || []).filter((phrase) => {
+    const normalizedPhrase = normalizeInferenceText(phrase);
+    return normalizedPhrase && normalized.includes(` ${normalizedPhrase} `);
+  });
+  return { symbolHits, phraseHits };
+}
+
 export function validateModuleInferenceProfiles(profiles = MODULE_INFERENCE_PROFILES) {
   const errors = [];
   const names = new Set();

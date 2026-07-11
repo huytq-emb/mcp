@@ -4,7 +4,7 @@ import { DEFAULT_DRIVER_PACK_BUDGET_MS, DEFAULT_DRIVER_PACK_CAUTION_TOPICS, DEFA
 import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import { normalizeDriverFamilyHint, normalizeDriverSubsystemHint } from "../driver-profiles/catalog.js";
-import { MODULE_INFERENCE_PROFILES } from "../driver-profiles/module-inference.js";
+import { matchModuleInferenceProfile, MODULE_INFERENCE_PROFILES } from "../driver-profiles/module-inference.js";
 
 
 const cautionMatchesFilter = createRuntimePort("cautionMatchesFilter");
@@ -55,15 +55,14 @@ export function inferModuleCandidates(filename, registers = [], sections = [], p
   const provided = String(providedType || "").trim().toLowerCase();
   if (provided) return [{ module: provided, confidence: 1, reasons: ["explicit module hint"] }];
 
-  const haystack = normalizeForSearch([
+  const haystack = [
     filename,
     ...registers.slice(0, 80).map((r) => `${r.name || ""} ${r.description || ""} ${(r.sections || []).map((s) => s.title).join(" ")}`),
     ...sections.slice(0, 40).map((s) => s.title || ""),
-  ].join("\n"));
+  ].join("\n");
 
   const candidates = MODULE_INFERENCE_PROFILES.map((profile) => {
-    const symbolHits = (profile.symbols || []).filter((pattern) => haystack.includes(pattern));
-    const phraseHits = (profile.phrases || []).filter((pattern) => haystack.includes(pattern));
+    const { symbolHits, phraseHits } = matchModuleInferenceProfile(haystack, profile);
     const score = symbolHits.length * 18 + phraseHits.length * 28;
     return { module: profile.module, score, reasons: [...symbolHits.map((hit) => `symbol:${hit}`), ...phraseHits.map((hit) => `phrase:${hit}`)] };
   }).filter((candidate) => candidate.score > 0)

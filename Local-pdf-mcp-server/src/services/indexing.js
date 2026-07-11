@@ -4,6 +4,7 @@ import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_DIR, INDEX_SCHEMA_VERSION, REG
 import fs from "node:fs/promises";
 import path from "node:path";
 import { buildEvidenceGraph } from "./evidence-graph.js";
+import { stampCoreArtifactGenerations } from "../artifacts/generation.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -1566,12 +1567,22 @@ export async function buildPdfIndex(filename, options = {}) {
   // the chunk index. Persist this generation before linking it.
   const indexPath = safeIndexPath(filename);
   await atomicWriteJson(indexPath, indexData);
+  await stampCoreArtifactGenerations(filename, {
+    source: { size: pdfStat.size, mtimeMs: pdfStat.mtimeMs },
+    chunkingVersion: 2,
+  });
   if (onProgress) onProgress({ phase: "build-evidence-graph", current: 0, total: 0, unit: "" });
+  const linkingGraph = await buildEvidenceGraph(filename);
+  for (const chunk of indexData.chunks) chunk.entityIds = linkingGraph.chunkEntityIds?.[chunk.id] || [];
+  await atomicWriteJson(indexPath, indexData);
+  await stampCoreArtifactGenerations(filename, {
+    source: { size: pdfStat.size, mtimeMs: pdfStat.mtimeMs },
+    chunkingVersion: 2,
+  });
   const evidenceGraph = await buildEvidenceGraph(filename);
   indexData.evidenceGraphEntityCount = evidenceGraph.entities.length;
 
     if (onProgress) onProgress({ phase: "write-index", current: 0, total: 0, unit: "" });
-    await atomicWriteJson(indexPath, indexData);
     await writeArtifactManifest(filename, { buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
 
     return indexData;
@@ -1581,6 +1592,7 @@ export async function buildPdfIndex(filename, options = {}) {
 export function isIndexUsable(indexData, pdfStat) {
   if (!indexData || typeof indexData !== "object") return false;
   if (indexData.schemaVersion !== INDEX_SCHEMA_VERSION) return false;
+  if (Number(indexData.chunkingVersion) !== 2) return false;
   if (!Array.isArray(indexData.chunks)) return false;
   if (Number(indexData.sourceSize) !== Number(pdfStat.size)) return false;
 

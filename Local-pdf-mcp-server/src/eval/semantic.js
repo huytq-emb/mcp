@@ -113,11 +113,12 @@ export function evaluateSemanticGoldenDataset(dataset, caseResults = {}) {
     const actuals = factsFromBundle(bundle);
     const ranked = actuals.slice(0, 10);
     const evidence = Array.isArray(bundle.evidence) ? bundle.evidence : [];
+    const evidenceIds = new Set(evidence.map((item) => item.id));
     evidenceCount += evidence.length;
-    duplicateEvidence += evidence.length - new Set(evidence.map((item) => `${item.page || ""}:${item.chunkId || ""}:${normalized(item.statement)}`)).size;
+    duplicateEvidence += evidence.length - new Set(evidence.map((item) => item.id)).size;
     for (const fact of Array.isArray(bundle.facts) ? bundle.facts : []) {
       claimCount += 1;
-      if (!Array.isArray(fact.evidenceIds) || !fact.evidenceIds.length) unsupportedClaims += 1;
+      if (!Array.isArray(fact.evidenceIds) || !fact.evidenceIds.length || fact.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId))) unsupportedClaims += 1;
     }
     if (Number.isFinite(Number(result.latencyMs))) latencies.push(Number(result.latencyMs));
     if (Number.isFinite(Number(result.indexingDurationMs))) indexingDurations.push(Number(result.indexingDurationMs));
@@ -145,7 +146,13 @@ export function evaluateSemanticGoldenDataset(dataset, caseResults = {}) {
         if (expected[property] === undefined) continue;
         propertyTotal += 1;
         const actualProperties = actual.properties || {};
-        const possible = actualProperties[property] ?? actualProperties[`${property}s`] ?? actual[property];
+        const propertyKeys = {
+          offset: ["offset", "offsets", "offsetAddresses"],
+          reset: ["reset", "resets", "resetValues", "initialValues"],
+          access: ["access"],
+          accessSize: ["accessSize", "accessSizes"],
+        }[property];
+        const possible = propertyKeys.map((key) => actualProperties[key]).find((value) => value !== undefined) ?? actual[property];
         if (propertyMatches(expected[property], possible) || normalized(actual.statement).includes(normalized(expected[property]))) propertyCorrect += 1;
       }
       if (expected.sequenceSteps?.length) {

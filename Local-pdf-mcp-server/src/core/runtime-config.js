@@ -9,7 +9,7 @@ export function createRuntimeConfig(options = {}) {
   const config = {
     rootDir,
     serverName: options.serverName || "local-pdf-mcp-server",
-    serverVersion: options.serverVersion || "7.1.0",
+    serverVersion: options.serverVersion || "7.2.0",
     step40CompatMode: "mcp-control-plane",
     paths: {
       documentsDir: path.join(rootDir, "documents"),

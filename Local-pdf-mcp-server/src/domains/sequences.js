@@ -678,7 +678,11 @@ export function selectCoherentSequenceChunks(chunks, maxGap = 2) {
     else previous.push(chunk);
   }
   return clusters
-    .map((cluster) => ({ cluster, score: cluster.reduce((sum, chunk) => sum + Number(chunk.score || 0), 0) + cluster.length * 25 }))
+    .map((cluster) => {
+      const anchor = Math.max(0, ...cluster.map((chunk) => Number(chunk.semanticAnchorScore || 0)));
+      const evidenceScore = cluster.reduce((sum, chunk) => sum + Number(chunk.score || 0), 0) + cluster.length * 25;
+      return { cluster, anchor, score: evidenceScore + (anchor > 0 ? 1_000_000 + anchor * 1_000 : 0) };
+    })
     .sort((a, b) => b.score - a.score)[0]?.cluster || [];
 }
 

@@ -46,6 +46,10 @@ const criticalPublicTools = [
   "search_figures",
   "get_figure_context_pack",
   "get_figure_image",
+  "query_manual",
+  "get_manual_entity",
+  "read_manual_evidence",
+  "collect_manual_evidence",
 ];
 for (const name of criticalPublicTools) {
   if (!tools.includes(name)) failures.push(`Critical public tool missing from registry: ${name}`);
@@ -119,12 +123,14 @@ for (const rel of [
   "src/core/runtime-config.js",
   "src/core/runtime-ports.js",
   "src/artifacts/manifest.js",
+  "src/artifacts/generation.js",
   "src/bitfields/semantics.js",
   "src/driver-profiles/catalog.js",
   "src/evidence/contract.js",
   "src/services/evidence-graph.js",
   "src/workflows/evidence-orchestrator.js",
   "src/eval/semantic.js",
+  "src/eval/semantic-integration.js",
   "src/eval/golden.js",
   "src/mcp/registry.js",
   "src/mcp/runtime-registry.js",
@@ -149,7 +155,7 @@ for (const rel of [
   "scripts/golden-bootstrap.js",
   "scripts/golden-seed-report.js",
   "scripts/golden-eval.js",
-  "scripts/semantic-eval.js",
+  "scripts/semantic-integration-eval.js",
   "scripts/python-setup.js",
   "scripts/python-health.js",
   "scripts/python-test.js",
@@ -161,9 +167,15 @@ for (const rel of [
   "eval/semantic/watchdog.json",
   "eval/semantic/pwm.json",
   "eval/semantic/usb.json",
+  "eval/semantic/coverage-queries.js",
   "docs/EVIDENCE_BUNDLE_V2.md",
+  "docs/TOOL_CLASSIFICATION.md",
 ]) {
   if (!fs.existsSync(path.join(root, rel))) failures.push(`Missing file: ${rel}`);
+}
+
+if (fs.existsSync(path.join(root, "eval", "semantic", "expected-results.json"))) {
+  failures.push("eval/semantic/expected-results.json is forbidden: semantic integration must execute the real retrieval engine");
 }
 
 let pkg = null;
@@ -182,7 +194,7 @@ try {
 if (pkg) {
   if (pkg.version !== SERVER_VERSION) failures.push(`package.json version ${pkg.version || "missing"} must match SERVER_VERSION ${SERVER_VERSION}`);
   if (pkg.type !== "module") failures.push(`package.json type must be module for index.js ESM imports; got ${pkg.type || "missing"}`);
-  for (const script of ["start", "health", "smoke", "test", "check", "static-health", "architecture-health", "startup-smoke", "test:unit", "test:eval", "test:profiles", "golden:bootstrap", "golden:seed-report", "golden:eval", "test:golden", "test:semantic", "test:tools", "python:setup", "python:health", "test:python", "test:hybrid", "benchmark:extraction"]) {
+  for (const script of ["start", "health", "smoke", "test", "check", "static-health", "architecture-health", "startup-smoke", "test:unit", "test:eval", "test:profiles", "golden:bootstrap", "golden:seed-report", "golden:eval", "test:golden", "test:semantic", "test:semantic:unit", "test:semantic:integration", "test:tools", "python:setup", "python:health", "test:python", "test:hybrid", "benchmark:extraction"]) {
     if (!pkg.scripts?.[script]) failures.push(`Missing package script: ${script}`);
   }
   for (const dep of ["@modelcontextprotocol/sdk", "pdfjs-dist", "pdf-parse"]) {

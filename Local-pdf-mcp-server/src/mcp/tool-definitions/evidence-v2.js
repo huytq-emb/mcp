@@ -9,7 +9,7 @@ export const EVIDENCE_V2_TOOL_DEFINITIONS = Object.freeze([
         query: { type: "string", description: "Natural-language evidence question, exact symbol, offset, or operation topic." },
         register: { type: "string", description: "Optional register/module context. Required to strongly match ambiguous short bit symbols such as EN, ER, TC, CR, or SR." },
         top_k: { type: "number", description: "Results per page. Default 10, maximum 40." },
-        cursor: { type: "string", description: "Opaque numeric cursor returned by a previous EvidenceBundle v2 response." },
+        cursor: { type: "string", description: "Opaque request-bound cursor returned by the same query and options." },
         include_ocr: { type: "boolean", description: "Include supplemental OCR locator matches only for visual/figure discovery. Default false." },
       },
       required: ["filename", "query"],
@@ -18,7 +18,7 @@ export const EVIDENCE_V2_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "get_manual_entity",
-    description: "Read one stable entity from the normalized manual evidence graph, including aliases, provenance, relationships, and preserved conflicts.",
+    description: "Read one stable entity from the normalized manual evidence graph, including typed entities, direct relationships, aliases, provenance, and preserved conflicts. Ambiguous aliases are rejected with canonical IDs to choose from.",
     inputSchema: {
       type: "object",
       properties: {
@@ -61,11 +61,11 @@ export const EVIDENCE_V2_TOOL_DEFINITIONS = Object.freeze([
         depth: { type: "string", enum: ["quick", "standard", "deep"], description: "Evidence collection depth. Default standard." },
         evidence_types: {
           type: "array",
-          items: { type: "string", enum: ["register", "bitfield", "sequence", "caution", "table", "figure", "interrupt", "clock", "reset"] },
-          description: "Optional evidence categories to prioritize.",
+          items: { type: "string", enum: ["register", "bitfield", "sequence", "caution", "table", "figure"] },
+          description: "Optional implemented evidence categories to prioritize. Interrupt, clock, and reset are task terms, not graph entity types.",
         },
         top_k: { type: "number", description: "Evidence rows per page. Default 10, maximum 40." },
-        cursor: { type: "string", description: "Cursor returned by a previous EvidenceBundle v2 response." },
+        cursor: { type: "string", description: "Opaque request-bound cursor returned by the same task and options." },
       },
       required: ["filename", "task"],
       additionalProperties: false,

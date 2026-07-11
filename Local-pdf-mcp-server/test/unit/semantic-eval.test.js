@@ -50,3 +50,31 @@ test("semantic regression gate rejects quality decreases and duplicate increases
   assert.equal(regression.ok, false);
   assert.equal(regression.failures.length, 2);
 });
+
+test("semantic evaluator rejects invalid datasets and dangling fact evidence", () => {
+  const invalid = { ...dataset, manual: { filename: "not-a-pdf" }, cases: [] };
+  assert.equal(validateSemanticGoldenDataset(invalid).ok, false);
+  const report = evaluateSemanticGoldenDataset(dataset, {
+    dctrl: {
+      bundle: {
+        facts: [{ id: "dctrl", kind: "register", canonicalName: "DCTRL", properties: {}, evidenceIds: ["missing"] }],
+        evidence: [],
+      },
+    },
+  });
+  assert.equal(report.metrics.unsupportedClaimRate, 1);
+});
+
+test("semantic evaluator fails incorrect verified pages and register properties", () => {
+  const report = evaluateSemanticGoldenDataset(dataset, {
+    dctrl: {
+      bundle: {
+        facts: [{ id: "dctrl", kind: "register", canonicalName: "DCTRL", properties: { offsets: ["9999h"], resets: ["1"], accessSizes: ["8"] }, evidenceIds: ["e1"] }],
+        evidence: [{ id: "e1", kind: "register", statement: "DCTRL", page: 99 }],
+      },
+    },
+  });
+  assert.equal(report.health, "fail");
+  assert.equal(report.metrics.evidencePageCorrectness, 0);
+  assert.equal(report.metrics.offsetResetAccessExactMatchAccuracy, 0);
+});

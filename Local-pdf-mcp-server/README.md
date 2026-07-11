@@ -105,6 +105,13 @@ These tools use exact-symbol, lexical, graph, and page-neighborhood retrieval,
 then return provenance, conflicts, gaps, verification requirements, and
 pagination in `structuredContent`. See [EvidenceBundle v2 migration](docs/EVIDENCE_BUNDLE_V2.md).
 
+Public tools are grouped into primary evidence, advanced/manual inspection,
+compatibility, and control generations. Normal agent workflows should start
+with the primary EvidenceBundle tools, the canonical figure handoff, and
+`mcp_control`; see [tool classification and migration](docs/TOOL_CLASSIFICATION.md).
+
+See [semantic evaluation](docs/SEMANTIC_EVALUATION.md) for verified datasets, metrics, the strict real-manual runner, and measured retrieval improvements.
+
 ## First commands after adding a PDF
 
 ```text

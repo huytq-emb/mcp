@@ -15,3 +15,10 @@ test("declarative module inference returns ranked multi-label candidates", () =>
   assert.equal(candidates.some((candidate) => candidate.module === "usb"), true);
   assert.equal(inferModuleType("manual.pdf", [], [], "watchdog"), "watchdog");
 });
+
+test("module inference uses token and phrase boundaries instead of unsafe substrings", () => {
+  assert.equal(inferModuleType("support-cancel-portability.pdf"), "unknown");
+  assert.equal(inferModuleType("manual.pdf", [{ name: "CANCEL_CTRL", description: "support portability" }]), "unknown");
+  assert.equal(inferModuleType("manual.pdf", [{ name: "CAN_CTRL", description: "CAN controller bit timing" }]), "can");
+  assert.equal(inferModuleType("manual.pdf", [{ name: "GPIO_PORT_CTRL", description: "port control" }]), "gpio");
+});

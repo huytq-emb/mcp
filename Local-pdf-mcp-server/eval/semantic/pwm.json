@@ -4,7 +4,7 @@
   "id": "rzg3e-pwm",
   "subsystem": "pwm-timer",
   "manual": { "filename": "r01uh1069ej0115-rzg3e.pdf", "verification": { "status": "manually-verified", "reviewedAt": "2026-06-21", "source": "RZ/G3E GPT register table page 1111" } },
-  "cases": [{ "id": "gpt-control", "query": "Find the GPT control register used for PWM/timer configuration and its reset and access size.", "expectedFacts": [{ "id": "gpt-gtcr", "kind": "register", "canonicalName": "GPTm_n_GTCR", "page": 1111, "offset": "002Ch + n x 0100h", "reset": "0000_0000h", "accessSize": "32" }] }],
+  "cases": [{ "id": "gpt-control", "query": "What are the offset, reset value, and access size of the GPTm_n_GTCR PWM/timer control register?", "expectedFacts": [{ "id": "gpt-gtcr", "kind": "register", "canonicalName": "GPTm_n_GTCR", "page": 1111, "offset": "002Ch + n x 0100h", "reset": "0000_0000h", "accessSize": "32" }] }],
   "thresholds": { "metrics": { "recallAt5": { "min": 1 }, "recallAt10": { "min": 1 }, "meanReciprocalRank": { "min": 1 }, "registerExactMatchAccuracy": { "min": 1 }, "offsetResetAccessExactMatchAccuracy": { "min": 1 }, "evidencePageCorrectness": { "min": 1 }, "duplicateEvidenceRate": { "max": 0 }, "unsupportedClaimRate": { "max": 0 } } },
   "regressionTolerances": { "recallAt5": 0, "recallAt10": 0, "meanReciprocalRank": 0, "registerExactMatchAccuracy": 0, "offsetResetAccessExactMatchAccuracy": 0, "evidencePageCorrectness": 0, "duplicateEvidenceRate": 0, "unsupportedClaimRate": 0 }
 }

@@ -93,6 +93,36 @@ export const HIDDEN_TOOL_NAMES = Object.freeze([
 ]);
 export const HIDDEN_COMPATIBILITY_TOOL_NAMES = HIDDEN_TOOL_NAMES;
 
+export const PRIMARY_EVIDENCE_TOOL_NAMES = Object.freeze([
+  "query_manual",
+  "get_manual_entity",
+  "read_manual_evidence",
+  "collect_manual_evidence",
+  "search_figures",
+  "get_figure_context_pack",
+  "get_figure_image",
+]);
+
+export const CONTROL_TOOL_NAMES = Object.freeze([
+  "list_pdfs",
+  "pdf_info",
+  "doctor",
+  "index_pdf",
+  "mcp_control",
+  "plan_manual_workflow",
+]);
+
+export const ADVANCED_MANUAL_INSPECTION_TOOL_NAMES = Object.freeze(
+  PRIMARY_PUBLIC_TOOL_NAMES.filter((name) => !PRIMARY_EVIDENCE_TOOL_NAMES.includes(name) && !CONTROL_TOOL_NAMES.includes(name)),
+);
+
+export const TOOL_CLASSIFICATION = Object.freeze({
+  primaryEvidence: PRIMARY_EVIDENCE_TOOL_NAMES,
+  advancedManualInspection: ADVANCED_MANUAL_INSPECTION_TOOL_NAMES,
+  compatibility: HIDDEN_COMPATIBILITY_TOOL_NAMES,
+  control: CONTROL_TOOL_NAMES,
+});
+
 const INTERNAL_ONLY_TOOL_NAMES = Object.freeze([]);
 const TOOL_DEFINITION_BY_NAME = new Map(ALL_TOOL_DEFINITIONS.map((definition) => [definition.name, definition]));
 
@@ -109,6 +139,11 @@ for (const name of PRIMARY_PUBLIC_TOOL_NAMES) mustGetDefinition(name);
 for (const name of HIDDEN_TOOL_NAMES) mustGetDefinition(name);
 const uncategorized = ALL_TOOL_DEFINITIONS.map((definition) => definition.name).filter((name) => !categorizedNames.has(name));
 if (uncategorized.length) throw new Error(`Uncategorized tool definitions: ${uncategorized.join(", " )}`);
+const publicGenerationNames = [...PRIMARY_EVIDENCE_TOOL_NAMES, ...ADVANCED_MANUAL_INSPECTION_TOOL_NAMES, ...CONTROL_TOOL_NAMES];
+const duplicateGenerationNames = publicGenerationNames.filter((name, index) => publicGenerationNames.indexOf(name) !== index);
+if (duplicateGenerationNames.length) throw new Error(`Tool generation classifications overlap: ${[...new Set(duplicateGenerationNames)].join(", ")}`);
+const missingGenerationNames = PRIMARY_PUBLIC_TOOL_NAMES.filter((name) => !publicGenerationNames.includes(name));
+if (missingGenerationNames.length) throw new Error(`Public tools missing generation classification: ${missingGenerationNames.join(", ")}`);
 
 export const HIDDEN_TOOL_DEFINITIONS = Object.freeze(HIDDEN_TOOL_NAMES.map((name) => mustGetDefinition(name)));
 export const PUBLIC_TOOL_DEFINITIONS = Object.freeze(PRIMARY_PUBLIC_TOOL_NAMES.map((name) => mustGetDefinition(name)));

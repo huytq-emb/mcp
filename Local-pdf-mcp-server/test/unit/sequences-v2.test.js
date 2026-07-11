@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSequenceEdges, extractOrderedWritePair, extractStructuredSequenceSteps, formatPersistentSequenceResult, isSequenceBoilerplate, isTrustedSequenceTopic, sequenceConfidenceFromScore, sequenceSemanticAnchorScore, sequenceStructureStatus } from "../../src/domains/sequences.js";
+import { buildSequenceEdges, extractOrderedWritePair, extractStructuredSequenceSteps, formatPersistentSequenceResult, isSequenceBoilerplate, isTrustedSequenceTopic, selectCoherentSequenceChunks, sequenceConfidenceFromScore, sequenceSemanticAnchorScore, sequenceStructureStatus } from "../../src/domains/sequences.js";
 
 test("sequence v2 extracts ordered register steps with values and conditions", () => {
   const chunks = [{ id: "manual.pdf:p10:c0", page: 10, registers: ["CTRL", "STAT"], text: "Operation Procedure\n1. Write 1 to CTRL.EN to start operation.\n2. Poll STAT.DONE until it becomes 1." }];
@@ -31,6 +31,11 @@ test("watchdog refresh semantic anchor outranks generic reset sequence text", ()
   const generic = sequenceSemanticAnchorScore({ text: "The reset sequence by the WDT is as follows." }, "watchdog refresh");
   assert.ok(anchored >= 600);
   assert.equal(generic, 0);
+  const selected = selectCoherentSequenceChunks([
+    ...Array.from({ length: 6 }, (_, index) => ({ id: `reset-${index}`, page: 580 + (index % 2), score: 250, semanticAnchorScore: 0 })),
+    { id: "refresh", page: 1016, score: 700, semanticAnchorScore: anchored },
+  ]);
+  assert.deepEqual(selected.map((chunk) => chunk.id), ["refresh"]);
 });
 
 test("sequence v2 rejects manual boilerplate and gates high confidence", () => {

@@ -13,7 +13,7 @@ export const DRIVER_PROFILE_FRAGMENTS_DIR = DEFAULT_RUNTIME_CONFIG.paths.driverP
 export const RENDERS_DIR = DEFAULT_RUNTIME_CONFIG.paths.rendersDir;
 
 export const SERVER_NAME = "local-pdf-mcp-server";
-export const SERVER_VERSION = "7.1.0";
+export const SERVER_VERSION = "7.2.0";
 export const STEP40_COMPAT_MODE = "mcp-control-plane";
 export const STEP40_DIRECT_TOOL_COMPAT_NOTES = [
   "Step 40 direct tool names were observed to be cancelled by some VS Code AI-agent MCP clients even when the server and handler registry were healthy.",
