@@ -8,6 +8,19 @@ const RRF_K = 60;
 const RRF_CHANNEL_WEIGHTS = Object.freeze({ exact: 3, lexical: 1, graph: 2, neighborhood: 0.75, ocr: 0.5 });
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 40;
+const MAX_QUERY_CONTEXT_ENTITIES = 100;
+const MAX_QUERY_CONTEXT_RELATIONSHIPS = 200;
+const QUERY_CONTEXT_RELATIONSHIP_TYPES = new Set([
+  "register-has-bitfield",
+  "register-has-caution",
+  "sequence-has-step",
+  "sequence-step-occurs-before",
+  "sequence-uses-register",
+  "figure-illustrates-sequence",
+  "register-is-defined-in-section",
+  "entity-is-mentioned-on-page",
+  "table-describes-register",
+]);
 const GENERIC_QUERY_TERMS = new Set(["a", "access", "address", "an", "and", "apply", "are", "be", "bit", "bits", "by", "clear", "description", "details", "does", "driver", "each", "field", "find", "for", "from", "how", "in", "initial", "is", "it", "linux", "locate", "manual", "must", "of", "on", "or", "offset", "page", "register", "reset", "size", "status", "that", "the", "their", "them", "these", "they", "this", "those", "to", "used", "value", "we", "what", "when", "where", "which", "with", "you", "your"]);
 
 function clampTopK(value) {
@@ -463,6 +476,96 @@ export function factsForEvidencePage(facts, evidence) {
   return mergeFacts(facts).map((fact) => ({ ...fact, evidenceIds: (fact.evidenceIds || []).filter((id) => returnedEvidenceIds.has(id)) })).filter((fact) => fact.evidenceIds.length);
 }
 
+function queryContextEntityIds(evidence) {
+  return unique((evidence || []).flatMap((item) => [
+    item.entityId,
+    ...(item.relatedEntityIds || []),
+    item.retrieval?.entityId,
+  ]));
+}
+
+function contextRelationshipSort(left, right) {
+  return left.type.localeCompare(right.type) || left.id.localeCompare(right.id);
+}
+
+// query_manual returns enough of the graph to explain ranked evidence without
+// exposing a document-wide graph dump. Sequence context is atomic: either all
+// of a returned sequence's steps fit or none are added, so a truncated result
+// can never look like a complete ordered procedure.
+export function buildBoundedQueryGraphContext(graph, evidence, {
+  maxEntities = MAX_QUERY_CONTEXT_ENTITIES,
+  maxRelationships = MAX_QUERY_CONTEXT_RELATIONSHIPS,
+} = {}) {
+  const entitiesById = new Map((graph.entities || []).map((entity) => [entity.id, entity]));
+  const isIncludedEntity = (entity) => entity && !["document", "page"].includes(entity.type);
+  const seedIds = queryContextEntityIds(evidence).filter((id) => isIncludedEntity(entitiesById.get(id)));
+  const selectedEntityIds = new Set(seedIds);
+  const selectedEntities = seedIds.map((id) => entitiesById.get(id));
+  const selectedRelationshipIds = new Set();
+  const selectedRelationships = [];
+  const eligibleRelationships = (graph.relationships || [])
+    .filter((relationship) => QUERY_CONTEXT_RELATIONSHIP_TYPES.has(relationship.type))
+    .filter((relationship) => isIncludedEntity(entitiesById.get(relationship.from)) && isIncludedEntity(entitiesById.get(relationship.to)))
+    .sort(contextRelationshipSort);
+  const skippedSequenceIds = [];
+  let skippedRelationshipCount = 0;
+
+  const includeGroup = (relationships) => {
+    const rows = unique(relationships.map((relationship) => relationship.id))
+      .map((id) => eligibleRelationships.find((relationship) => relationship.id === id))
+      .filter(Boolean)
+      .filter((relationship) => !selectedRelationshipIds.has(relationship.id));
+    if (!rows.length) return true;
+    const newEntityIds = unique(rows.flatMap((relationship) => [relationship.from, relationship.to]))
+      .filter((id) => !selectedEntityIds.has(id));
+    if (selectedEntities.length + newEntityIds.length > maxEntities || selectedRelationships.length + rows.length > maxRelationships) {
+      skippedRelationshipCount += rows.length;
+      return false;
+    }
+    for (const id of newEntityIds) {
+      selectedEntityIds.add(id);
+      selectedEntities.push(entitiesById.get(id));
+    }
+    for (const relationship of rows) {
+      selectedRelationshipIds.add(relationship.id);
+      selectedRelationships.push(relationship);
+    }
+    return true;
+  };
+
+  const sequenceRelationshipIds = new Set();
+  for (const sequenceId of seedIds.filter((id) => entitiesById.get(id)?.type === "sequence")) {
+    const stepRelations = eligibleRelationships.filter((relationship) => relationship.type === "sequence-has-step" && (relationship.from === sequenceId || relationship.to === sequenceId));
+    const stepIds = new Set(stepRelations.map((relationship) => relationship.from === sequenceId ? relationship.to : relationship.from));
+    const sequenceRelations = eligibleRelationships.filter((relationship) => {
+      if (relationship.from === sequenceId || relationship.to === sequenceId) return true;
+      if (relationship.type === "sequence-step-occurs-before") return stepIds.has(relationship.from) && stepIds.has(relationship.to);
+      return relationship.type === "sequence-uses-register" && (stepIds.has(relationship.from) || stepIds.has(relationship.to));
+    });
+    for (const relationship of sequenceRelations) sequenceRelationshipIds.add(relationship.id);
+    if (!includeGroup(sequenceRelations)) skippedSequenceIds.push(sequenceId);
+  }
+
+  const directRelationshipIds = unique(seedIds.flatMap((entityId) => eligibleRelationships
+    .filter((relationship) => relationship.from === entityId || relationship.to === entityId)
+    .map((relationship) => relationship.id)));
+  for (const relationshipId of directRelationshipIds) {
+    if (sequenceRelationshipIds.has(relationshipId)) continue;
+    const relationship = eligibleRelationships.find((candidate) => candidate.id === relationshipId);
+    includeGroup([relationship]);
+  }
+
+  return {
+    entities: selectedEntities,
+    relationships: selectedRelationships,
+    truncated: skippedRelationshipCount > 0 || seedIds.length > maxEntities,
+    skippedRelationshipCount,
+    skippedSequenceIds,
+    maxEntities,
+    maxRelationships,
+  };
+}
+
 export async function collectManualEvidenceBundle({ filename, task, moduleType = "", depth = "standard", evidenceTypes = [], topK = DEFAULT_TOP_K, cursor = null } = {}) {
   if (!String(task || "").trim()) throw new Error("task is required");
   const requestedTypes = new Set((evidenceTypes || []).map((type) => String(type).toLowerCase()));
@@ -545,21 +648,51 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
   if (!String(query || "").trim()) throw new Error("query is required");
   const retrieval = await retrieveManualEvidence(filename, query, { topK, cursor, register, includeOcr, buildGraphIfMissing: true });
   const evidence = retrieval.results.map((result) => result.evidence);
+  const graphContext = buildBoundedQueryGraphContext(retrieval.graph, evidence);
+  const graphContextWarning = graphContext.truncated
+    ? `Bounded graph context was truncated at ${graphContext.maxEntities} entities and ${graphContext.maxRelationships} relationships; use get_manual_entity for additional related evidence.`
+    : "";
+  const graphContextGap = graphContext.truncated
+    ? [{
+      item: "bounded graph context",
+      reason: graphContext.skippedSequenceIds.length
+        ? "One or more returned sequences could not include every ordered step within the graph-context limit."
+        : "Some direct graph relationships could not fit within the graph-context limit.",
+      recommendedAction: "Use get_manual_entity with a returned canonical entity ID to retrieve the remaining one-hop relationships.",
+    }]
+    : [];
   return createEvidenceBundleV2({
     serverVersion: SERVER_VERSION,
     tool: "query_manual",
     filename,
     sourceFingerprint: retrieval.graph.sourceFingerprint,
     input: { filename, query, top_k: clampTopK(topK), cursor, register, include_ocr: Boolean(includeOcr) },
-    summary: { retrievalChannels: ["exact", "lexical", "graph", "neighborhood"], graphEntities: retrieval.graph.entities.length, resultCountBeforePagination: retrieval.pagination.total },
+    summary: {
+      retrievalChannels: ["exact", "lexical", "graph", "neighborhood"],
+      graphEntities: retrieval.graph.entities.length,
+      resultCountBeforePagination: retrieval.pagination.total,
+      graphContext: {
+        entities: graphContext.entities.length,
+        relationships: graphContext.relationships.length,
+        truncated: graphContext.truncated,
+      },
+    },
+    entities: graphContext.entities,
+    relationships: graphContext.relationships,
     facts: mergeFacts(retrieval.results.map(evidenceFactFromResult)),
     evidence,
     inferences: [],
     conflicts: unique(retrieval.results.flatMap((result) => result.entity ? (retrieval.graph.conflicts || []).filter((conflict) => conflict.entityId === result.entity.id) : []).map((conflict) => JSON.stringify(conflict))).map((conflict) => JSON.parse(conflict)),
-    gaps: evidence.length ? [] : [{ item: query, reason: "No result matched the graph or lexical channels.", recommendedAction: "Try an exact register name or inspect manual_status/index health." }],
+    gaps: [
+      ...(evidence.length ? [] : [{ item: query, reason: "No result matched the graph or lexical channels.", recommendedAction: "Try an exact register name or inspect manual_status/index health." }]),
+      ...graphContextGap,
+    ],
     needsVerification: evidence.length ? [{ item: "Ranked evidence", reason: "Retrieval rank is not verification.", recommendedActions: ["read_manual_evidence", "read_pdf_pages"] }] : [],
-    warnings: retrieval.warnings,
-    recommendedNextActions: evidence.slice(0, 5).map((item) => item.chunkId ? { tool: "read_manual_evidence", arguments: { filename, entity_id: item.relatedEntityIds?.[0] || "", chunk_id: item.chunkId }, reason: "Read provenance and adjacent evidence." } : { tool: "read_pdf_pages", arguments: { filename, start_page: item.page, end_page: item.page }, reason: "Inspect the cited page." }),
+    warnings: unique([...retrieval.warnings, graphContextWarning]),
+    recommendedNextActions: [
+      ...evidence.slice(0, 5).map((item) => item.chunkId ? { tool: "read_manual_evidence", arguments: { filename, entity_id: item.relatedEntityIds?.[0] || "", chunk_id: item.chunkId }, reason: "Read provenance and adjacent evidence." } : { tool: "read_pdf_pages", arguments: { filename, start_page: item.page, end_page: item.page }, reason: "Inspect the cited page." }),
+      ...graphContext.skippedSequenceIds.slice(0, 3).map((entityId) => ({ tool: "get_manual_entity", arguments: { filename, entity_id: entityId }, reason: "Retrieve the complete ordered sequence context that did not fit in query_manual." })),
+    ],
     pagination: retrieval.pagination,
   });
 }

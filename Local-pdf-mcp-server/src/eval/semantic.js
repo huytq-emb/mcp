@@ -71,7 +71,11 @@ export function expectedMatches(actual = {}, expected = {}) {
 function bestActual(actuals, expected) { return actuals.find((actual) => expectedMatches(actual, expected)) || null; }
 function hasExpectedText(items, expected) {
   const needle = normalizedPhrase(expected);
-  return needle.length >= 3 && items.some((item) => normalizedPhrase([item.statement, item.canonicalName, JSON.stringify(item.properties || {})].join(" ")).includes(needle));
+  return needle.length >= 3 && items.some((item) => {
+    const properties = item.properties || {};
+    const structuredStep = [properties.register, properties.bitfield, properties.value].filter((value) => value !== null && value !== undefined && value !== "").join(" ");
+    return normalizedPhrase([item.statement, item.canonicalName, structuredStep, JSON.stringify(properties)].join(" ")).includes(needle);
+  });
 }
 function entityMap(bundle = {}) {
   const map = new Map();
@@ -91,10 +95,42 @@ function sequenceSteps(bundle, sequence) {
   const entities = entityMap(bundle);
   const relations = connectedRelationships(bundle, sequence.id, "sequence-has-step");
   const steps = relations.map((relation) => ({ relation, entity: entities.get(relation.from === sequence.id ? relation.to : relation.from) })).filter((item) => item.entity);
-  return steps.sort((left, right) => Number(left.entity.properties?.order ?? left.relation.properties?.order ?? Number.MAX_SAFE_INTEGER) - Number(right.entity.properties?.order ?? right.relation.properties?.order ?? Number.MAX_SAFE_INTEGER));
+  const orderFor = (item) => Number(item.entity.properties?.order ?? item.relation.properties?.order);
+  if (steps.length && steps.every((item) => Number.isFinite(orderFor(item)))) {
+    return steps.sort((left, right) => orderFor(left) - orderFor(right) || left.entity.id.localeCompare(right.entity.id));
+  }
+  const stepById = new Map(steps.map((item) => [item.entity.id, item]));
+  const incoming = new Map(steps.map((item) => [item.entity.id, 0]));
+  const next = new Map(steps.map((item) => [item.entity.id, []]));
+  for (const relation of bundle.relationships || []) {
+    if (relation.type !== "sequence-step-occurs-before" || !stepById.has(relation.from) || !stepById.has(relation.to)) continue;
+    next.get(relation.from).push(relation.to);
+    incoming.set(relation.to, incoming.get(relation.to) + 1);
+  }
+  const queue = steps.filter((item) => incoming.get(item.entity.id) === 0);
+  const ordered = [];
+  while (queue.length) {
+    const current = queue.shift();
+    ordered.push(current);
+    for (const id of next.get(current.entity.id)) {
+      incoming.set(id, incoming.get(id) - 1);
+      if (incoming.get(id) === 0) queue.push(stepById.get(id));
+    }
+  }
+  // Cycles or absent ordering metadata cannot justify a sequence claim. Keep
+  // the unresolved rows last so sequenceStepsInOrder will only pass when the
+  // declared expected order is actually represented by the graph.
+  return ordered.length === steps.length ? ordered : [...ordered, ...steps.filter((item) => !ordered.includes(item))];
+}
+function sequenceHasDeclaredOrder(bundle, sequence) {
+  const steps = sequenceSteps(bundle, sequence);
+  if (steps.every((item) => Number.isFinite(Number(item.entity.properties?.order ?? item.relation.properties?.order)))) return true;
+  const stepIds = new Set(steps.map((item) => item.entity.id));
+  return (bundle.relationships || []).some((relation) => relation.type === "sequence-step-occurs-before" && stepIds.has(relation.from) && stepIds.has(relation.to));
 }
 function sequenceStepsInOrder(bundle, sequence, expectedSteps) {
   const steps = sequenceSteps(bundle, sequence);
+  if (expectedSteps.length > 1 && !sequenceHasDeclaredOrder(bundle, sequence)) return false;
   let cursor = -1;
   for (const expected of expectedSteps) {
     const index = steps.findIndex((item, position) => position > cursor && hasExpectedText([item.entity], expected));
@@ -105,11 +141,18 @@ function sequenceStepsInOrder(bundle, sequence, expectedSteps) {
 }
 function cautionMatches(bundle, expected, actual) {
   const cautionExpected = typeof expected.caution === "object" ? expected.caution : { canonicalName: expected.caution, kind: "caution" };
-  const caution = matchingEntity(bundle, { ...cautionExpected, kind: "caution" });
+  const caution = [...entityMap(bundle).values()].find((entity) => {
+    if (entity.type !== "caution") return false;
+    if (typeof expected.caution !== "string") return expectedMatches({ ...entity, kind: entity.type }, { ...cautionExpected, kind: "caution" });
+    return hasExpectedText([entity], expected.caution);
+  });
   if (!caution) return false;
   const targetId = expected.cautionEntityId || expected.entityId || actual?.id;
   if (!targetId) return false;
-  return connectedRelationships(bundle, caution.id).some((relation) => relation.from === targetId || relation.to === targetId);
+  return (bundle.relationships || []).some((relation) => relation.type === "register-has-caution" && (
+    (relation.from === targetId && relation.to === caution.id) ||
+    (relation.to === targetId && relation.from === caution.id)
+  ));
 }
 function figureMatches(bundle, expected, sequence) {
   const locator = expected.figureLocator || expected.figure || {};
@@ -117,10 +160,13 @@ function figureMatches(bundle, expected, sequence) {
   const figures = [...entityMap(bundle).values()].filter((entity) => entity.type === "figure");
   return figures.some((figure) => {
     const figureId = figure.properties?.figureId || figure.figureId || figure.id;
-    if (locator.figureId && figureId === locator.figureId) return true;
-    if (locator.caption && normalizedPhrase(figure.properties?.caption || figure.canonicalName).includes(normalizedPhrase(locator.caption))) return true;
-    if (sequence && (bundle.relationships || []).some((relation) => relation.type === "figure-illustrates-sequence" && ((relation.from === figure.id && relation.to === sequence.id) || (relation.to === figure.id && relation.from === sequence.id)))) return true;
-    return false;
+    const figurePage = Number(figure.sourceLocations?.[0]?.page ?? figure.properties?.page ?? 0);
+    if (locator.page !== undefined && Number(locator.page) !== figurePage) return false;
+    const exactId = Boolean(locator.figureId && (figureId === locator.figureId || (figure.aliases || []).includes(locator.figureId)));
+    const caption = Boolean(locator.caption && normalizedPhrase(figure.properties?.caption || figure.canonicalName).includes(normalizedPhrase(locator.caption)));
+    const illustratesSequence = Boolean(sequence && (bundle.relationships || []).some((relation) => relation.type === "figure-illustrates-sequence" && ((relation.from === figure.id && relation.to === sequence.id) || (relation.to === figure.id && relation.from === sequence.id))));
+    // A page narrows a known locator, but does not establish figure identity.
+    return exactId || caption || illustratesSequence;
   });
 }
 

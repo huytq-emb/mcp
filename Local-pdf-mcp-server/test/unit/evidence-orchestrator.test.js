@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildBoundedQueryGraphContext,
   chunkEvidence,
   conflictVerificationActions,
   factsForEvidencePage,
@@ -9,6 +10,30 @@ import {
   symbolVariantMatches,
   taskQuestions,
 } from "../../src/workflows/evidence-orchestrator.js";
+
+test("bounded query graph context keeps a returned sequence atomic when its steps exceed the limit", () => {
+  const graph = {
+    entities: [
+      { id: "sequence:refresh", type: "sequence" },
+      { id: "step:1", type: "sequence-step" },
+      { id: "step:2", type: "sequence-step" },
+      { id: "step:3", type: "sequence-step" },
+      { id: "page:1", type: "page" },
+    ],
+    relationships: [
+      { id: "s1", from: "sequence:refresh", to: "step:1", type: "sequence-has-step", properties: {} },
+      { id: "s2", from: "sequence:refresh", to: "step:2", type: "sequence-has-step", properties: {} },
+      { id: "s3", from: "sequence:refresh", to: "step:3", type: "sequence-has-step", properties: {} },
+      { id: "order", from: "step:1", to: "step:2", type: "sequence-step-occurs-before", properties: {} },
+      { id: "page", from: "sequence:refresh", to: "page:1", type: "entity-is-mentioned-on-page", properties: {} },
+    ],
+  };
+  const context = buildBoundedQueryGraphContext(graph, [{ entityId: "sequence:refresh", relatedEntityIds: ["sequence:refresh"] }], { maxEntities: 3, maxRelationships: 10 });
+  assert.deepEqual(context.entities.map((entity) => entity.id), ["sequence:refresh"]);
+  assert.deepEqual(context.relationships, []);
+  assert.equal(context.truncated, true);
+  assert.deepEqual(context.skippedSequenceIds, ["sequence:refresh"]);
+});
 
 test("conflict verification actions are typed and omit conflicts without pages", () => {
   assert.deepEqual(conflictVerificationActions({ entityId: "register:dctrl", field: "offset", pages: [7] }, "manual.pdf"), [{
