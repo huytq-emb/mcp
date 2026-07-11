@@ -485,7 +485,23 @@ function queryContextEntityIds(evidence) {
 }
 
 function contextRelationshipSort(left, right) {
-  return left.type.localeCompare(right.type) || left.id.localeCompare(right.id);
+  return String(left.type || "").localeCompare(String(right.type || "")) || contextRelationshipKey(left).localeCompare(contextRelationshipKey(right));
+}
+
+function contextRelationshipKey(relationship) {
+  return String(relationship.id || `${relationship.type || ""}:${relationship.from || ""}:${relationship.to || ""}`);
+}
+
+function appendContextRelationship(index, entityId, relationship) {
+  if (!entityId) return;
+  const rows = index.get(entityId) || [];
+  rows.push(relationship);
+  index.set(entityId, rows);
+}
+
+function boundedContextLimit(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : fallback;
 }
 
 // query_manual returns enough of the graph to explain ranked evidence without
@@ -499,27 +515,74 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
   const entitiesById = new Map((graph.entities || []).map((entity) => [entity.id, entity]));
   const isIncludedEntity = (entity) => entity && !["document", "page"].includes(entity.type);
   const seedIds = queryContextEntityIds(evidence).filter((id) => isIncludedEntity(entitiesById.get(id)));
-  const selectedEntityIds = new Set(seedIds);
-  const selectedEntities = seedIds.map((id) => entitiesById.get(id));
+  const entityLimit = boundedContextLimit(maxEntities, MAX_QUERY_CONTEXT_ENTITIES);
+  const relationshipLimit = boundedContextLimit(maxRelationships, MAX_QUERY_CONTEXT_RELATIONSHIPS);
+  // Evidence order is retrieval-rank order, so it is also the deterministic
+  // preference order when the rank seeds alone exceed the context budget.
+  const retainedSeedIds = seedIds.slice(0, entityLimit);
+  const selectedEntityIds = new Set(retainedSeedIds);
+  const selectedEntities = retainedSeedIds.map((id) => entitiesById.get(id));
   const selectedRelationshipIds = new Set();
   const selectedRelationships = [];
+  const relationshipById = new Map();
+  const relationshipsByEntityId = new Map();
+  const sequenceStepRelationshipsBySequenceId = new Map();
+  const parentSequenceIdsByStepId = new Map();
+  const orderingRelationshipsByStepId = new Map();
   const eligibleRelationships = (graph.relationships || [])
     .filter((relationship) => QUERY_CONTEXT_RELATIONSHIP_TYPES.has(relationship.type))
     .filter((relationship) => isIncludedEntity(entitiesById.get(relationship.from)) && isIncludedEntity(entitiesById.get(relationship.to)))
-    .sort(contextRelationshipSort);
+    .sort(contextRelationshipSort)
+    .filter((relationship) => {
+      const key = contextRelationshipKey(relationship);
+      if (relationshipById.has(key)) return false;
+      relationshipById.set(key, relationship);
+      return true;
+    });
+  for (const relationship of eligibleRelationships) {
+    appendContextRelationship(relationshipsByEntityId, relationship.from, relationship);
+    appendContextRelationship(relationshipsByEntityId, relationship.to, relationship);
+    if (relationship.type === "sequence-has-step") {
+      const from = entitiesById.get(relationship.from);
+      const to = entitiesById.get(relationship.to);
+      const sequenceId = from?.type === "sequence" && to?.type === "sequence-step"
+        ? relationship.from
+        : to?.type === "sequence" && from?.type === "sequence-step"
+          ? relationship.to
+          : "";
+      const stepId = sequenceId === relationship.from ? relationship.to : sequenceId === relationship.to ? relationship.from : "";
+      if (sequenceId && stepId) {
+        appendContextRelationship(sequenceStepRelationshipsBySequenceId, sequenceId, relationship);
+        const parents = parentSequenceIdsByStepId.get(stepId) || [];
+        parents.push(sequenceId);
+        parentSequenceIdsByStepId.set(stepId, parents);
+      }
+    }
+    if (relationship.type === "sequence-step-occurs-before") {
+      appendContextRelationship(orderingRelationshipsByStepId, relationship.from, relationship);
+      appendContextRelationship(orderingRelationshipsByStepId, relationship.to, relationship);
+    }
+  }
   const skippedSequenceIds = [];
-  let skippedRelationshipCount = 0;
+  const skippedRelationshipIds = new Set();
+  let optionalContextTruncated = false;
 
   const includeGroup = (relationships) => {
-    const rows = unique(relationships.map((relationship) => relationship.id))
-      .map((id) => eligibleRelationships.find((relationship) => relationship.id === id))
-      .filter(Boolean)
-      .filter((relationship) => !selectedRelationshipIds.has(relationship.id));
+    const rows = [];
+    const seen = new Set();
+    for (const relationship of relationships) {
+      const key = contextRelationshipKey(relationship);
+      if (seen.has(key) || selectedRelationshipIds.has(key)) continue;
+      const indexed = relationshipById.get(key);
+      if (!indexed) continue;
+      seen.add(key);
+      rows.push(indexed);
+    }
     if (!rows.length) return true;
     const newEntityIds = unique(rows.flatMap((relationship) => [relationship.from, relationship.to]))
       .filter((id) => !selectedEntityIds.has(id));
-    if (selectedEntities.length + newEntityIds.length > maxEntities || selectedRelationships.length + rows.length > maxRelationships) {
-      skippedRelationshipCount += rows.length;
+    if (selectedEntities.length + newEntityIds.length > entityLimit || selectedRelationships.length + rows.length > relationshipLimit) {
+      for (const relationship of rows) skippedRelationshipIds.add(contextRelationshipKey(relationship));
       return false;
     }
     for (const id of newEntityIds) {
@@ -527,42 +590,107 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
       selectedEntities.push(entitiesById.get(id));
     }
     for (const relationship of rows) {
-      selectedRelationshipIds.add(relationship.id);
+      selectedRelationshipIds.add(contextRelationshipKey(relationship));
       selectedRelationships.push(relationship);
     }
     return true;
   };
 
-  const sequenceRelationshipIds = new Set();
-  for (const sequenceId of seedIds.filter((id) => entitiesById.get(id)?.type === "sequence")) {
-    const stepRelations = eligibleRelationships.filter((relationship) => relationship.type === "sequence-has-step" && (relationship.from === sequenceId || relationship.to === sequenceId));
-    const stepIds = new Set(stepRelations.map((relationship) => relationship.from === sequenceId ? relationship.to : relationship.from));
-    const sequenceRelations = eligibleRelationships.filter((relationship) => {
-      if (relationship.from === sequenceId || relationship.to === sequenceId) return true;
-      if (relationship.type === "sequence-step-occurs-before") return stepIds.has(relationship.from) && stepIds.has(relationship.to);
-      return relationship.type === "sequence-uses-register" && (stepIds.has(relationship.from) || stepIds.has(relationship.to));
-    });
-    for (const relationship of sequenceRelations) sequenceRelationshipIds.add(relationship.id);
-    if (!includeGroup(sequenceRelations)) skippedSequenceIds.push(sequenceId);
+  // A retrieved step must carry the same complete ordered context as a
+  // retrieved sequence. Resolve parents before expansion instead of relying
+  // on the ranked entity type alone.
+  const sequenceIds = [];
+  const addSequenceId = (sequenceId) => {
+    if (sequenceId && !sequenceIds.includes(sequenceId)) sequenceIds.push(sequenceId);
+  };
+  for (const seedId of retainedSeedIds) {
+    const entity = entitiesById.get(seedId);
+    if (entity?.type === "sequence") addSequenceId(seedId);
+    if (entity?.type === "sequence-step") {
+      for (const parentId of parentSequenceIdsByStepId.get(seedId) || []) addSequenceId(parentId);
+    }
   }
 
-  const directRelationshipIds = unique(seedIds.flatMap((entityId) => eligibleRelationships
-    .filter((relationship) => relationship.from === entityId || relationship.to === entityId)
-    .map((relationship) => relationship.id)));
-  for (const relationshipId of directRelationshipIds) {
-    if (sequenceRelationshipIds.has(relationshipId)) continue;
-    const relationship = eligibleRelationships.find((candidate) => candidate.id === relationshipId);
-    includeGroup([relationship]);
+  const sequenceMembersById = new Map();
+  const expandedSequenceIds = new Set();
+  const skippedSequenceMemberIds = new Set();
+  for (const sequenceId of sequenceIds) {
+    const stepRelationships = sequenceStepRelationshipsBySequenceId.get(sequenceId) || [];
+    const stepIds = new Set(stepRelationships.map((relationship) => relationship.from === sequenceId ? relationship.to : relationship.from));
+    const orderingById = new Map();
+    for (const stepId of stepIds) {
+      for (const relationship of orderingRelationshipsByStepId.get(stepId) || []) {
+        if (relationship.type === "sequence-step-occurs-before" && stepIds.has(relationship.from) && stepIds.has(relationship.to)) {
+          orderingById.set(contextRelationshipKey(relationship), relationship);
+        }
+      }
+    }
+    const orderingRelationships = [...orderingById.values()];
+    const coreRelationships = [...stepRelationships, ...orderingRelationships].sort(contextRelationshipSort);
+    sequenceMembersById.set(sequenceId, new Set([sequenceId, ...stepIds]));
+    if (includeGroup(coreRelationships)) {
+      // A step seed can need the parent sequence entity even if an incomplete
+      // graph has no sequence-has-step rows. There is no partial core in that
+      // case: the graph declares no children to include.
+      if (!selectedEntityIds.has(sequenceId)) {
+        if (selectedEntities.length < entityLimit) {
+          selectedEntityIds.add(sequenceId);
+          selectedEntities.push(entitiesById.get(sequenceId));
+        } else {
+          skippedSequenceIds.push(sequenceId);
+          for (const memberId of sequenceMembersById.get(sequenceId)) skippedSequenceMemberIds.add(memberId);
+          continue;
+        }
+      }
+      expandedSequenceIds.add(sequenceId);
+    } else {
+      skippedSequenceIds.push(sequenceId);
+      for (const memberId of sequenceMembersById.get(sequenceId)) skippedSequenceMemberIds.add(memberId);
+    }
+  }
+
+  // Add optional sequence context only after the complete core fits. The
+  // structural sequence relationships are never reintroduced one-at-a-time.
+  for (const sequenceId of sequenceIds) {
+    if (!expandedSequenceIds.has(sequenceId)) continue;
+    const optionalById = new Map();
+    for (const memberId of sequenceMembersById.get(sequenceId) || []) {
+      for (const relationship of relationshipsByEntityId.get(memberId) || []) {
+        if (selectedRelationshipIds.has(contextRelationshipKey(relationship))) continue;
+        if (["sequence-has-step", "sequence-step-occurs-before"].includes(relationship.type)) continue;
+        optionalById.set(contextRelationshipKey(relationship), relationship);
+      }
+    }
+    for (const relationship of [...optionalById.values()].sort(contextRelationshipSort)) {
+      if (!includeGroup([relationship])) optionalContextTruncated = true;
+    }
+  }
+
+  // Direct one-hop context is intentionally last so it cannot crowd out a
+  // mandatory sequence core. Do not add anything incident to a sequence that
+  // was skipped: that would make the omitted sequence look partially present.
+  const directById = new Map();
+  for (const seedId of retainedSeedIds) {
+    for (const relationship of relationshipsByEntityId.get(seedId) || []) {
+      if (["sequence-has-step", "sequence-step-occurs-before"].includes(relationship.type)) continue;
+      if (skippedSequenceMemberIds.has(relationship.from) || skippedSequenceMemberIds.has(relationship.to)) continue;
+      directById.set(contextRelationshipKey(relationship), relationship);
+    }
+  }
+  for (const relationship of [...directById.values()].sort(contextRelationshipSort)) {
+    if (!includeGroup([relationship])) optionalContextTruncated = true;
   }
 
   return {
     entities: selectedEntities,
-    relationships: selectedRelationships,
-    truncated: skippedRelationshipCount > 0 || seedIds.length > maxEntities,
-    skippedRelationshipCount,
-    skippedSequenceIds,
-    maxEntities,
-    maxRelationships,
+    relationships: selectedRelationships.sort(contextRelationshipSort),
+    truncated: skippedRelationshipIds.size > 0 || seedIds.length > retainedSeedIds.length || skippedSequenceIds.length > 0,
+    skippedSeedEntityCount: seedIds.length - retainedSeedIds.length,
+    skippedRelationshipCount: skippedRelationshipIds.size,
+    skippedSequenceIds: unique(skippedSequenceIds),
+    optionalContextTruncated,
+    maxEntities: entityLimit,
+    maxRelationships: relationshipLimit,
   };
 }
 
@@ -650,13 +778,15 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
   const evidence = retrieval.results.map((result) => result.evidence);
   const graphContext = buildBoundedQueryGraphContext(retrieval.graph, evidence);
   const graphContextWarning = graphContext.truncated
-    ? `Bounded graph context was truncated at ${graphContext.maxEntities} entities and ${graphContext.maxRelationships} relationships; use get_manual_entity for additional related evidence.`
+    ? `Bounded graph context was truncated at ${graphContext.maxEntities} entities and ${graphContext.maxRelationships} relationships${graphContext.optionalContextTruncated ? "; optional graph context was omitted after required context was retained" : ""}; use get_manual_entity for additional related evidence.`
     : "";
   const graphContextGap = graphContext.truncated
     ? [{
       item: "bounded graph context",
       reason: graphContext.skippedSequenceIds.length
         ? "One or more returned sequences could not include every ordered step within the graph-context limit."
+        : graphContext.optionalContextTruncated
+          ? "Optional one-hop graph context could not fit after required context was retained."
         : "Some direct graph relationships could not fit within the graph-context limit.",
       recommendedAction: "Use get_manual_entity with a returned canonical entity ID to retrieve the remaining one-hop relationships.",
     }]

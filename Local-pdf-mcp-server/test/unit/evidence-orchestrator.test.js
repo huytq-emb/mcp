@@ -35,6 +35,78 @@ test("bounded query graph context keeps a returned sequence atomic when its step
   assert.deepEqual(context.skippedSequenceIds, ["sequence:refresh"]);
 });
 
+function sequenceContextGraph() {
+  return {
+    entities: [
+      { id: "document:manual", type: "document" },
+      { id: "page:7", type: "page" },
+      { id: "sequence:refresh", type: "sequence" },
+      { id: "step:1", type: "sequence-step" },
+      { id: "step:2", type: "sequence-step" },
+      { id: "register:wdtrr", type: "register" },
+      { id: "figure:refresh", type: "figure" },
+    ],
+    relationships: [
+      { id: "has-1", from: "sequence:refresh", to: "step:1", type: "sequence-has-step", properties: {} },
+      { id: "has-2", from: "sequence:refresh", to: "step:2", type: "sequence-has-step", properties: {} },
+      { id: "before", from: "step:1", to: "step:2", type: "sequence-step-occurs-before", properties: {} },
+      { id: "uses", from: "step:1", to: "register:wdtrr", type: "sequence-uses-register", properties: {} },
+      { id: "figure", from: "figure:refresh", to: "sequence:refresh", type: "figure-illustrates-sequence", properties: {} },
+      { id: "page", from: "sequence:refresh", to: "page:7", type: "entity-is-mentioned-on-page", properties: {} },
+    ],
+  };
+}
+
+test("a sequence-step seed expands its complete parent sequence without document or page context", () => {
+  const context = buildBoundedQueryGraphContext(sequenceContextGraph(), [{ entityId: "step:1", relatedEntityIds: ["step:1"] }], { maxEntities: 10, maxRelationships: 10 });
+  assert.deepEqual(new Set(context.entities.map((entity) => entity.id)), new Set(["sequence:refresh", "step:1", "step:2", "register:wdtrr", "figure:refresh"]));
+  assert.deepEqual(context.relationships.filter((relationship) => ["sequence-has-step", "sequence-step-occurs-before"].includes(relationship.type)).map((relationship) => relationship.id), ["has-1", "has-2", "before"]);
+  assert.equal(context.entities.some((entity) => ["document", "page"].includes(entity.type)), false);
+  assert.equal(context.relationships.every((relationship) => context.entities.some((entity) => entity.id === relationship.from) && context.entities.some((entity) => entity.id === relationship.to)), true);
+  assert.equal(context.skippedSequenceIds.length, 0);
+});
+
+test("a sequence-step seed never leaks a partial parent sequence when its core cannot fit", () => {
+  const context = buildBoundedQueryGraphContext(sequenceContextGraph(), [{ entityId: "step:1" }], { maxEntities: 2, maxRelationships: 10 });
+  assert.deepEqual(context.entities.map((entity) => entity.id), ["step:1"]);
+  assert.deepEqual(context.relationships, []);
+  assert.deepEqual(context.skippedSequenceIds, ["sequence:refresh"]);
+});
+
+test("a fitting mandatory sequence core survives optional-context truncation", () => {
+  const context = buildBoundedQueryGraphContext(sequenceContextGraph(), [{ entityId: "sequence:refresh" }], { maxEntities: 3, maxRelationships: 3 });
+  assert.deepEqual(new Set(context.entities.map((entity) => entity.id)), new Set(["sequence:refresh", "step:1", "step:2"]));
+  assert.deepEqual(context.relationships.map((relationship) => relationship.id), ["has-1", "has-2", "before"]);
+  assert.equal(context.optionalContextTruncated, true);
+  assert.equal(context.skippedSequenceIds.length, 0);
+  assert.equal(context.truncated, true);
+});
+
+test("bounded graph context enforces entity and relationship caps for ranked evidence", () => {
+  const seedGraph = {
+    entities: ["seed", "one", "two", "three"].map((id) => ({ id: `register:${id}`, type: "register" })),
+    relationships: [
+      { id: "a", from: "register:seed", to: "register:one", type: "register-has-bitfield", properties: {} },
+      { id: "b", from: "register:seed", to: "register:two", type: "register-has-bitfield", properties: {} },
+      { id: "c", from: "register:seed", to: "register:three", type: "register-has-bitfield", properties: {} },
+      { id: "c", from: "register:seed", to: "register:three", type: "register-has-bitfield", properties: {} },
+    ],
+  };
+  const manySeeds = [{ entityId: "register:seed", relatedEntityIds: ["register:seed", "register:one", "register:two", "register:three"] }];
+  for (const maxEntities of [2, 3, 4]) {
+    const context = buildBoundedQueryGraphContext(seedGraph, manySeeds, { maxEntities, maxRelationships: 10 });
+    assert.ok(context.entities.length <= maxEntities);
+    assert.equal(context.skippedSeedEntityCount, 4 - maxEntities);
+    assert.equal(context.relationships.every((relationship) => context.entities.some((entity) => entity.id === relationship.from) && context.entities.some((entity) => entity.id === relationship.to)), true);
+  }
+  for (const maxRelationships of [2, 3, 4]) {
+    const context = buildBoundedQueryGraphContext(seedGraph, [{ entityId: "register:seed" }], { maxEntities: 10, maxRelationships });
+    assert.ok(context.entities.length <= 10);
+    assert.ok(context.relationships.length <= maxRelationships);
+    assert.deepEqual(context.relationships.map((relationship) => relationship.id), context.relationships.map((relationship) => relationship.id).filter((id, index, ids) => ids.indexOf(id) === index));
+  }
+});
+
 test("conflict verification actions are typed and omit conflicts without pages", () => {
   assert.deepEqual(conflictVerificationActions({ entityId: "register:dctrl", field: "offset", pages: [7] }, "manual.pdf"), [{
     tool: "read_pdf_pages",

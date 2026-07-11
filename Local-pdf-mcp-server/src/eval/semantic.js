@@ -90,47 +90,65 @@ function matchingEntity(bundle, expected) { return [...entityMap(bundle).values(
 function connectedRelationships(bundle, entityId, type) {
   return (bundle.relationships || []).filter((relation) => (!type || relation.type === type) && (relation.from === entityId || relation.to === entityId));
 }
-function sequenceSteps(bundle, sequence) {
+function sequenceStepRows(bundle, sequence) {
   if (!sequence) return [];
   const entities = entityMap(bundle);
   const relations = connectedRelationships(bundle, sequence.id, "sequence-has-step");
-  const steps = relations.map((relation) => ({ relation, entity: entities.get(relation.from === sequence.id ? relation.to : relation.from) })).filter((item) => item.entity);
-  const orderFor = (item) => Number(item.entity.properties?.order ?? item.relation.properties?.order);
-  if (steps.length && steps.every((item) => Number.isFinite(orderFor(item)))) {
-    return steps.sort((left, right) => orderFor(left) - orderFor(right) || left.entity.id.localeCompare(right.entity.id));
+  return relations.map((relation) => ({ relation, entity: entities.get(relation.from === sequence.id ? relation.to : relation.from) })).filter((item) => item.entity);
+}
+
+// Sequence coverage is a correctness check, not a best-effort presentation
+// order. In particular, insertion order must never make an incomplete graph
+// look ordered.
+function sequenceOrdering(bundle, sequence) {
+  const steps = sequenceStepRows(bundle, sequence);
+  if (!steps.length) return { steps, ordered: false, orderingSource: null, errors: ["sequence has no resolved steps"] };
+  const explicitOrder = (item) => item.entity.properties?.order ?? item.relation.properties?.order;
+  const explicitValues = steps.map(explicitOrder);
+  const hasExplicitOrder = explicitValues.some((value) => value !== undefined && value !== null && value !== "");
+  if (hasExplicitOrder) {
+    const numericOrders = explicitValues.map(Number);
+    if (!numericOrders.every(Number.isFinite)) return { steps, ordered: false, orderingSource: "explicit-order", errors: ["every sequence step must have a finite explicit order"] };
+    if (new Set(numericOrders).size !== numericOrders.length) return { steps, ordered: false, orderingSource: "explicit-order", errors: ["sequence step explicit orders must be unique"] };
+    return {
+      steps: [...steps].sort((left, right) => Number(explicitOrder(left)) - Number(explicitOrder(right)) || left.entity.id.localeCompare(right.entity.id)),
+      ordered: true,
+      orderingSource: "explicit-order",
+      errors: [],
+    };
   }
   const stepById = new Map(steps.map((item) => [item.entity.id, item]));
   const incoming = new Map(steps.map((item) => [item.entity.id, 0]));
-  const next = new Map(steps.map((item) => [item.entity.id, []]));
+  const next = new Map(steps.map((item) => [item.entity.id, new Set()]));
   for (const relation of bundle.relationships || []) {
     if (relation.type !== "sequence-step-occurs-before" || !stepById.has(relation.from) || !stepById.has(relation.to)) continue;
-    next.get(relation.from).push(relation.to);
-    incoming.set(relation.to, incoming.get(relation.to) + 1);
+    if (!next.get(relation.from).has(relation.to)) {
+      next.get(relation.from).add(relation.to);
+      incoming.set(relation.to, incoming.get(relation.to) + 1);
+    }
   }
-  const queue = steps.filter((item) => incoming.get(item.entity.id) === 0);
+  let queue = steps.filter((item) => incoming.get(item.entity.id) === 0).sort((left, right) => left.entity.id.localeCompare(right.entity.id));
   const ordered = [];
   while (queue.length) {
+    // More than one available step means the declared relationships do not
+    // establish a complete sequence order. Sorting would be deterministic but
+    // would still invent ordering evidence.
+    if (queue.length !== 1) return { steps, ordered: false, orderingSource: "relationship-dag", errors: ["sequence relationship order is incomplete or disconnected"] };
     const current = queue.shift();
     ordered.push(current);
-    for (const id of next.get(current.entity.id)) {
+    for (const id of [...next.get(current.entity.id)].sort()) {
       incoming.set(id, incoming.get(id) - 1);
       if (incoming.get(id) === 0) queue.push(stepById.get(id));
     }
+    queue = queue.sort((left, right) => left.entity.id.localeCompare(right.entity.id));
   }
-  // Cycles or absent ordering metadata cannot justify a sequence claim. Keep
-  // the unresolved rows last so sequenceStepsInOrder will only pass when the
-  // declared expected order is actually represented by the graph.
-  return ordered.length === steps.length ? ordered : [...ordered, ...steps.filter((item) => !ordered.includes(item))];
-}
-function sequenceHasDeclaredOrder(bundle, sequence) {
-  const steps = sequenceSteps(bundle, sequence);
-  if (steps.every((item) => Number.isFinite(Number(item.entity.properties?.order ?? item.relation.properties?.order)))) return true;
-  const stepIds = new Set(steps.map((item) => item.entity.id));
-  return (bundle.relationships || []).some((relation) => relation.type === "sequence-step-occurs-before" && stepIds.has(relation.from) && stepIds.has(relation.to));
+  if (ordered.length !== steps.length) return { steps, ordered: false, orderingSource: "relationship-dag", errors: ["sequence relationship order contains a cycle"] };
+  return { steps: ordered, ordered: true, orderingSource: "relationship-dag", errors: [] };
 }
 function sequenceStepsInOrder(bundle, sequence, expectedSteps) {
-  const steps = sequenceSteps(bundle, sequence);
-  if (expectedSteps.length > 1 && !sequenceHasDeclaredOrder(bundle, sequence)) return false;
+  const ordering = sequenceOrdering(bundle, sequence);
+  const steps = ordering.steps;
+  if (steps.length > 1 && !ordering.ordered) return false;
   let cursor = -1;
   for (const expected of expectedSteps) {
     const index = steps.findIndex((item, position) => position > cursor && hasExpectedText([item.entity], expected));
@@ -139,20 +157,24 @@ function sequenceStepsInOrder(bundle, sequence, expectedSteps) {
   }
   return true;
 }
+function cautionTextMatches(caution, expectedCaution) {
+  if (typeof expectedCaution === "string") return hasExpectedText([caution], expectedCaution);
+  const expected = expectedCaution || {};
+  const identityExpected = expected.entityId || expected.canonicalName || expected.name || (expected.aliases || []).length;
+  const identityMatches = identityExpected && expectedMatches({ ...caution, kind: "caution" }, { ...expected, kind: "caution" });
+  const text = expected.text || expected.statement || expected.description || "";
+  return Boolean(identityMatches || (text && hasExpectedText([caution], text)));
+}
 function cautionMatches(bundle, expected, actual) {
-  const cautionExpected = typeof expected.caution === "object" ? expected.caution : { canonicalName: expected.caution, kind: "caution" };
-  const caution = [...entityMap(bundle).values()].find((entity) => {
-    if (entity.type !== "caution") return false;
-    if (typeof expected.caution !== "string") return expectedMatches({ ...entity, kind: entity.type }, { ...cautionExpected, kind: "caution" });
-    return hasExpectedText([entity], expected.caution);
-  });
-  if (!caution) return false;
   const targetId = expected.cautionEntityId || expected.entityId || actual?.id;
   if (!targetId) return false;
-  return (bundle.relationships || []).some((relation) => relation.type === "register-has-caution" && (
-    (relation.from === targetId && relation.to === caution.id) ||
-    (relation.to === targetId && relation.from === caution.id)
-  ));
+  const relationships = bundle.relationships || [];
+  return [...entityMap(bundle).values()]
+    .filter((entity) => entity.type === "caution")
+    .some((caution) => cautionTextMatches(caution, expected.caution) && relationships.some((relation) => relation.type === "register-has-caution" && (
+      (relation.from === targetId && relation.to === caution.id) ||
+      (relation.to === targetId && relation.from === caution.id)
+    )));
 }
 function figureMatches(bundle, expected, sequence) {
   const locator = expected.figureLocator || expected.figure || {};

@@ -19,6 +19,30 @@ const dataset = {
   thresholds: { metrics: { recallAt5: { min: 1 }, bitfieldExactMatchAccuracy: { min: 1 }, unsupportedClaimRate: { max: 0 } } },
 };
 
+function sequenceEvaluationBundle({ orders = [], orderingRelationships = [] } = {}) {
+  const stepNames = ["write A", "write B", "write C"];
+  return {
+    evidence: [{ id: "sequence-evidence", entityId: "sequence:target", kind: "sequence", canonicalName: "Target sequence", statement: "Target sequence", page: 2 }],
+    entities: [
+      { id: "sequence:target", type: "sequence", canonicalName: "Target sequence", properties: {}, aliases: [] },
+      ...stepNames.map((name, index) => ({ id: `step:${String.fromCharCode(97 + index)}`, type: "sequence-step", canonicalName: name, properties: orders[index] === undefined ? {} : { order: orders[index] }, aliases: [] })),
+    ],
+    relationships: [
+      ...stepNames.map((name, index) => ({ id: `has-${index + 1}`, from: "sequence:target", to: `step:${String.fromCharCode(97 + index)}`, type: "sequence-has-step", properties: {} })),
+      ...orderingRelationships,
+    ],
+  };
+}
+
+function sequenceCoverageReport(bundle, expectedSteps = ["write A", "write B", "write C"]) {
+  const sequenceDataset = {
+    ...dataset,
+    cases: [{ id: "sequence", query: "Target sequence", expectedFacts: [{ id: "target-sequence", kind: "sequence", canonicalName: "Target sequence", page: 2, sequenceSteps: expectedSteps }] }],
+    thresholds: { metrics: {} },
+  };
+  return evaluateSemanticGoldenDataset(sequenceDataset, { sequence: { bundle } });
+}
+
 test("semantic evaluator scores facts, provenance, properties, and latency", () => {
   assert.deepEqual(validateSemanticGoldenDataset(dataset), { ok: true, errors: [] });
   const report = evaluateSemanticGoldenDataset(dataset, {
@@ -103,4 +127,52 @@ test("sequence, caution, figure, and negative checks stay bound to their entitie
   assert.equal(report.metrics.sequenceStepCoverage, 0);
   assert.equal(report.metrics.figureLocatorAccuracy, 0);
   assert.equal(evaluateCoverageExpectation({ expectation: { type: "negative", forbiddenCanonicalNames: ["NO_SUCH_REG"], maxAcceptedRrfScore: 0.01, allowGenericCandidateEvidence: false } }, { bundle: { facts: [], evidence: [{ id: "e", entityId: "register:wrong", kind: "register", canonicalName: "REAL_REG", verificationStatus: "high-confidence", retrieval: { rrfScore: 0.5 } }] } }).passed, false);
+});
+
+test("semantic sequence ordering accepts complete explicit and relationship orders", () => {
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orders: [1, 2, 3] })).metrics.sequenceStepCoverage, 1);
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orderingRelationships: [
+    { id: "ab", from: "step:a", to: "step:b", type: "sequence-step-occurs-before", properties: {} },
+    { id: "bc", from: "step:b", to: "step:c", type: "sequence-step-occurs-before", properties: {} },
+  ] })).metrics.sequenceStepCoverage, 1);
+});
+
+test("semantic sequence ordering rejects duplicate, missing, partial, cyclic, disconnected, and reversed orders", () => {
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orders: [1, 1, 3] })).metrics.sequenceStepCoverage, 0);
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orders: [1, undefined, 3] })).metrics.sequenceStepCoverage, 0);
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orderingRelationships: [
+    { id: "ab", from: "step:a", to: "step:b", type: "sequence-step-occurs-before", properties: {} },
+  ] })).metrics.sequenceStepCoverage, 0);
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orderingRelationships: [
+    { id: "ab", from: "step:a", to: "step:b", type: "sequence-step-occurs-before", properties: {} },
+    { id: "ba", from: "step:b", to: "step:a", type: "sequence-step-occurs-before", properties: {} },
+  ] })).metrics.sequenceStepCoverage, 0);
+  assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orderingRelationships: [
+    { id: "ab", from: "step:a", to: "step:b", type: "sequence-step-occurs-before", properties: {} },
+    { id: "bc", from: "step:b", to: "step:c", type: "sequence-step-occurs-before", properties: {} },
+    { id: "dx", from: "step:outside", to: "step:a", type: "sequence-step-occurs-before", properties: {} },
+  ] }), ["write C", "write B", "write A"]).metrics.sequenceStepCoverage, 0);
+});
+
+test("semantic caution matching checks every matching caution against the expected register relationship", () => {
+  const baseBundle = {
+    evidence: [{ id: "register-evidence", entityId: "register:b", kind: "register", canonicalName: "REGISTER_B", statement: "REGISTER_B", page: 2 }],
+    entities: [
+      { id: "register:a", type: "register", canonicalName: "REGISTER_A", properties: {}, aliases: [] },
+      { id: "register:b", type: "register", canonicalName: "REGISTER_B", properties: {}, aliases: [] },
+      { id: "caution:a", type: "caution", canonicalName: "Caution A", properties: { text: "reserved bits" }, aliases: [] },
+      { id: "caution:b", type: "caution", canonicalName: "Caution B", properties: { text: "reserved bits" }, aliases: [] },
+    ],
+    relationships: [
+      { id: "a", from: "register:a", to: "caution:a", type: "register-has-caution", properties: {} },
+      { id: "b", from: "register:b", to: "caution:b", type: "register-has-caution", properties: {} },
+    ],
+  };
+  const cautionDataset = {
+    ...dataset,
+    cases: [{ id: "register-b", query: "reserved bits for REGISTER_B", expectedFacts: [{ id: "register-b", kind: "register", entityId: "register:b", canonicalName: "REGISTER_B", page: 2, caution: "reserved bits" }] }],
+    thresholds: { metrics: {} },
+  };
+  assert.equal(evaluateSemanticGoldenDataset(cautionDataset, { "register-b": { bundle: baseBundle } }).metrics.cautionRecall, 1);
+  assert.equal(evaluateSemanticGoldenDataset(cautionDataset, { "register-b": { bundle: { ...baseBundle, entities: baseBundle.entities.filter((entity) => entity.id !== "caution:b"), relationships: baseBundle.relationships.filter((relationship) => relationship.id !== "b") } } }).metrics.cautionRecall, 0);
 });
