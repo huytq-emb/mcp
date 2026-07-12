@@ -1,4 +1,5 @@
-import { DEFAULT_RENDER_DPI, MAX_RENDER_DPI, MIN_RENDER_DPI, RENDERS_DIR, RENDER_COMMAND_TIMEOUT_MS } from "../core/runtime-constants.js";
+import { DEFAULT_RENDER_DPI, MAX_RENDER_DPI, MIN_RENDER_DPI, RENDER_COMMAND_TIMEOUT_MS } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import { appendEvidenceContract, atomicWriteFile, clampInteger, compactText, ensureInsideRoot, ensurePdfFilename, normalizeForSearch, pathExists, safePdfPath, safeRenderOutputPath, sanitizeRenderStem } from "../core/runtime-helpers.js";
 import { getPdfPageCount, loadPdfDocument } from "../services/pdf.js";
 import { buildFigureEvidenceContract, getFigureContext } from "./figures.js";
@@ -296,7 +297,7 @@ export async function renderTextLayerSvg(filename, pageNumber, outPath, options 
 
 export async function renderPdfPage(filename, options = {}) {
   ensurePdfFilename(filename);
-  await fs.mkdir(RENDERS_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().rendersDir(), { recursive: true });
   const pageCount = await getPdfPageCount(filename);
   const page = clampInteger(options.page, 1, 1, pageCount);
   const dpi = clampRenderDpi(options.dpi);
@@ -535,7 +536,8 @@ export function safeRenderRegionOutputPath(filename, page, format, suffix = "") 
   const ext = String(format || "png").toLowerCase() === "jpg" ? "jpg" : "png";
   const pageNumber = clampInteger(page, 1, 1, 999999);
   const stem = sanitizeRenderStem(`${filename}-p${pageNumber}-region${suffix ? `-${suffix}` : ""}`);
-  return ensureInsideRoot(path.join(RENDERS_DIR, `${stem}.${ext}`), RENDERS_DIR, "render region output");
+  const rendersDir = getPathResolver().rendersDir();
+  return ensureInsideRoot(path.join(rendersDir, `${stem}.${ext}`), rendersDir, "render region output");
 }
 
 export async function cropRenderedImageWithMagick(magickPath, inputPath, outputPath, rect, zoom = 1.0) {

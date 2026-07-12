@@ -120,7 +120,7 @@ test("list/search do not build missing manifests unless explicitly requested", a
 test("manifest normalization ignores legacy render paths and public retrieval does not expose them", async () => {
   await resetArtifacts();
   wirePorts();
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   await atomicWriteJson(safeFiguresIndexPath(filename), {
     schemaVersion: 1,
     filename,
@@ -180,7 +180,7 @@ test("search uses cached OCR keywords and legacy aliases resolve to canonical co
   await resetArtifacts({ realPdf: true });
   wirePorts();
   const full = await rebuildFigureManifest(filename, { includeManifest: true });
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const manifest = full.manifest;
   manifest.figures[0].legacy_ids = ["fig-p1-legacy"];
   manifest.figures[0].aliases = ["fig-p1-legacy"];

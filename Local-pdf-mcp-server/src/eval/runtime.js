@@ -1,6 +1,7 @@
 import { atomicWriteFile, clampTopK, pathExists, safeEvalCasesPath, safeEvalFixturePath, safeEvalProfilePath, safeEvalReportJsonPath, safeEvalReportMarkdownPath, safeEvalReportTextPath, safePdfPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { DEFAULT_DRIVER_TASK_BUDGET_MS, DOCUMENTS_DIR, DRIVER_PROFILES_DIR, EVAL_CASES_SCHEMA_VERSION, EVAL_DIR, EVAL_FIXTURES_DIR, EVAL_FIXTURE_SCHEMA_VERSION, EVAL_PROFILES_DIR, EVAL_PROFILE_SCHEMA_VERSION, MAX_EVAL_CASES, RENDERS_DIR, SERVER_VERSION, __dirname } from "../core/runtime-constants.js";
+import { DEFAULT_DRIVER_TASK_BUDGET_MS, EVAL_CASES_SCHEMA_VERSION, EVAL_FIXTURE_SCHEMA_VERSION, EVAL_PROFILE_SCHEMA_VERSION, MAX_EVAL_CASES, SERVER_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_GOLDEN_PROFILE, evaluateGoldenProfile, formatGoldenReport } from "./golden.js";
@@ -465,7 +466,7 @@ export function defaultEvalFixtures() {
 }
 
 export async function ensureDefaultEvalProfileFiles(createDefault = true) {
-  await fs.mkdir(EVAL_PROFILES_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().evalProfilesDir(), { recursive: true });
   if (!createDefault) return [];
   const written = [];
   for (const [name, data] of Object.entries(defaultEvalProfiles())) {
@@ -479,7 +480,7 @@ export async function ensureDefaultEvalProfileFiles(createDefault = true) {
 }
 
 export async function ensureDefaultEvalFixtureFiles(createDefault = true) {
-  await fs.mkdir(EVAL_FIXTURES_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().evalFixturesDir(), { recursive: true });
   if (!createDefault) return [];
   const written = [];
   for (const [name, data] of Object.entries(defaultEvalFixtures())) {
@@ -503,14 +504,14 @@ export async function readEvalJsonFile(filePath, expectedSchemaVersion, sourceLa
 }
 
 export async function listEvalProfileFiles() {
-  await fs.mkdir(EVAL_PROFILES_DIR, { recursive: true });
-  const files = await fs.readdir(EVAL_PROFILES_DIR);
+  await fs.mkdir(getPathResolver().evalProfilesDir(), { recursive: true });
+  const files = await fs.readdir(getPathResolver().evalProfilesDir());
   return files.filter((file) => file.toLowerCase().endsWith(".json")).sort((a, b) => a.localeCompare(b));
 }
 
 export async function listEvalFixtureFiles() {
-  await fs.mkdir(EVAL_FIXTURES_DIR, { recursive: true });
-  const files = await fs.readdir(EVAL_FIXTURES_DIR);
+  await fs.mkdir(getPathResolver().evalFixturesDir(), { recursive: true });
+  const files = await fs.readdir(getPathResolver().evalFixturesDir());
   return files.filter((file) => file.toLowerCase().endsWith(".json")).sort((a, b) => a.localeCompare(b));
 }
 
@@ -634,11 +635,11 @@ export async function loadEvalCasesFromFiles(options = {}) {
 }
 
 export async function ensureEvalCasesFile(createDefault = true) {
-  await fs.mkdir(EVAL_DIR, { recursive: true });
-  await fs.mkdir(RENDERS_DIR, { recursive: true });
-  await fs.mkdir(EVAL_PROFILES_DIR, { recursive: true });
-  await fs.mkdir(EVAL_FIXTURES_DIR, { recursive: true });
-  await fs.mkdir(DRIVER_PROFILES_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().evalDir(), { recursive: true });
+  await fs.mkdir(getPathResolver().rendersDir(), { recursive: true });
+  await fs.mkdir(getPathResolver().evalProfilesDir(), { recursive: true });
+  await fs.mkdir(getPathResolver().evalFixturesDir(), { recursive: true });
+  await fs.mkdir(getPathResolver().driverProfilesDir(), { recursive: true });
   const casesPath = safeEvalCasesPath();
 
   if (!(await pathExists(casesPath))) {
@@ -988,7 +989,7 @@ export async function runEvalSuite(options = {}) {
   const includeGolden = Boolean(options.includeGolden);
   const golden = includeGolden
     ? await evaluateGoldenProfile({
-        root: __dirname,
+        root: getPathResolver().root(),
         profile: String(options.goldenProfile || DEFAULT_GOLDEN_PROFILE).trim() || DEFAULT_GOLDEN_PROFILE,
         strictVerifiedOnly: options.strictVerifiedOnly !== false,
       })
@@ -1124,8 +1125,8 @@ export async function maybeWriteEvalReport(report, writeReport = true) {
 }
 
 export async function listPdfFiles() {
-  await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
-  const files = await fs.readdir(DOCUMENTS_DIR);
+  await fs.mkdir(getPathResolver().documentsDir(), { recursive: true });
+  const files = await fs.readdir(getPathResolver().documentsDir());
 
   return files
     .filter((file) => file.toLowerCase().endsWith(".pdf"))
@@ -1140,7 +1141,7 @@ export async function getFileStat(filename) {
   } catch (error) {
     if (error && error.code === "ENOENT") {
       throw new Error(
-        `PDF not found: ${filename}. Put it in the documents folder: ${DOCUMENTS_DIR}`
+        `PDF not found: ${filename}. Put it in the documents folder: ${getPathResolver().documentsDir()}`
       );
     }
     throw error;

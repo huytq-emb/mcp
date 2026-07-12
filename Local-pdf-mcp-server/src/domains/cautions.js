@@ -1,6 +1,7 @@
 import { atomicWriteJson, canonicalSymbol, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeCautionsIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { CAUTION_INDEX_SCHEMA_VERSION, DEFAULT_CAUTION_INDEX_TOPICS, DEFAULT_CAUTION_LIST_TOP_K, DEFAULT_PAGE_RANGE, INDEX_DIR, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_INDEX_RESULTS_PER_TOPIC, MAX_CAUTION_LIST_TOP_K } from "../core/runtime-constants.js";
+import { CAUTION_INDEX_SCHEMA_VERSION, DEFAULT_CAUTION_INDEX_TOPICS, DEFAULT_CAUTION_LIST_TOP_K, DEFAULT_PAGE_RANGE, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_INDEX_RESULTS_PER_TOPIC, MAX_CAUTION_LIST_TOP_K } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 
 
@@ -158,9 +159,9 @@ export function canonicalCautionId(filename, topic, type) {
 }
 
 export async function buildCautionsIndex(filename, indexData = null, sectionsIndex = null, registersIndex = null) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const actualIndexData = indexData || await loadPdfIndex(filename);
   const actualSectionsIndex = sectionsIndex || await getSectionsIndex(filename);
   const actualRegistersIndex = registersIndex || await getRegistersIndex(filename);
@@ -301,7 +302,7 @@ export async function loadCautionsIndex(filename) {
     if (index.schemaVersion !== CAUTION_INDEX_SCHEMA_VERSION) return null;
     if (index.filename !== filename) return null;
     if (!Array.isArray(index.cautions)) return null;
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
     return index;
   } catch {

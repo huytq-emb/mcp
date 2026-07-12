@@ -1,7 +1,8 @@
 import { appendEvidenceContract, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
 import { withVisualSemanticGuard } from "../core/visual-guard.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, HYBRID_BM25_B, HYBRID_BM25_K1, HYBRID_BM25_WEIGHT, HYBRID_CANDIDATE_LIMIT, HYBRID_MIN_SCORE, HYBRID_PROXIMITY_WEIGHT, HYBRID_PROXIMITY_WINDOW, INDEX_DIR, MAX_BITFIELD_TABLE_ROWS, MAX_HYBRID_TOP_K, MAX_PREVIEW_CHARS, MAX_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
+import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, HYBRID_BM25_B, HYBRID_BM25_K1, HYBRID_BM25_WEIGHT, HYBRID_CANDIDATE_LIMIT, HYBRID_MIN_SCORE, HYBRID_PROXIMITY_WEIGHT, HYBRID_PROXIMITY_WINDOW, MAX_BITFIELD_TABLE_ROWS, MAX_HYBRID_TOP_K, MAX_PREVIEW_CHARS, MAX_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import { isLikelyBitfieldName, parseBitfieldSemantics, resolveBitfieldRegisterMapping } from "../bitfields/semantics.js";
 import { buildBitfieldConflicts, findBitfieldOverlaps, findRegisterEntry, validateBitfieldEntry } from "../bitfields/validation.js";
@@ -143,7 +144,7 @@ export async function loadFigureOcrForSearch(filename) {
     if (data.schemaVersion !== 1) return null;
     if (data.filename !== filename) return null;
     if (!Array.isArray(data.figures)) return null;
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(data.source, source)) return null;
     return data;
   } catch {
@@ -1828,9 +1829,9 @@ export function collectBitfieldCandidatesFromChunk(filename, chunk, registerEntr
 }
 
 export async function buildBitfieldsIndex(filename, indexData = null, registersIndex = null, tablesIndex = null) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const pdfIndex = indexData || await loadPdfIndex(filename);
   const regIndex = registersIndex || await getRegistersIndex(filename);
   const candidates = new Map();
@@ -1922,7 +1923,7 @@ export async function loadBitfieldsIndex(filename) {
     if (index.filename !== filename) return null;
     if (!Array.isArray(index.bitfields)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
 
     return index;

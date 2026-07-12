@@ -470,7 +470,7 @@ export function validateEvidenceGraph(graph = {}) {
 
 export async function buildEvidenceGraph(filename) {
   validatedGraphCache.delete(filename);
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
   const artifactValues = await loadAndValidateCoreArtifactGenerations(filename, {
     sourceFingerprint: currentSourceFingerprint,
@@ -807,7 +807,7 @@ export async function loadEvidenceGraph(filename, { buildIfMissing = false } = {
     if (buildIfMissing) return buildEvidenceGraph(filename);
     throw new Error(`Evidence graph not found for ${filename}. Run index_pdf first or rebuild the evidence graph.`);
   }
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
   const cacheSignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint);
   const cached = validatedGraphCache.get(filename);

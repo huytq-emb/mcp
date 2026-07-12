@@ -1,7 +1,10 @@
-import { ATOMIC_WRITE_RETRY_MS, DEFAULT_BITFIELD_LIST_TOP_K, DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, DEFAULT_REGISTER_LIST_TOP_K, DEFAULT_TOP_K, DOCUMENTS_DIR, DRIVER_PROFILES_DIR, DRIVER_PROFILE_FRAGMENTS_DIR, EVAL_DIR, EVAL_FIXTURES_DIR, EVAL_PROFILES_DIR, EVIDENCE_CONTRACT_SCHEMA_VERSION, INDEX_DIR, INDEX_LOCK_SCHEMA_VERSION, INDEX_LOCK_STALE_MS, MAX_BITFIELD_LIST_TOP_K, MAX_CHUNK_SIZE, MAX_REGISTER_LIST_TOP_K, MAX_TOOL_OUTPUT_CHARS, MAX_TOP_K, MIN_CHUNK_SIZE, RENDERS_DIR, SERVER_NAME, SERVER_VERSION } from "./runtime-constants.js";
+import { ATOMIC_WRITE_RETRY_MS, DEFAULT_BITFIELD_LIST_TOP_K, DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, DEFAULT_REGISTER_LIST_TOP_K, DEFAULT_TOP_K, EVIDENCE_CONTRACT_SCHEMA_VERSION, INDEX_LOCK_SCHEMA_VERSION, INDEX_LOCK_STALE_MS, MAX_BITFIELD_LIST_TOP_K, MAX_CHUNK_SIZE, MAX_REGISTER_LIST_TOP_K, MAX_TOOL_OUTPUT_CHARS, MAX_TOP_K, MIN_CHUNK_SIZE, SERVER_NAME, SERVER_VERSION } from "./runtime-constants.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
+import { readSourceIdentity } from "../artifacts/source-identity.js";
+import { atomicWriteFile as writeFileAtomically } from "./atomic-file.js";
+import { getPathResolver } from "./path-resolver.js";
 import { normalizeEvidenceContract } from "../evidence/contract.js";
 import { sanitizeDriverProfileName } from "../driver-profiles/catalog.js";
 import {
@@ -280,25 +283,13 @@ export async function sleep(ms) {
 }
 
 export async function atomicWriteFile(targetPath, data, encoding = "utf-8") {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-  try {
-    await fs.writeFile(tmpPath, data, encoding);
-    await fs.rename(tmpPath, targetPath);
-  } catch (error) {
-    try {
-      await fs.rm(tmpPath, { force: true });
-    } catch {
-      // Best-effort cleanup only.
-    }
-    throw error;
-  }
+  return writeFileAtomically(targetPath, data, encoding);
 }
 
 export async function atomicWriteJson(targetPath, value) {
   let payload = value;
-  const indexRelativePath = path.relative(INDEX_DIR, path.resolve(targetPath));
+  const indexDir = getPathResolver().indexDir();
+  const indexRelativePath = path.relative(indexDir, path.resolve(targetPath));
   if (
     value &&
     typeof value === "object" &&
@@ -355,7 +346,7 @@ export async function removeIndexLock(filename, reason = "manual cleanup") {
 }
 
 export async function acquireIndexLock(filename, options = {}) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
   const lockPath = safeIndexLockPath(filename);
   const forceLock = Boolean(options.forceLock);
 
@@ -422,15 +413,9 @@ export async function withIndexBuildLock(filename, options, callback) {
   }
 }
 
-export async function getPdfSourceInfo(filename) {
+export async function getPdfSourceInfo(filename, options = {}) {
   const filePath = safePdfPath(filename);
-  const stat = await fs.stat(filePath);
-
-  return {
-    size: stat.size,
-    mtimeMs: stat.mtimeMs,
-    mtime: stat.mtime.toISOString(),
-  };
+  return readSourceIdentity(filePath, { includeHash: options.includeHash === true });
 }
 
 export function isSamePdfSource(cacheSource, currentSource) {
@@ -439,12 +424,16 @@ export function isSamePdfSource(cacheSource, currentSource) {
   const cacheMtime = Number(cacheSource.mtimeMs);
   const currentMtime = Number(currentSource.mtimeMs);
 
-  return (
+  const cheapMatch = (
     Number(cacheSource.size) === Number(currentSource.size) &&
     Number.isFinite(cacheMtime) &&
     Number.isFinite(currentMtime) &&
     Math.abs(cacheMtime - currentMtime) < 1500
   );
+  if (!cheapMatch) return false;
+  if (currentSource.sha256 && !cacheSource.sha256) return false;
+  if (cacheSource.sha256 && currentSource.sha256) return cacheSource.sha256 === currentSource.sha256;
+  return true;
 }
 
 export function ensurePdfFilename(filename) {
@@ -490,114 +479,58 @@ export function ensureInsideRoot(candidatePath, rootDir, what) {
 }
 
 export function safePdfPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(path.join(DOCUMENTS_DIR, filename), DOCUMENTS_DIR, "PDF");
+  return getPathResolver().pdf(filename);
 }
 
 export function safeIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.index.json`),
-    INDEX_DIR,
-    "index"
-  );
+  return getPathResolver().chunkIndex(filename);
 }
 
 export function safePagesCachePath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.pages.json`),
-    INDEX_DIR,
-    "pages cache"
-  );
+  return getPathResolver().pages(filename);
 }
 
 export function safePagesPartialCachePath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.pages.partial.json`),
-    INDEX_DIR,
-    "partial pages cache"
-  );
+  return getPathResolver().pagesPartial(filename);
 }
 
 export function safeSectionsIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.sections.json`),
-    INDEX_DIR,
-    "sections index"
-  );
+  return getPathResolver().sections(filename);
 }
 
 export function safeRegistersIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.registers.json`),
-    INDEX_DIR,
-    "registers index"
-  );
+  return getPathResolver().registers(filename);
 }
 
 export function safeTablesIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.tables.json`),
-    INDEX_DIR,
-    "tables index"
-  );
+  return getPathResolver().tables(filename);
 }
 
 export function safeTablesPartialIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.tables.partial.json`),
-    INDEX_DIR,
-    "partial tables index"
-  );
+  return getPathResolver().tablesPartial(filename);
 }
 
 export function safeBitfieldsIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.bitfields.json`),
-    INDEX_DIR,
-    "bitfields index"
-  );
+  return getPathResolver().bitfields(filename);
 }
 
 export function safeSequencesIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.sequences.json`),
-    INDEX_DIR,
-    "sequences index"
-  );
+  return getPathResolver().sequences(filename);
 }
 
 export function safeCautionsIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.cautions.json`),
-    INDEX_DIR,
-    "cautions index"
-  );
+  return getPathResolver().cautions(filename);
 }
 
 export function safeFiguresIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.figures.json`),
-    INDEX_DIR,
-    "figures/captions index"
-  );
+  return getPathResolver().figures(filename);
 }
 
 export function safeFigureLookupIndexPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.figures.lookup.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.figures.lookup.json`),
+    getPathResolver().indexDir(),
     "figures lookup index"
   );
 }
@@ -605,8 +538,8 @@ export function safeFigureLookupIndexPath(filename) {
 export function safeFigureOcrIndexPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.figure_ocr.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.figure_ocr.json`),
+    getPathResolver().indexDir(),
     "figure OCR index"
   );
 }
@@ -628,8 +561,8 @@ export function evidenceBundleResult(text, bundle) {
 export function safeFigureSemanticIndexPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.figure_semantic.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.figure_semantic.json`),
+    getPathResolver().indexDir(),
     "figure semantic index"
   );
 }
@@ -637,35 +570,25 @@ export function safeFigureSemanticIndexPath(filename) {
 export function safeVisualEvidencePath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.visual-evidence.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.visual-evidence.json`),
+    getPathResolver().indexDir(),
     "visual evidence index"
   );
 }
 
 export function safeArtifactManifestPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.manifest.json`),
-    INDEX_DIR,
-    "artifact manifest"
-  );
+  return getPathResolver().manifest(filename);
 }
 
 export function safeEvidenceGraphPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.evidence-graph.json`),
-    INDEX_DIR,
-    "evidence graph"
-  );
+  return getPathResolver().evidenceGraph(filename);
 }
 
 export function safeHybridQualityReportJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.hybrid-quality.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.hybrid-quality.json`),
+    getPathResolver().indexDir(),
     "hybrid Python quality report JSON"
   );
 }
@@ -673,8 +596,8 @@ export function safeHybridQualityReportJsonPath(filename) {
 export function safeHybridQualityReportMarkdownPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.hybrid-quality.md`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.hybrid-quality.md`),
+    getPathResolver().indexDir(),
     "hybrid Python quality report Markdown"
   );
 }
@@ -761,14 +684,14 @@ export function safeRenderOutputPath(filename, page, format, suffix = "") {
   const ext = String(format || "png").toLowerCase() === "jpg" ? "jpg" : String(format || "png").toLowerCase() === "svg" || String(format || "png").toLowerCase() === "text_svg" ? "svg" : "png";
   const pageNumber = clampInteger(page, 1, 1, 999999);
   const stem = sanitizeRenderStem(`${filename}-p${pageNumber}${suffix ? `-${suffix}` : ""}`);
-  return ensureInsideRoot(path.join(RENDERS_DIR, `${stem}.${ext}`), RENDERS_DIR, "render output");
+  return ensureInsideRoot(path.join(getPathResolver().rendersDir(), `${stem}.${ext}`), getPathResolver().rendersDir(), "render output");
 }
 
 export function safeDriverPackPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-pack.txt`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-pack.txt`),
+    getPathResolver().indexDir(),
     "driver evidence pack"
   );
 }
@@ -776,8 +699,8 @@ export function safeDriverPackPath(filename) {
 export function safeDriverPackJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-pack.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-pack.json`),
+    getPathResolver().indexDir(),
     "driver evidence pack JSON"
   );
 }
@@ -785,8 +708,8 @@ export function safeDriverPackJsonPath(filename) {
 export function safeDriverPackMarkdownPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-pack.md`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-pack.md`),
+    getPathResolver().indexDir(),
     "driver evidence pack Markdown"
   );
 }
@@ -794,8 +717,8 @@ export function safeDriverPackMarkdownPath(filename) {
 export function safeDriverTaskPlanPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-task-plan.txt`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-task-plan.txt`),
+    getPathResolver().indexDir(),
     "driver task plan"
   );
 }
@@ -803,8 +726,8 @@ export function safeDriverTaskPlanPath(filename) {
 export function safeDriverTaskPlanJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-task-plan.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-task-plan.json`),
+    getPathResolver().indexDir(),
     "driver task plan JSON"
   );
 }
@@ -812,8 +735,8 @@ export function safeDriverTaskPlanJsonPath(filename) {
 export function safeDriverTaskPlanMarkdownPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.driver-task-plan.md`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.driver-task-plan.md`),
+    getPathResolver().indexDir(),
     "driver task plan Markdown"
   );
 }
@@ -821,8 +744,8 @@ export function safeDriverTaskPlanMarkdownPath(filename) {
 export function safeDoctorReportPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.doctor.txt`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.doctor.txt`),
+    getPathResolver().indexDir(),
     "doctor report"
   );
 }
@@ -830,8 +753,8 @@ export function safeDoctorReportPath(filename) {
 export function safeDoctorReportJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.doctor.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.doctor.json`),
+    getPathResolver().indexDir(),
     "doctor report JSON"
   );
 }
@@ -839,16 +762,16 @@ export function safeDoctorReportJsonPath(filename) {
 export function safeDoctorReportMarkdownPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.doctor.md`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.doctor.md`),
+    getPathResolver().indexDir(),
     "doctor report Markdown"
   );
 }
 
 export function safeEvalCasesPath() {
   return ensureInsideRoot(
-    path.join(EVAL_DIR, "manual-cases.json"),
-    EVAL_DIR,
+    path.join(getPathResolver().evalDir(), "manual-cases.json"),
+    getPathResolver().evalDir(),
     "eval cases"
   );
 }
@@ -856,8 +779,8 @@ export function safeEvalCasesPath() {
 export function safeEvalProfilePath(profileName) {
   const safeName = sanitizeDriverProfileName(profileName || "generic");
   return ensureInsideRoot(
-    path.join(EVAL_PROFILES_DIR, `${safeName}.json`),
-    EVAL_PROFILES_DIR,
+    path.join(getPathResolver().evalProfilesDir(), `${safeName}.json`),
+    getPathResolver().evalProfilesDir(),
     "eval profile"
   );
 }
@@ -865,8 +788,8 @@ export function safeEvalProfilePath(profileName) {
 export function safeEvalFixturePath(fixtureName) {
   const safeName = sanitizeDriverProfileName(fixtureName || "fixture");
   return ensureInsideRoot(
-    path.join(EVAL_FIXTURES_DIR, `${safeName}.json`),
-    EVAL_FIXTURES_DIR,
+    path.join(getPathResolver().evalFixturesDir(), `${safeName}.json`),
+    getPathResolver().evalFixturesDir(),
     "eval fixture"
   );
 }
@@ -874,8 +797,8 @@ export function safeEvalFixturePath(fixtureName) {
 export function safeEvalReportTextPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.eval-report.txt`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.eval-report.txt`),
+    getPathResolver().indexDir(),
     "eval report text"
   );
 }
@@ -883,8 +806,8 @@ export function safeEvalReportTextPath(filename) {
 export function safeEvalReportJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.eval-report.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.eval-report.json`),
+    getPathResolver().indexDir(),
     "eval report JSON"
   );
 }
@@ -892,8 +815,8 @@ export function safeEvalReportJsonPath(filename) {
 export function safeEvalReportMarkdownPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.eval-report.md`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.eval-report.md`),
+    getPathResolver().indexDir(),
     "eval report Markdown"
   );
 }
@@ -901,8 +824,8 @@ export function safeEvalReportMarkdownPath(filename) {
 export function safeDriverProfilePath(profileName) {
   const safeName = sanitizeDriverProfileName(profileName);
   return ensureInsideRoot(
-    path.join(DRIVER_PROFILES_DIR, `${safeName}.json`),
-    DRIVER_PROFILES_DIR,
+    path.join(getPathResolver().driverProfilesDir(), `${safeName}.json`),
+    getPathResolver().driverProfilesDir(),
     "driver profile"
   );
 }
@@ -910,8 +833,8 @@ export function safeDriverProfilePath(profileName) {
 export function safeDriverProfileFragmentPath(fragmentName) {
   const safeName = sanitizeDriverProfileName(fragmentName);
   return ensureInsideRoot(
-    path.join(DRIVER_PROFILE_FRAGMENTS_DIR, `${safeName}.json`),
-    DRIVER_PROFILE_FRAGMENTS_DIR,
+    path.join(getPathResolver().driverProfileFragmentsDir(), `${safeName}.json`),
+    getPathResolver().driverProfileFragmentsDir(),
     "driver profile fragment"
   );
 }
@@ -919,25 +842,21 @@ export function safeDriverProfileFragmentPath(fragmentName) {
 export function safeIndexLockPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.index.lock`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.index.lock`),
+    getPathResolver().indexDir(),
     "index build lock"
   );
 }
 
 export function safeJobsStatePath() {
-  return ensureInsideRoot(
-    path.join(INDEX_DIR, ".jobs.json"),
-    INDEX_DIR,
-    "background jobs state"
-  );
+  return getPathResolver().jobsDir();
 }
 
 export function safeModuleProfileJsonPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.module-profile.json`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.module-profile.json`),
+    getPathResolver().indexDir(),
     "module profile JSON"
   );
 }
@@ -945,8 +864,8 @@ export function safeModuleProfileJsonPath(filename) {
 export function safeModuleProfileTextPath(filename) {
   ensurePdfFilename(filename);
   return ensureInsideRoot(
-    path.join(INDEX_DIR, `${filename}.module-profile.txt`),
-    INDEX_DIR,
+    path.join(getPathResolver().indexDir(), `${filename}.module-profile.txt`),
+    getPathResolver().indexDir(),
     "module profile text"
   );
 }

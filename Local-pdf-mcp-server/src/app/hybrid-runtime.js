@@ -1,12 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import {
-  DOCUMENTS_DIR,
-  INDEX_DIR,
-  PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
-} from "../core/runtime-constants.js";
-import {
+  atomicWriteJson,
   getPdfSourceInfo,
   safeBitfieldsIndexPath,
   safeCautionsIndexPath,
@@ -39,9 +37,14 @@ function createRequestId(operation) {
 }
 
 async function prepareWorkerPaths(requestId) {
-  const workerRoot = path.join(INDEX_DIR, ".workers", requestId);
+  const workerRoot = path.join(getPathResolver().pythonWorkerTempDir(), requestId);
   await fs.mkdir(workerRoot, { recursive: true });
   return { workerRoot, cancelPath: path.join(workerRoot, "cancel.requested") };
+}
+
+function allowedRoots() {
+  const paths = getPathResolver();
+  return [paths.documentsDir(), paths.indexDir()];
 }
 
 function engineMode(options = {}) {
@@ -85,12 +88,12 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
   const { workerRoot, cancelPath } = await prepareWorkerPaths(requestId);
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation });
   const tempPath = path.join(workerRoot, `${kind}.json`);
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   try {
     const worker = await runPythonWorker({
       requestId,
       operation,
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), ...(requestOptions.inputs || {}) },
       outputs: { artifactPath: tempPath, [`${kind}Path`]: tempPath, cancelPath, ...(requestOptions.outputs || {}) },
       options: requestOptions.options || {},
@@ -103,6 +106,9 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
     const descriptor = worker.artifacts.find((entry) => entry.kind === kind) || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", `Python worker did not return ${kind} artifact metadata`);
     const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename, source });
+    const workerValue = JSON.parse(await fs.readFile(validated.tempPath, "utf8"));
+    workerValue.source = source;
+    await atomicWriteJson(validated.tempPath, workerValue);
     await atomicPromoteWorkerArtifact(validated.tempPath, targetPath);
     const value = JSON.parse(await fs.readFile(targetPath, "utf8"));
     return { value, worker: { requestId, durationMs: worker.durationMs, interpreter: worker.interpreter, descriptor: validated, events: worker.events } };
@@ -114,7 +120,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
 export async function getPdfPageCountHybrid(filename, options = {}) {
   return runWithNodeFallback("pdf.inspect", options, async () => {
     const worker = await runPythonWorker({
-      operation: "pdf.inspect", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      operation: "pdf.inspect", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: {},
     }, { timeoutMs: 30_000 });
     return { value: Number(worker.result?.pageCount || 0), worker };
@@ -124,7 +130,7 @@ export async function getPdfPageCountHybrid(filename, options = {}) {
 export async function extractPdfPagesHybrid(filename, options = {}) {
   return runWithNodeFallback("pages.extract", options, async () => {
     const worker = await runPythonWorker({
-      operation: "pages.extract", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      operation: "pages.extract", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {},
       options: { startPage: options.startPage, endPage: options.endPage },
     }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress });
@@ -163,7 +169,7 @@ export async function extractTablesFromPagesHybrid(filename, options = {}) {
     const endPage = Number(options.endPage || startPage);
     const candidatePages = Array.from({ length: Math.max(0, endPage - startPage + 1) }, (_, index) => startPage + index);
     const worker = await runPythonWorker({
-      operation: "tables.extract", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      operation: "tables.extract", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: { candidatePages },
     }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress });
     return { value: { filename, pageCount: worker.result.pageCount, startPage, endPage, tables: worker.result.tables || [], source: "python-pymupdf-coordinate" }, worker };
@@ -181,16 +187,20 @@ export async function runStructuredBuildHybrid(filename, options = {}) {
   const outputs = Object.fromEntries(Object.keys(targetPaths).map((kind) => [`${kind}Path`, path.join(workerRoot, `${kind}.json`)]));
   try {
     const worker = await runPythonWorker({
-      requestId, operation: "structured.build", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      requestId, operation: "structured.build", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), pagesPath: safePagesCachePath(filename) },
       outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [] },
     }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr });
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     const validated = [];
     for (const descriptor of worker.artifacts) validated.push(await validateWorkerArtifact(descriptor, { workerRoot, filename, source }));
     if (validated.length !== 4) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", "structured.build must return four validated artifacts");
     const values = {};
-    for (const descriptor of validated) values[descriptor.kind] = JSON.parse(await fs.readFile(descriptor.tempPath, "utf8"));
+    for (const descriptor of validated) {
+      values[descriptor.kind] = JSON.parse(await fs.readFile(descriptor.tempPath, "utf8"));
+      values[descriptor.kind].source = source;
+      await atomicWriteJson(descriptor.tempPath, values[descriptor.kind]);
+    }
     const quality = await validateHybridStructuredQuality({
       filename,
       values,

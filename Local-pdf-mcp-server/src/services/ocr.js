@@ -1,14 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  DOCUMENTS_DIR,
-  FIGURE_INDEX_SCHEMA_VERSION,
-  FIGURE_OCR_SCHEMA_VERSION,
-  INDEX_DIR,
-  PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
-  RENDERS_DIR,
-} from "../core/runtime-constants.js";
+import { FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import {
   atomicWriteJson,
   compactText,
@@ -58,7 +52,7 @@ function requestIdFor(operation) {
 
 async function prepareWorkerRoot(operation) {
   const requestId = requestIdFor(operation);
-  const workerRoot = path.join(INDEX_DIR, ".workers", requestId);
+  const workerRoot = path.join(getPathResolver().indexDir(), ".workers", requestId);
   await fs.mkdir(workerRoot, { recursive: true });
   return { requestId, workerRoot, cancelPath: path.join(workerRoot, "cancel.requested") };
 }
@@ -75,7 +69,7 @@ function optionsForWorker(options = {}) {
 
 function figureOcrCheckpointPath(filename) {
   ensurePdfFilename(filename);
-  return ensureInsideRoot(path.join(INDEX_DIR, `${filename}.figure_ocr.partial.json`), INDEX_DIR, "figure OCR checkpoint");
+  return ensureInsideRoot(path.join(getPathResolver().indexDir(), `${filename}.figure_ocr.partial.json`), getPathResolver().indexDir(), "figure OCR checkpoint");
 }
 
 function capabilityStatus(raw = {}, fallback = {}) {
@@ -242,7 +236,7 @@ async function loadJsonArtifact(filename, filePath, schemaVersion, requireSource
     if (data.schemaVersion !== schemaVersion) return null;
     if (data.filename !== filename) return null;
     if (requireSource) {
-      const source = await getPdfSourceInfo(filename);
+      const source = await getPdfSourceInfo(filename, { includeHash: true });
       if (!isSamePdfSource(data.source, source)) return null;
     }
     return data;
@@ -274,14 +268,14 @@ export async function buildFiguresWithPython(filename, options = {}) {
   const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot("figures.extract");
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figures.extract" });
   const tempPath = path.join(workerRoot, "figures.json");
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   try {
     const worker = await runPythonWorker({
       requestId,
       operation: "figures.extract",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR, RENDERS_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir(), getPathResolver().rendersDir()],
       inputs: { filename, pdfPath: safePdfPath(filename) },
-      outputs: { artifactPath: tempPath, rendersRoot: RENDERS_DIR, cancelPath },
+      outputs: { artifactPath: tempPath, rendersRoot: getPathResolver().rendersDir(), cancelPath },
       options: { ...optionsForWorker(options), manifestOnly: Boolean(options.manifestOnly), renderImages: options.renderImages === true, runOcr: options.runOcr === true, runVl: options.runVl === true, runSemantic: options.runSemantic === true },
     }, {
       timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
@@ -319,14 +313,14 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figure_ocr.build" });
   const tempPath = path.join(workerRoot, "figure_ocr.json");
   const checkpointPath = figureOcrCheckpointPath(filename);
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   try {
     const worker = await runPythonWorker({
       requestId,
       operation: "figure_ocr.build",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR, RENDERS_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir(), getPathResolver().rendersDir()],
       inputs: { filename, pdfPath: safePdfPath(filename), figuresPath: safeFiguresIndexPath(filename), existingArtifactPath: safeFigureOcrIndexPath(filename) },
-      outputs: { artifactPath: tempPath, checkpointPath, rendersRoot: RENDERS_DIR, cancelPath },
+      outputs: { artifactPath: tempPath, checkpointPath, rendersRoot: getPathResolver().rendersDir(), cancelPath },
       options: optionsForWorker(options),
     }, {
       timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
@@ -449,7 +443,7 @@ function contextFullCacheMaxBytes() {
 }
 
 function cacheDir(cacheName) {
-  return ensureInsideRoot(path.join(INDEX_DIR, "cache", cacheName), INDEX_DIR, `${cacheName} cache`);
+  return ensureInsideRoot(path.join(getPathResolver().indexDir(), "cache", cacheName), getPathResolver().indexDir(), `${cacheName} cache`);
 }
 
 function safeCachePath(cacheName, filename, key, ext) {
@@ -457,7 +451,7 @@ function safeCachePath(cacheName, filename, key, ext) {
   const safeExt = String(ext || "json").replace(/[^A-Za-z0-9]/g, "") || "json";
   const dir = cacheDir(cacheName);
   const stem = sanitizeRenderStem(`${filename}-${key}`);
-  return ensureInsideRoot(path.join(dir, `${stem}.${safeExt}`), INDEX_DIR, `${cacheName} cache file`);
+  return ensureInsideRoot(path.join(dir, `${stem}.${safeExt}`), getPathResolver().indexDir(), `${cacheName} cache file`);
 }
 
 function figureIdentifiers(figure = {}) {
@@ -1153,7 +1147,7 @@ export async function renderFigureOnDemand(args = {}) {
 
   let source;
   try {
-    source = await getPdfSourceInfo(filename);
+    source = await getPdfSourceInfo(filename, { includeHash: true });
   } catch (error) {
     return failureFromError(error, "PDF_NOT_FOUND", { filename, page: target.page, figure_id: target.figure_id || "" });
   }
@@ -1174,7 +1168,7 @@ export async function renderFigureOnDemand(args = {}) {
     const worker = await runPythonWorker({
       requestId,
       operation: "figure.render",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
       inputs: { filename, pdfPath: safePdfPath(filename) },
       outputs: { imagePath: paths.imagePath, cancelPath },
       options: { page: target.page, bbox: target.bbox, scale, force },
@@ -1407,7 +1401,7 @@ async function figureParserOnDemand(args = {}, parser = "structure", existingRen
     const worker = await runPythonWorker({
       requestId,
       operation: parser === "vl" ? "figure.vl" : "figure.structure",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
       inputs: { filename: render.filename, pdfPath: safePdfPath(render.filename), imagePath: render.image_path },
       outputs: { artifactPath: tempPath, cancelPath },
       options: { page: render.page, bbox: render.bbox, scale: render.scale, engine, force },
@@ -1639,7 +1633,7 @@ export async function ocrFigureOnDemand(args = {}) {
     const worker = await runPythonWorker({
       requestId,
       operation: "ocr.image",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
       inputs: { filename: render.filename, pdfPath: safePdfPath(render.filename), imagePath: render.image_path },
       outputs: { cancelPath },
       options: { engine, bbox: render.bbox, scale: render.scale },
@@ -1762,7 +1756,7 @@ async function ocrFigureForInspect(args = {}) {
 
   let source;
   try {
-    source = await getPdfSourceInfo(filename);
+    source = await getPdfSourceInfo(filename, { includeHash: true });
   } catch (error) {
     return { ocr: failureFromError(error, "PDF_NOT_FOUND", { filename, page: target.page, figure_id: target.figure_id || "" }), target };
   }
@@ -1804,7 +1798,7 @@ async function ocrFigureForInspect(args = {}) {
     const worker = await runPythonWorker({
       requestId,
       operation: "figure.inspect_basic",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
       inputs: { filename, pdfPath: safePdfPath(filename) },
       outputs: { imagePath: renderPaths.imagePath, cancelPath },
       options: { page: target.page, bbox: target.bbox, scale, engine, force },
@@ -2003,7 +1997,7 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
   const missingPages = [];
 
   try {
-    source = await getPdfSourceInfo(filename);
+    source = await getPdfSourceInfo(filename, { includeHash: true });
     for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
       try {
         const cached = await readCachedContextPage(filename, source, pageNumber);
@@ -2033,7 +2027,7 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
     const worker = await runPythonWorker({
       requestId,
       operation: "pages.extract",
-      allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
+      allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
       inputs: { filename, pdfPath: safePdfPath(filename) },
       outputs: { cancelPath },
       options: { startPage: extractStart, endPage: extractEnd },
@@ -2390,7 +2384,7 @@ export async function getCacheStatus(args = {}) {
       ok: true,
       filename: listed.filename || "",
       kind: args.kind || "all",
-      cache_root: ensureInsideRoot(path.join(INDEX_DIR, "cache"), INDEX_DIR, "cache root"),
+      cache_root: ensureInsideRoot(path.join(getPathResolver().indexDir(), "cache"), getPathResolver().indexDir(), "cache root"),
       kinds,
       total_files: listed.files.length,
       total_bytes: listed.files.reduce((sum, item) => sum + item.bytes, 0),

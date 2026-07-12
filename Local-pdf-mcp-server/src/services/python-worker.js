@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import readline from "node:readline";
-import { DEFAULT_RUNTIME_CONFIG } from "../core/runtime-config.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import {
   DEFAULT_EXTRACTION_ENGINE,
   DEFAULT_PYTHON_OPERATIONS,
@@ -14,6 +14,8 @@ import {
   PYTHON_WORKER_PROTOCOL_VERSION,
 } from "../core/runtime-constants.js";
 import { ensureInsideRoot } from "../core/path-safety.js";
+import { replaceFileAtomic } from "../core/atomic-file.js";
+import { sha256File as hashSourceFile } from "../artifacts/source-identity.js";
 
 const WORKER_ARTIFACT_CONTRACTS = Object.freeze({
   pages: { schemaVersion: 1, countKey: "pageCount" },
@@ -74,7 +76,7 @@ function realFile(candidate) {
 }
 
 export function resolvePythonInterpreter(options = {}) {
-  const rootDir = path.resolve(options.rootDir || DEFAULT_RUNTIME_CONFIG.rootDir);
+  const rootDir = path.resolve(options.rootDir || getPathResolver().root());
   const env = options.env || process.env;
   const explicit = String(options.pythonPath || env.RENESAS_MCP_PYTHON || env.PDF_TOOL_PYTHON || "").trim();
   const explicitSource = options.pythonPath || env.RENESAS_MCP_PYTHON ? "RENESAS_MCP_PYTHON" : "PDF_TOOL_PYTHON";
@@ -95,7 +97,7 @@ function appendBounded(current, value, limit) {
 }
 
 export async function runPythonWorker(request, options = {}) {
-  const rootDir = path.resolve(options.rootDir || DEFAULT_RUNTIME_CONFIG.rootDir);
+  const rootDir = path.resolve(options.rootDir || getPathResolver().root());
   const interpreter = options.interpreter || resolvePythonInterpreter({ rootDir, env: options.env, pythonPath: options.pythonPath });
   if (!interpreter.available) throw new PythonWorkerError("PYTHON_UNAVAILABLE", interpreter.reason || "Python interpreter unavailable", { interpreter });
   const spawn = options.spawn || (await import("node:child_process")).spawn;
@@ -188,14 +190,7 @@ export async function runPythonWorker(request, options = {}) {
 }
 
 export async function sha256File(filePath) {
-  const hash = crypto.createHash("sha256");
-  await new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(filePath);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.once("error", reject);
-    stream.once("end", resolve);
-  });
-  return hash.digest("hex");
+  return hashSourceFile(filePath);
 }
 
 async function readArtifactHeader(filePath, bytes = 512 * 1024) {
@@ -250,25 +245,9 @@ export async function validateWorkerArtifact(descriptor, options = {}) {
 
 export async function atomicPromoteWorkerArtifact(tempPath, targetPath) {
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-  const incoming = `${targetPath}.tmp-promote-${process.pid}-${Date.now()}`;
-  const backup = `${targetPath}.backup-${process.pid}-${Date.now()}`;
+  const incoming = `${targetPath}.incoming-${process.pid}-${Date.now()}`;
   await fsp.copyFile(tempPath, incoming);
-  let backedUp = false;
-  try {
-    try {
-      await fsp.rename(targetPath, backup);
-      backedUp = true;
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    await fsp.rename(incoming, targetPath);
-    if (backedUp) await fsp.rm(backup, { force: true });
-  } catch (error) {
-    await fsp.rm(incoming, { force: true }).catch(() => {});
-    if (backedUp) await fsp.rename(backup, targetPath).catch(() => {});
-    throw error;
-  }
-  return targetPath;
+  return replaceFileAtomic(incoming, targetPath);
 }
 
 export function recordExtractionEngineEvent(event) {

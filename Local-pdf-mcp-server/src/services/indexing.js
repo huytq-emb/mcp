@@ -1,10 +1,12 @@
 import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_DIR, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
+import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { buildEvidenceGraph } from "./evidence-graph.js";
 import { stampCoreArtifactGenerations } from "../artifacts/generation.js";
+import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -576,9 +578,9 @@ export function detectSectionCandidatesFromPage(page) {
 }
 
 export async function buildSectionsIndex(filename, pageCache = null) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const cache = pageCache || (await getPagesCache(filename));
   const byKey = new Map();
 
@@ -648,7 +650,7 @@ export async function loadSectionsIndex(filename) {
     if (indexData.filename !== filename) return null;
     if (!Array.isArray(indexData.sections)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(indexData.source, currentSource)) return null;
 
     return indexData;
@@ -1006,9 +1008,9 @@ export function upsertRegisterCandidate(byName, candidate, chunk = null, section
 }
 
 export async function buildRegistersIndex(filename, indexData = null, sectionsIndex = null, tablesIndex = null) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const chunkIndex = indexData || (await loadPdfIndex(filename));
   const sectionIndexData = sectionsIndex || (await getSectionsIndex(filename));
   const pageCache = await getPagesCache(filename);
@@ -1160,7 +1162,7 @@ export async function loadRegistersIndex(filename) {
     if (indexData.filename !== filename) return null;
     if (!Array.isArray(indexData.registers)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(indexData.source, currentSource)) return null;
 
     return indexData;
@@ -1436,10 +1438,11 @@ export function buildSearchText(chunk) {
 }
 
 export async function buildPdfIndex(filename, options = {}) {
-  return withIndexBuildLock(filename, {
+  return withSourceIdentityCache(() => withIndexBuildLock(filename, {
     forceLock: Boolean(options.forceLock),
   }, async () => {
-    await fs.mkdir(INDEX_DIR, { recursive: true });
+    await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
+    const strongSource = await getPdfSourceInfo(filename, { includeHash: true });
     await getFileStat(filename);
 
     const chunkSize = clampChunkSize(options.chunkSize);
@@ -1520,6 +1523,7 @@ export async function buildPdfIndex(filename, options = {}) {
     createdAt: new Date().toISOString(),
     sourceSize: pdfStat.size,
     sourceModifiedMs: pdfStat.mtimeMs,
+    source: strongSource,
     pageCount: pdfData.pageCount,
     chunkCount: chunks.length,
     chunkingVersion: 2,
@@ -1568,7 +1572,7 @@ export async function buildPdfIndex(filename, options = {}) {
   const indexPath = safeIndexPath(filename);
   await atomicWriteJson(indexPath, indexData);
   await stampCoreArtifactGenerations(filename, {
-    source: { size: pdfStat.size, mtimeMs: pdfStat.mtimeMs },
+    source: strongSource,
     chunkingVersion: 2,
   });
   if (onProgress) onProgress({ phase: "build-evidence-graph", current: 0, total: 0, unit: "" });
@@ -1576,7 +1580,7 @@ export async function buildPdfIndex(filename, options = {}) {
   for (const chunk of indexData.chunks) chunk.entityIds = linkingGraph.chunkEntityIds?.[chunk.id] || [];
   await atomicWriteJson(indexPath, indexData);
   await stampCoreArtifactGenerations(filename, {
-    source: { size: pdfStat.size, mtimeMs: pdfStat.mtimeMs },
+    source: strongSource,
     chunkingVersion: 2,
   });
   const evidenceGraph = await buildEvidenceGraph(filename);
@@ -1586,7 +1590,7 @@ export async function buildPdfIndex(filename, options = {}) {
     await writeArtifactManifest(filename, { buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
 
     return indexData;
-  });
+  }));
 }
 
 export function isIndexUsable(indexData, pdfStat) {
@@ -1617,7 +1621,11 @@ export async function loadPdfIndex(filename, options = {}) {
   try {
     const indexData = await readJsonCached(indexPath);
 
-    if (isIndexUsable(indexData, pdfStat)) return indexData;
+    if (isIndexUsable(indexData, pdfStat)) {
+      const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+      if (isSamePdfSource(indexData.source, currentSource)) return indexData;
+      if (!indexData.source?.sha256) throw new Error(`Chunk index for ${filename} is a pre-hash artifact and is incompatible; rebuild the index.`);
+    }
 
     if (options.rebuildIfStale === true) {
       return buildPdfIndex(filename, options.buildOptions || {});

@@ -49,7 +49,8 @@ export function artifactDescendants(keys) {
 export function sourceFingerprint(source = {}) {
   const size = Number(source.size || source.sourceSize || 0);
   const mtimeMs = Number(source.mtimeMs || source.sourceModifiedMs || 0);
-  return `size=${size};mtimeMs=${Number.isFinite(mtimeMs) ? Math.round(mtimeMs) : 0}`;
+  const sha256 = String(source.sha256 || source.sourceSha256 || "").toLowerCase();
+  return `size=${size};mtimeMs=${Number.isFinite(mtimeMs) ? Math.round(mtimeMs) : 0}${sha256 ? `;sha256=${sha256}` : ""}`;
 }
 
 function normalizeArtifact(entry = {}) {
@@ -109,6 +110,7 @@ export function createArtifactManifest({
       size: Number(source.size || source.sourceSize || 0),
       mtimeMs: Number(source.mtimeMs || source.sourceModifiedMs || 0),
       mtime: source.mtime || source.modified || "",
+      sha256: String(source.sha256 || source.sourceSha256 || ""),
       fingerprint: sourceFingerprint(source),
     },
     buildStatus,

@@ -442,7 +442,7 @@ function computeKindStats(figures = []) {
 
 async function buildCaptionOnlyManifest(filename, pageCache = null, options = {}) {
   const cache = pageCache || await getPagesCache(filename, { buildIfMissing: true });
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const requestedPage = Number(options.page || 0);
   const pages = (cache.pages || []).filter((page) => !requestedPage || Number(page.page) === requestedPage);
   const figures = [];
@@ -523,7 +523,7 @@ export async function loadFiguresIndex(filename) {
     if (data.schemaVersion !== FIGURE_INDEX_SCHEMA_VERSION) return null;
     if (data.filename !== filename) return null;
     if (!Array.isArray(data.figures)) return null;
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(data.source, source)) return null;
     if (!(data.figures || [])[0]?.figure_id || !(data.figures || [])[0]?.image_access || (data.figures || []).some((fig) => fig.renderPath || fig.render_path || isLegacyRenderPath(fig.image_path || "") || (fig.image_path && !isCanonicalFigureImagePath(fig.image_path)))) {
       const normalized = await normalizeFigureManifest(filename, data);

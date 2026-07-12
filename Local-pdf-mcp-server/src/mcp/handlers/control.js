@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_INDEX_JOB_MODE, DOCUMENTS_DIR, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, SERVER_VERSION } from "../../core/runtime-constants.js";
+import { DEFAULT_INDEX_JOB_MODE, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, SERVER_VERSION } from "../../core/runtime-constants.js";
+import { getPathResolver } from "../../core/path-resolver.js";
 import { formatManifestSummary } from "../../artifacts/manifest.js";
 import { clampChunkOverlap, clampChunkSize, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../../core/runtime-helpers.js";
 import { createRuntimePort } from "../../core/runtime-ports.js";
@@ -28,7 +29,7 @@ async function handle_list_pdfs(args = {}, meta = {}) {
   
     if (!pdfs.length) {
       return textResult(
-        [`No PDF files found.`, `Documents folder: ${DOCUMENTS_DIR}`].join("\n")
+        [`No PDF files found.`, `Documents folder: ${getPathResolver().documentsDir()}`].join("\n")
       );
     }
   
@@ -114,14 +115,14 @@ async function handle_mcp_control(args = {}, meta = {}) {
       if (action === "cancel_job") {
         await refreshJobsStateFromDisk();
         const jobId = args.job_id.trim();
-        const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
+        const job = await cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
         if (!job) return textResult(`Job not found: ${jobId}`);
         return textResult(formatJobStatus(job));
       }
       if (action === "cleanup_jobs") {
         const statuses = Array.isArray(args.statuses) ? args.statuses.map(String) : undefined;
         const olderThanHours = Number(args.older_than_hours || 0);
-        const removed = cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
+        const removed = await cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
         return textResult([
           `Removed jobs: ${removed.length}`,
           ...removed.map((id) => `- ${id}`),
@@ -483,7 +484,7 @@ async function handle_cancel_job(args = {}, meta = {}) {
   await refreshJobsStateFromDisk();
   const jobId = String(args.job_id || "").trim();
   if (!jobId) throw new Error("job_id is required");
-  const job = cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
+  const job = await cancelBackgroundJob(jobId, String(args.reason || "Cancelled by user").trim() || "Cancelled by user");
   if (!job) return legacyTextResult(LEGACY_CONTROL_WARNING, `Job not found: ${jobId}`);
   return legacyTextResult(LEGACY_CONTROL_WARNING, formatJobStatus(job));
 }
@@ -492,7 +493,7 @@ async function handle_cleanup_jobs(args = {}, meta = {}) {
   const name = meta.name || "cleanup_jobs";
     const statuses = Array.isArray(args.statuses) ? args.statuses.map(String) : undefined;
     const olderThanHours = Number(args.older_than_hours || 0);
-    const removed = cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
+    const removed = await cleanupBackgroundJobs({ statuses, olderThanHours, includeRunning: Boolean(args.include_running) });
     return legacyTextResult(LEGACY_CONTROL_WARNING, [
       `Removed jobs: ${removed.length}`,
       ...removed.map((id) => `- ${id}`),

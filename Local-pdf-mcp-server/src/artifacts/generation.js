@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { ARTIFACT_DEPENDENCIES, sourceFingerprint } from "./manifest.js";
+import { requireStrongSourceIdentity } from "./source-identity.js";
 import {
   BITFIELD_INDEX_SCHEMA_VERSION,
   CAUTION_INDEX_SCHEMA_VERSION,
@@ -133,9 +134,12 @@ async function loadArtifact(filename, key) {
 export async function stampCoreArtifactGenerations(filename, { source = null, chunkingVersion = 2 } = {}) {
   const loaded = {};
   for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) loaded[key] = await loadArtifact(filename, key);
-  const currentSourceFingerprint = sourceFingerprint(source || loaded["chunk-index"].value.source || loaded["chunk-index"].value);
+  const currentSource = source || loaded["chunk-index"].value.source || loaded["chunk-index"].value;
+  requireStrongSourceIdentity(currentSource, `Source for ${filename}`);
+  const currentSourceFingerprint = sourceFingerprint(currentSource);
   for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) {
     const artifact = loaded[key];
+    requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
     const dependencies = Object.fromEntries(dependencyKeys(key).map((dependency) => [dependency, loaded[dependency].value.generation?.generationId || ""]));
     const generationId = generationFor(key, artifact.value, currentSourceFingerprint, dependencies, chunkingVersion);
     artifact.value.generation = {
@@ -159,8 +163,12 @@ export async function loadAndValidateCoreArtifactGenerations(filename, { sourceF
   for (const key of requested) loaded[key] = await loadArtifact(filename, key);
   for (const [key, artifact] of Object.entries(loaded)) {
     if (!expectedSourceFingerprint) throw new Error("A current PDF source fingerprint is required to validate index artifacts.");
+    requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
+    if (!String(expectedSourceFingerprint).includes(";sha256=")) {
+      throw new Error("Current PDF source fingerprint has no SHA-256 content hash; strict generation validation requires a rebuild.");
+    }
     const actualSource = artifactSourceFingerprint(artifact.value);
-    if (actualSource !== expectedSourceFingerprint) throw new Error(`Artifact ${key} has a stale PDF source fingerprint. Rebuild the index before using the evidence graph.`);
+    if (actualSource !== expectedSourceFingerprint) throw new Error(`Artifact ${key} has a stale PDF source fingerprint (artifact=${actualSource}; current=${expectedSourceFingerprint}). Rebuild the index before using the evidence graph.`);
     const generation = artifact.value.generation;
     if (!generation?.generationId || generation.sourceFingerprint !== expectedSourceFingerprint) {
       throw new Error(`Artifact ${key} has no compatible generation metadata. This is a pre-EvidenceBundle-v2 index; run index_pdf to rebuild it.`);

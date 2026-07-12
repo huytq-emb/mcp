@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createRuntimeConfig } from "./runtime-config.js";
 import { createRuntimePortRegistry } from "./runtime-ports.js";
+import { createPathResolver } from "./path-resolver.js";
 
 export function createAppContext(options = {}) {
   const config = options.config || createRuntimeConfig(options);
@@ -16,6 +17,7 @@ export function createAppContext(options = {}) {
 
   return {
     config,
+    paths: options.paths || createPathResolver(config, options.path || path),
     fs: options.fs || fs,
     path: options.path || path,
     pdfEngine: options.pdfEngine || pdfjsLib,

@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { ensureDirectPdfFilename, ensureInsideRoot } from "../core/path-safety.js";
+import { getPathResolver } from "../core/path-resolver.js";
 
 export const GOLDEN_SCHEMA_VERSION = 1;
 export const DEFAULT_GOLDEN_PROFILE = "rzg3e-core";
@@ -41,11 +42,11 @@ export function normalizeBitRange(value) {
     .replace(/\]$/, "");
 }
 
-export function goldenDir(root = process.cwd()) {
+export function goldenDir(root = getPathResolver().root()) {
   return ensureInsideRoot(path.join(root, "eval", "golden"), path.join(root, "eval"), "golden directory");
 }
 
-export function safeGoldenProfilePath(root = process.cwd(), profile = DEFAULT_GOLDEN_PROFILE) {
+export function safeGoldenProfilePath(root = getPathResolver().root(), profile = DEFAULT_GOLDEN_PROFILE) {
   const safeName = String(profile || DEFAULT_GOLDEN_PROFILE)
     .trim()
     .toLowerCase()
@@ -79,7 +80,7 @@ async function pathExists(filePath) {
   }
 }
 
-export async function ensureGoldenProfile(root = process.cwd(), profile = DEFAULT_GOLDEN_PROFILE) {
+export async function ensureGoldenProfile(root = getPathResolver().root(), profile = DEFAULT_GOLDEN_PROFILE) {
   const filePath = safeGoldenProfilePath(root, profile);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   if (!(await pathExists(filePath))) {
@@ -88,7 +89,7 @@ export async function ensureGoldenProfile(root = process.cwd(), profile = DEFAUL
   return filePath;
 }
 
-export async function loadGoldenProfile(root = process.cwd(), profile = DEFAULT_GOLDEN_PROFILE) {
+export async function loadGoldenProfile(root = getPathResolver().root(), profile = DEFAULT_GOLDEN_PROFILE) {
   const filePath = await ensureGoldenProfile(root, profile);
   const data = JSON.parse(await fs.readFile(filePath, "utf-8"));
   return { filePath, profile: data, validation: validateGoldenProfile(data) };
@@ -465,7 +466,7 @@ function evaluateSequenceFact(fact, artifacts, strict) {
 }
 
 export async function evaluateGoldenProfile({
-  root = process.cwd(),
+  root = getPathResolver().root(),
   profile = DEFAULT_GOLDEN_PROFILE,
   strictVerifiedOnly = true,
 } = {}) {
@@ -659,7 +660,7 @@ function withClassification(entries, classify) {
 }
 
 export async function bootstrapGoldenProfile({
-  root = process.cwd(),
+  root = getPathResolver().root(),
   profile = DEFAULT_GOLDEN_PROFILE,
   limitRegisters = 20,
   limitBitfields = 60,
@@ -745,7 +746,7 @@ function selectQuality(items, quality, limit, mapper) {
 }
 
 export async function buildGoldenSeedReport({
-  root = process.cwd(),
+  root = getPathResolver().root(),
   profile = DEFAULT_GOLDEN_PROFILE,
   limitRegisters = 12,
   limitBitfields = 20,

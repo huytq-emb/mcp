@@ -2,12 +2,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION } from "../artifacts/manifest.js";
 import { createAppContext } from "../core/app-context.js";
 import { wireRuntimePorts } from "./runtime-wiring.js";
-import {
-  DOCUMENTS_DIR,
-  INDEX_DIR,
-  SERVER_NAME,
-  SERVER_VERSION,
-} from "../core/runtime-constants.js";
+import { SERVER_NAME, SERVER_VERSION } from "../core/runtime-constants.js";
 import { errorResult } from "../core/runtime-helpers.js";
 import {
   flushJobsState,
@@ -132,8 +127,8 @@ export async function runCli(argv = process.argv, options = {}) {
   const context = options.context || createAppContext();
   wireRuntimePorts(context);
   const registry = createRuntimeToolRegistry({ context });
-  await context.fs.mkdir(DOCUMENTS_DIR, { recursive: true });
-  await context.fs.mkdir(INDEX_DIR, { recursive: true });
+  await context.fs.mkdir(context.paths.documentsDir(), { recursive: true });
+  await context.fs.mkdir(context.paths.indexDir(), { recursive: true });
 
   try {
     if (argv[2] === "--worker-rebuild-artifact") {
@@ -150,8 +145,8 @@ export async function runCli(argv = process.argv, options = {}) {
         serverName: SERVER_NAME,
         serverVersion: SERVER_VERSION,
         toolCount: registry.advertisedCount,
-        documentsDir: DOCUMENTS_DIR,
-        indexDir: INDEX_DIR,
+        documentsDir: context.paths.documentsDir(),
+        indexDir: context.paths.indexDir(),
         manifestSchemaVersion: ARTIFACT_MANIFEST_SCHEMA_VERSION,
       }, null, 2));
       return 0;
@@ -174,7 +169,7 @@ export async function runCli(argv = process.argv, options = {}) {
   await server.connect(options.transport || new StdioServerTransport());
   console.error(`${SERVER_NAME} started`);
   console.error(`Version: ${SERVER_VERSION}`);
-  console.error(`Documents folder: ${DOCUMENTS_DIR}`);
-  console.error(`Indexes folder: ${INDEX_DIR}`);
+  console.error(`Documents folder: ${context.paths.documentsDir()}`);
+  console.error(`Indexes folder: ${context.paths.indexDir()}`);
   return 0;
 }

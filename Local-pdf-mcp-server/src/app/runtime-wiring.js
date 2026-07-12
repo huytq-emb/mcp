@@ -1,4 +1,5 @@
 import { activateRuntimePortRegistry, bindRuntimePorts } from "../core/runtime-ports.js";
+import { activatePathResolver } from "../core/path-resolver.js";
 
 import * as module2 from "../services/indexing.js";
 import * as module3 from "../domains/manual-intelligence.js";
@@ -24,6 +25,8 @@ import * as figureSemantics from "../domains/figure-semantics.js";
 export function wireRuntimePorts(context) {
   const registry = context?.runtimePorts;
   if (!registry) throw new Error("context.runtimePorts is required");
+  if (!context?.paths) throw new Error("context.paths is required");
+  activatePathResolver(context.paths);
   activateRuntimePortRegistry(registry);
   bindRuntimePorts({
 

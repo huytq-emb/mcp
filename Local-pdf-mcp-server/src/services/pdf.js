@@ -1,6 +1,7 @@
 import { atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { INDEX_DIR, MAX_TEXT_ITEM_GAP_SPACES, PAGE_CACHE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { MAX_TEXT_ITEM_GAP_SPACES, PAGE_CACHE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
@@ -67,9 +68,9 @@ export async function extractPdfPages(filename, options = {}) {
 }
 
 export async function buildPagesCache(filename, options = {}) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const partialPath = safePagesPartialCachePath(filename);
   const resume = options.resume !== false;
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
@@ -180,7 +181,7 @@ export async function loadPagesCache(filename) {
       return null;
     }
 
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
 
     if (!isSamePdfSource(cacheData.source, currentSource)) {
       return null;

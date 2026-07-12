@@ -145,7 +145,7 @@ export async function loadFigureSemanticIndex(filename) {
     if (data.schemaVersion !== FIGURE_SEMANTIC_SCHEMA_VERSION) return null;
     if (data.filename !== filename) return null;
     if (!Array.isArray(data.records)) return null;
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     if (data.source && !isSamePdfSource(data.source, source)) return null;
     return data;
   } catch {
@@ -154,7 +154,7 @@ export async function loadFigureSemanticIndex(filename) {
 }
 
 async function writeFigureSemanticIndex(filename, records = [], source = null) {
-  const pdfSource = source || await getPdfSourceInfo(filename);
+  const pdfSource = source || await getPdfSourceInfo(filename, { includeHash: true });
   const byId = new Map();
   for (const record of records) {
     if (!record?.figure_id) continue;
@@ -391,7 +391,7 @@ export async function analyzeFigureSemantics(filename, args = {}) {
   ensurePdfFilename(filename);
   const force = Boolean(args.force);
   const target = await resolveSemanticTarget(filename, args);
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const existing = await loadFigureSemanticIndex(filename);
   if (!force && existing) {
     const cached = existing.records.find((record) => record.figure_id === target.figure_id);
@@ -485,7 +485,7 @@ export async function rebuildFigureSemanticsArtifact(filename, options = {}) {
   ensurePdfFilename(filename);
   const pageFilter = Number(options.page || 0);
   const force = Boolean(options.force);
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const figuresIndex = await getFiguresIndex(filename, { buildIfMissing: true });
   const figures = (figuresIndex.figures || []).filter((figure) => !pageFilter || Number(figure.page) === pageFilter);
   const total = figures.length;

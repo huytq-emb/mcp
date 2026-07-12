@@ -74,6 +74,10 @@ test("add_visual_evidence output includes filename and complete evidence contrac
     return;
   }
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8"));
+  if (!manifest.source?.sha256) {
+    t.skip("index artifacts predate strong PDF fingerprints and require rebuild");
+    return;
+  }
   if (manifest.artifacts?.tables?.schemaVersion !== 1 || manifest.artifacts?.bitfields?.schemaVersion !== 3 || manifest.artifacts?.sequences?.schemaVersion !== 2) {
     t.skip("V6 accuracy artifacts have not been rebuilt yet");
     return;

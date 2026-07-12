@@ -426,7 +426,7 @@ export async function loadVisualEvidenceIndex(filename) {
 
 export async function visualEvidenceSourceMetadata(filename) {
   try {
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     return {
       size: Number(source.size || 0),
       mtimeMs: Number(source.mtimeMs || 0),

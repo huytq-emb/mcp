@@ -1,6 +1,7 @@
 import { appendEvidenceContract, atomicWriteFile, atomicWriteJson, compactText, ensurePdfFilename, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, safeDriverProfileFragmentPath, safeDriverProfilePath, safeModuleProfileJsonPath, safeModuleProfileTextPath, sleep } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { DRIVER_PROFILES_DIR, DRIVER_PROFILE_FRAGMENTS_DIR, DRIVER_PROFILE_SCHEMA_VERSION, INDEX_DIR, MAX_REGISTER_LIST_TOP_K, MODULE_PROFILE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { DRIVER_PROFILE_SCHEMA_VERSION, MAX_REGISTER_LIST_TOP_K, MODULE_PROFILE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { driverProfileCandidates, normalizeDriverFamilyHint, normalizeDriverSubsystemHint, normalizeProfileNameArray, sanitizeDriverProfileName, validateDriverProfileFragmentObject, validateDriverProfileObject } from "../driver-profiles/catalog.js";
@@ -320,7 +321,7 @@ export async function getModuleProfile(filename, options = {}) {
 }
 
 export async function saveModuleProfile(profile) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
   const jsonPath = safeModuleProfileJsonPath(profile.filename);
   const textPath = safeModuleProfileTextPath(profile.filename);
   await atomicWriteJson(jsonPath, profile);
@@ -877,8 +878,8 @@ export function defaultDriverProfileFragments() {
 }
 
 export async function ensureDefaultDriverProfiles(createDefault = true) {
-  await fs.mkdir(DRIVER_PROFILES_DIR, { recursive: true });
-  await fs.mkdir(DRIVER_PROFILE_FRAGMENTS_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().driverProfilesDir(), { recursive: true });
+  await fs.mkdir(getPathResolver().driverProfileFragmentsDir(), { recursive: true });
   if (!createDefault) return;
   const fragments = defaultDriverProfileFragments();
   for (const [name, fragment] of Object.entries(fragments)) {
@@ -898,7 +899,7 @@ export async function ensureDefaultDriverProfiles(createDefault = true) {
 
 export async function listDriverProfiles(options = {}) {
   await ensureDefaultDriverProfiles(options.createDefault !== false);
-  const dirents = await fs.readdir(DRIVER_PROFILES_DIR, { withFileTypes: true }).catch(() => []);
+  const dirents = await fs.readdir(getPathResolver().driverProfilesDir(), { withFileTypes: true }).catch(() => []);
   const profiles = [];
   for (const entry of dirents) {
     if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".json")) continue;
@@ -930,7 +931,7 @@ export async function validateDriverProfileCatalog(options = {}) {
   const failures = [];
   const profiles = await listDriverProfiles({ createDefault: false });
 
-  const fragmentDirents = await fs.readdir(DRIVER_PROFILE_FRAGMENTS_DIR, { withFileTypes: true }).catch(() => []);
+  const fragmentDirents = await fs.readdir(getPathResolver().driverProfileFragmentsDir(), { withFileTypes: true }).catch(() => []);
   for (const entry of fragmentDirents) {
     if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".json")) continue;
     const name = entry.name.replace(/\.json$/i, "");
@@ -1110,11 +1111,11 @@ export async function resolveDriverProfile(options = {}) {
 
 export function formatDriverProfilesList(profiles) {
   if (!profiles.length) {
-    return `No driver profiles found. Directory: ${DRIVER_PROFILES_DIR}`;
+    return `No driver profiles found. Directory: ${getPathResolver().driverProfilesDir()}`;
   }
   const lines = [
     "Driver profiles",
-    `Directory: ${DRIVER_PROFILES_DIR}`,
+    `Directory: ${getPathResolver().driverProfilesDir()}`,
     "",
   ];
   for (const profile of profiles) {

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
-import { atomicWriteJson, safeFigureOcrIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
+import { atomicWriteJson, getPdfSourceInfo, safeFigureOcrIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
 import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
 import {
   PythonWorkerError,
@@ -15,7 +15,7 @@ import {
   runPythonWorker,
   validateWorkerArtifact,
 } from "../../src/services/python-worker.js";
-import { cancelBackgroundJob, jobs, normalizeArtifactName } from "../../src/services/jobs.js";
+import { cancelBackgroundJob, getJobStore, jobs, normalizeArtifactName } from "../../src/services/jobs.js";
 import { clearOcrHealthCache, formatOcrHealthReport, getOcrHealth, resolveOcrHealthTimeoutMs } from "../../src/services/ocr.js";
 import { searchFigureOcr } from "../../src/services/search.js";
 
@@ -71,8 +71,9 @@ test("JSONL runner rejects oversized stdout and enforces timeout", async () => {
 test("job cancellation persists a worker sentinel", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "renesas-worker-cancel-"));
   const cancelPath = path.join(root, "cancel.requested");
-  jobs.set("cancel-test", { id: "cancel-test", type: "test", filename: "manual.pdf", status: "running", metadata: { cancelPath }, log: [] });
-  cancelBackgroundJob("cancel-test", "test cancellation");
+  const jobId = `cancel-test-${process.pid}-${Date.now()}`;
+  jobs.set(jobId, { id: jobId, type: "test", filename: "manual.pdf", status: "running", metadata: { cancelPath }, log: [] });
+  await cancelBackgroundJob(jobId, "test cancellation");
   let sentinelText = "";
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
@@ -84,7 +85,8 @@ test("job cancellation persists a worker sentinel", async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.match(sentinelText, /test cancellation/);
-  jobs.delete("cancel-test");
+  jobs.delete(jobId);
+  await getJobStore().deleteJob(jobId);
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -201,11 +203,11 @@ test("search can include cached figure OCR as supplemental evidence", async () =
   try {
     await fs.mkdir(path.dirname(pdfPath), { recursive: true });
     await fs.writeFile(pdfPath, "unit pdf bytes");
-    const stat = await fs.stat(pdfPath);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     await atomicWriteJson(ocrPath, {
       schemaVersion: 1,
       filename,
-      source: { size: stat.size, mtimeMs: stat.mtimeMs, mtime: stat.mtime.toISOString() },
+      source,
       figures: [{
         figureUid: "p0001_f001",
         page: 1,

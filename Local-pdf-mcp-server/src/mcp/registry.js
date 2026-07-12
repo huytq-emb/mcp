@@ -1,5 +1,6 @@
 import Ajv from "ajv";
 import { validateEvidenceBundleV2 } from "../evidence/contract.js";
+import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 
 function validateDefinition(definition) {
   if (!definition || typeof definition !== "object") throw new Error("Tool definition must be an object");
@@ -88,7 +89,7 @@ export function createToolRegistry({
       if (entry.validateArgs && !entry.validateArgs(normalizedArgs)) {
         throw new Error(formatValidationErrors(normalizedName, entry.validateArgs.errors));
       }
-      const result = await entry.handler(normalizedArgs || {}, { name: normalizedName });
+      const result = await withSourceIdentityCache(() => entry.handler(normalizedArgs || {}, { name: normalizedName }));
       if (result?.structuredContent?.schemaVersion === 2) {
         const validation = validateEvidenceBundleV2(result.structuredContent);
         if (!validation.ok) throw new Error(`Invalid EvidenceBundle v2 returned by ${normalizedName}: ${validation.errors.join("; ")}`);

@@ -8,8 +8,11 @@ import { buildPdfIndex } from "../src/services/indexing.js";
 import { loadEvidenceGraph } from "../src/services/evidence-graph.js";
 import { queryManualEvidenceBundle } from "../src/workflows/evidence-orchestrator.js";
 import { coverageQueriesFor } from "../eval/semantic/coverage-queries.js";
+import { atomicWriteJson, getPdfSourceInfo } from "../src/core/runtime-helpers.js";
 
-const root = process.cwd();
+const context = createAppContext();
+wireRuntimePorts(context);
+const root = context.paths.root();
 const semanticDir = path.join(root, "eval", "semantic");
 const requireManuals = process.argv.includes("--require-manuals");
 const writeReport = process.argv.includes("--write");
@@ -19,8 +22,6 @@ const datasets = (await fs.readdir(semanticDir))
   .map(async (name) => JSON.parse(await fs.readFile(path.join(semanticDir, name), "utf-8")));
 const baseline = JSON.parse(await fs.readFile(path.join(semanticDir, "baseline.json"), "utf-8"));
 const resolvedDatasets = await Promise.all(datasets);
-const context = createAppContext();
-wireRuntimePorts(context);
 const reports = [];
 
 for (const dataset of resolvedDatasets) {
@@ -57,6 +58,7 @@ for (const dataset of resolvedDatasets) {
     continue;
   }
   const indexingDurationMs = readiness.indexingDurationMs;
+  const sourceIdentity = await getPdfSourceInfo(filename, { includeHash: true });
 
   const coverageQueries = dataset.coverageQueries || coverageQueriesFor(dataset.subsystem);
   if (!Array.isArray(coverageQueries) || coverageQueries.length < 20) {
@@ -75,11 +77,11 @@ for (const dataset of resolvedDatasets) {
     ...coverageResults.map((result, index) => [coverageQueries[index], result]).filter(([, result]) => result.runtimeError).map(([queryCase, result]) => `coverage ${queryCase.id || queryCase.query}: ${result.runtimeError}`),
   ];
   const regression = compareSemanticRegression(report.metrics, baseline[dataset.id] || {}, dataset.regressionTolerances || {});
-  reports.push({ dataset: dataset.id, subsystem: dataset.subsystem, status: report.health === "ok" && regression.ok && !runtimeErrors.length && coverageCorrectness.correctnessRate === 1 ? "ok" : "fail", report, regression, runtimeErrors, coverageCorrectness, runtimePerformance: { queryCount: coverageResults.length, p95LatencyMs: coverageResults.sort((left, right) => left.latencyMs - right.latencyMs)[Math.max(0, Math.ceil(coverageResults.length * 0.95) - 1)]?.latencyMs || 0, peakRssMb: Math.max(0, ...coverageResults.map((result) => result.peakRssMb || 0)) } });
+  reports.push({ dataset: dataset.id, subsystem: dataset.subsystem, sourceIdentity, status: report.health === "ok" && regression.ok && !runtimeErrors.length && coverageCorrectness.correctnessRate === 1 ? "ok" : "fail", report, regression, runtimeErrors, coverageCorrectness, runtimePerformance: { queryCount: coverageResults.length, p95LatencyMs: coverageResults.sort((left, right) => left.latencyMs - right.latencyMs)[Math.max(0, Math.ceil(coverageResults.length * 0.95) - 1)]?.latencyMs || 0, peakRssMb: Math.max(0, ...coverageResults.map((result) => result.peakRssMb || 0)) } });
 }
 
 if (writeReport) {
-  await fs.writeFile(path.join(root, "indexes", "semantic-integration-report.json"), `${JSON.stringify({ generatedAt: new Date().toISOString(), reports }, null, 2)}\n`, "utf-8");
+  await atomicWriteJson(path.join(context.paths.indexDir(), "semantic-integration-report.json"), { generatedAt: new Date().toISOString(), reports });
 }
 
 let failed = false;

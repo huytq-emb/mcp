@@ -40,7 +40,7 @@ wireRuntimePorts(createAppContext());
 
 async function setup() {
   await fs.writeFile(safePdfPath(filename), "%PDF-1.4\nunit graph\n", "utf-8");
-  const source = await getPdfSourceInfo(filename);
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   await atomicWriteJson(safePagesCachePath(filename), { schemaVersion: PAGE_CACHE_SCHEMA_VERSION, filename, source, pageCount: 2, pages: [{ page: 1, text: "DMA Control Register DCTRL" }, { page: 2, text: "Caution reserved bits" }] });
   await atomicWriteJson(safeIndexPath(filename), { schemaVersion: INDEX_SCHEMA_VERSION, filename, source, sourceSize: source.size, sourceModifiedMs: source.mtimeMs, pageCount: 2, chunkCount: 2, chunkingVersion: 2, chunks: [{ id: `${filename}:p1:c0`, page: 1, text: "DMA Control Register DMAC_DCTRL DCTRL", searchText: "dma control register dmac dctrl", headings: ["DMA registers"], symbols: ["DMAC_DCTRL", "DCTRL"], entityIds: [] }, { id: `${filename}:p2:c0`, page: 2, text: "Caution reserved bits", searchText: "caution reserved bits", headings: ["Usage notes"], symbols: [], entityIds: [] }] });
   await atomicWriteJson(safeSectionsIndexPath(filename), { schemaVersion: SECTION_INDEX_SCHEMA_VERSION, filename, source, sections: [{ id: "s1", title: "DMA registers", page: 1, level: 2 }] });
@@ -75,6 +75,8 @@ test("normalized evidence graph links entities and preserves conflicts", async (
     assert.deepEqual(validateEvidenceGraph(graph), { ok: true, errors: [] });
     assert.equal(graph.artifactGenerations["chunk-index"].schemaVersion, INDEX_SCHEMA_VERSION);
     assert.equal(graph.artifactGenerations["chunk-index"].serverVersion, graph.serverVersion);
+    assert.match(graph.artifactGenerations["chunk-index"].sourceFingerprint, /;sha256=[a-f0-9]{64}$/);
+    assert.match(graph.source.sha256, /^[a-f0-9]{64}$/);
     assert.ok(graph.artifactGenerations.registers.dependencyFingerprints["chunk-index"]);
     assert.ok(graph.entities.some((entity) => entity.type === "register" && entity.canonicalName === "DMAC_DCTRL"));
     assert.ok(graph.relationships.some((relationship) => relationship.type === "register-has-bitfield"));
@@ -189,7 +191,7 @@ test("multi-page locations retain page-specific chunk provenance", async () => {
     const bitfields = JSON.parse(await fs.readFile(bitfieldsPath, "utf8"));
     bitfields.bitfields.push({ register: "DCTRL", bitfield: "MULTI", pages: [1, 2], chunks: [`${filename}:p1:c0`, `${filename}:p2:c0`], bitRange: "5:4", confidence: 90 });
     await atomicWriteJson(bitfieldsPath, bitfields);
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     await stampCoreArtifactGenerations(filename, { source, chunkingVersion: 2 });
     const graph = await buildEvidenceGraph(filename);
     const multi = graph.entities.find((entity) => entity.canonicalName === "MULTI");
@@ -209,7 +211,7 @@ test("ambiguous aliases are conflicted rather than silently resolved", async () 
     const registers = JSON.parse(await fs.readFile(registersPath, "utf8"));
     registers.registers.push({ name: "ALT_DCTRL", aliases: ["DCTRL"], pages: [2], chunks: [{ id: `${filename}:p2:c0`, page: 2, score: 90 }], confidence: 90, sourceKinds: ["register-table"] });
     await atomicWriteJson(registersPath, registers);
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     await stampCoreArtifactGenerations(filename, { source, chunkingVersion: 2 });
     const graph = await buildEvidenceGraph(filename);
     const resolved = getEvidenceGraphEntity(graph, "DCTRL");
@@ -245,6 +247,20 @@ test("evidence graphs reject artifact content that no longer matches its generat
   }
 });
 
+test("strict graph validation detects changed PDF bytes with identical size and mtime", async () => {
+  await setup();
+  try {
+    await buildEvidenceGraph(filename);
+    const pdfPath = safePdfPath(filename);
+    const before = await fs.stat(pdfPath);
+    const bytes = await fs.readFile(pdfPath);
+    bytes[bytes.length - 2] = bytes[bytes.length - 2] === 65 ? 66 : 65;
+    await fs.writeFile(pdfPath, bytes);
+    await fs.utimes(pdfPath, before.atime, before.mtime);
+    await assert.rejects(loadEvidenceGraph(filename, { buildIfMissing: false }), /Incompatible evidence graph|stale PDF source fingerprint/);
+  } finally { await cleanup(); }
+});
+
 test("evidence graphs reject old chunking and mixed dependency generations", async () => {
   await setup();
   try {
@@ -252,7 +268,7 @@ test("evidence graphs reject old chunking and mixed dependency generations", asy
     const index = JSON.parse(await fs.readFile(indexPath, "utf8"));
     index.chunkingVersion = 1;
     await atomicWriteJson(indexPath, index);
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     await stampCoreArtifactGenerations(filename, { source, chunkingVersion: 2 });
     await assert.rejects(() => buildEvidenceGraph(filename), /chunkingVersion=1/i);
 

@@ -1,6 +1,7 @@
 import { atomicWriteFile, atomicWriteJson, getPdfSourceInfo, isIndexLockStale, isSamePdfSource, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDoctorReportJsonPath, safeDoctorReportMarkdownPath, safeDoctorReportPath, safeDriverPackPath, safeDriverTaskPlanPath, safeEvidenceGraphPath, safeFigureOcrIndexPath, safeFiguresIndexPath, safeHybridQualityReportJsonPath, safeIndexLockPath, safeIndexPath, safeModuleProfileJsonPath, safeModuleProfileTextPath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, formatManifestSummary, sourceFingerprint } from "../artifacts/manifest.js";
@@ -425,7 +426,7 @@ export async function doctorOnePdf(filename, options = {}) {
   try {
     const filePath = safePdfPath(filename);
     const stat = await getFileStat(filename);
-    currentSource = await getPdfSourceInfo(filename);
+    currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     checks.push(doctorCheck("pdf file", "ok", {
       path: filePath,
       sizeBytes: stat.size,
@@ -699,7 +700,7 @@ export function formatDoctorReport(result, options = {}) {
 
 export async function maybeWriteDoctorReports(result, writeReport) {
   if (!writeReport) return [];
-  await fs.mkdir(INDEX_DIR, { recursive: true });
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
   const paths = [];
   for (const report of result.reports || []) {
     const single = {

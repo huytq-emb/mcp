@@ -1,6 +1,7 @@
 import { atomicWriteFile, ensureInsideRoot } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { INDEX_DIR, SERVER_VERSION, STEP40_COMPAT_MODE, STEP40_CONTROL_ACTIONS, STEP40_DIRECT_TOOL_COMPAT_NOTES, __dirname } from "../core/runtime-constants.js";
+import { SERVER_VERSION, STEP40_COMPAT_MODE, STEP40_CONTROL_ACTIONS, STEP40_DIRECT_TOOL_COMPAT_NOTES } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import { getHybridRuntimeStatus } from "../services/python-worker.js";
 import { getOcrHealth } from "../services/ocr.js";
 import fs from "node:fs/promises";
@@ -392,12 +393,13 @@ export async function runEvalHealthCheck(options = {}) {
   }
   const checks = [];
   function add(name, status, detail = "") { checks.push({ name, status, detail }); }
-  const toolDefinitionsSource = await fs.readFile(path.join(__dirname, "src", "mcp", "tool-definitions.js"), "utf-8");
+  const rootDir = getPathResolver().root();
+  const toolDefinitionsSource = await fs.readFile(path.join(rootDir, "src", "mcp", "tool-definitions.js"), "utf-8");
   const toolNames = [...toolDefinitionsSource.matchAll(/name:\s*"([^"]+)"/g)].map((match) => match[1]);
   const schemaCount = (toolDefinitionsSource.match(/inputSchema:\s*{\s*type:\s*"object"/gs) || []).length;
   const dupTools = toolNames.filter((n, i) => toolNames.indexOf(n) !== i);
   add("tool registry unique names", dupTools.length ? "fail" : "pass", dupTools.length ? `duplicates=${dupTools.join(",")}` : `tools=${toolNames.length}`);
-  const handlersSource = await fs.readFile(path.join(__dirname, "src", "mcp", "runtime-handlers.js"), "utf-8");
+  const handlersSource = await fs.readFile(path.join(rootDir, "src", "mcp", "runtime-handlers.js"), "utf-8");
   const missingHandlers = toolNames.filter((n) => !handlersSource.includes(`"${n}": handle_`));
   add("call handler coverage", missingHandlers.length ? "fail" : "pass", missingHandlers.length ? `missing=${missingHandlers.join(",")}` : `handlers=${toolNames.length}`);
   add("tool input schemas", schemaCount === toolNames.length ? "pass" : "fail", schemaCount === toolNames.length ? "all tools have object inputSchema" : `schemas=${schemaCount}; tools=${toolNames.length}`);
@@ -414,7 +416,7 @@ export async function runEvalHealthCheck(options = {}) {
     try { const fixtures = await listEvalFixtureFiles(); add("eval fixture readability", "pass", `fixtures=${fixtures.length}`); } catch (e) { add("eval fixture readability", "fail", e.message); }
   }
   let pkg = null;
-  try { pkg = JSON.parse(await fs.readFile(path.join(__dirname, "package.json"), "utf-8")); add("package.json", "pass", `test=${pkg.scripts?.test || "missing"}`); } catch (e) { add("package.json", "fail", e.message); }
+  try { pkg = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf-8")); add("package.json", "pass", `test=${pkg.scripts?.test || "missing"}`); } catch (e) { add("package.json", "fail", e.message); }
   const extractionRuntime = await getHybridRuntimeStatus();
   add("hybrid extraction runtime", extractionRuntime.pythonReady || extractionRuntime.mode === "auto" ? "pass" : "fail", extractionRuntime.pythonReady ? `engine=python; version=${extractionRuntime.versions?.python || "unknown"}` : `engine=node-fallback; ${extractionRuntime.reason || "Python unavailable"}`);
   const canonicalFigureToolNames = ["rebuild_figure_manifest", "search_figures", "get_figure_context_pack", "get_figure_image", "ocr_figure_for_search"];
@@ -434,9 +436,10 @@ export async function runEvalHealthCheck(options = {}) {
 
 export async function maybeWriteEvalHealthReport(report, writeReport = true) {
   if (!writeReport) return [];
-  await fs.mkdir(INDEX_DIR, { recursive: true });
-  const jsonPath = ensureInsideRoot(path.join(INDEX_DIR, "eval-health-report.json"), INDEX_DIR, "eval health report JSON");
-  const textPath = ensureInsideRoot(path.join(INDEX_DIR, "eval-health-report.txt"), INDEX_DIR, "eval health report text");
+  const indexDir = getPathResolver().indexDir();
+  await fs.mkdir(indexDir, { recursive: true });
+  const jsonPath = ensureInsideRoot(path.join(indexDir, "eval-health-report.json"), indexDir, "eval health report JSON");
+  const textPath = ensureInsideRoot(path.join(indexDir, "eval-health-report.txt"), indexDir, "eval health report text");
   await atomicWriteFile(jsonPath, JSON.stringify(report, null, 2), "utf-8");
   await atomicWriteFile(textPath, formatEvalHealthReport(report), "utf-8");
   return [jsonPath, textPath];

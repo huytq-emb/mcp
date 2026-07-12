@@ -616,7 +616,7 @@ export async function buildDriverEvidencePack(filename, options = {}) {
   const completedPhases = [];
   let effectiveMode = requestedMode;
   let fullFallbackReason = "";
-  const fingerprint = sourceFingerprint(await getPdfSourceInfo(filename));
+  const fingerprint = sourceFingerprint(await getPdfSourceInfo(filename, { includeHash: true }));
 
   const markPhase = (name) => completedPhases.push({ name, ...budget.snapshot() });
   const skipPhase = (name, reason) => {
@@ -1139,7 +1139,7 @@ export async function buildDriverTaskPlan(filename, options = {}) {
   const mode = normalizeDriverPackMode(options.mode || "adaptive");
   const budget = createDriverPackBudget(options.budgetMs || DEFAULT_DRIVER_TASK_BUDGET_MS);
   const skippedPhases = [];
-  const fingerprint = sourceFingerprint(await getPdfSourceInfo(filename));
+  const fingerprint = sourceFingerprint(await getPdfSourceInfo(filename, { includeHash: true }));
 
   await loadPdfIndex(filename);
   const profile = await getModuleProfile(filename, {

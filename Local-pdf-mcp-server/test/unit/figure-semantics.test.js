@@ -138,7 +138,7 @@ test("figure semantic analysis supports caption-only records without bbox or OCR
   try {
     await fs.mkdir(path.dirname(pdfPath), { recursive: true });
     await fs.writeFile(pdfPath, "unit pdf bytes");
-    const source = await getPdfSourceInfo(filename);
+    const source = await getPdfSourceInfo(filename, { includeHash: true });
     const pageText = "Figure 1 DMA Controller -> AXI Bus\nDMA Controller block diagram";
     await atomicWriteJson(figuresPath, {
       schemaVersion: FIGURE_INDEX_SCHEMA_VERSION,

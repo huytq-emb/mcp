@@ -4,6 +4,7 @@ import {
   safeHybridQualityReportJsonPath,
   safeHybridQualityReportMarkdownPath,
 } from "../core/runtime-helpers.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import {
   DEFAULT_GOLDEN_PROFILE,
   loadGoldenProfile,
@@ -216,7 +217,7 @@ function evaluateGoldenTables(facts, tables) {
 
 export async function evaluateHybridGoldenGate(filename, values = {}, options = {}) {
   const profileName = options.goldenProfile || DEFAULT_GOLDEN_PROFILE;
-  const loaded = await loadGoldenProfile(process.cwd(), profileName);
+  const loaded = await loadGoldenProfile(getPathResolver().root(), profileName);
   const data = loaded.profile;
   if (data.filename !== filename) {
     return makeCheck("verified golden facts", "pass", {

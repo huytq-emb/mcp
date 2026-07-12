@@ -10,13 +10,13 @@ import {
   safeTablesPartialIndexPath,
 } from "../core/runtime-helpers.js";
 import {
-  INDEX_DIR,
   INDEX_SCHEMA_VERSION,
   PAGE_CACHE_SCHEMA_VERSION,
   SECTION_INDEX_SCHEMA_VERSION,
   SERVER_VERSION,
   TABLE_INDEX_SCHEMA_VERSION,
 } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { coordinateItemsToRows, extractTablesFromCoordinateRows } from "./manual-intelligence.js";
 
@@ -253,8 +253,8 @@ async function readPartialTables(filename, source) {
 }
 
 export async function buildTablesIndex(filename, indexData, pageCache, sectionsIndex = null, options = {}) {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
-  const source = await getPdfSourceInfo(filename);
+  await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
   const candidates = selectTableCandidatePages(pageCache, indexData, options);
   const partial = options.resume === false ? null : await readPartialTables(filename, source);
   const completed = new Set(partial?.completedPages || []);
@@ -319,7 +319,7 @@ export async function loadTablesIndex(filename) {
   try {
     const index = await readJsonCached(tablesPath);
     if (index.schemaVersion !== TABLE_INDEX_SCHEMA_VERSION || index.filename !== filename || !Array.isArray(index.tables)) return null;
-    const currentSource = await getPdfSourceInfo(filename);
+    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
     return index;
   } catch {

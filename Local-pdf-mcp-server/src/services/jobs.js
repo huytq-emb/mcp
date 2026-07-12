@@ -1,12 +1,15 @@
 import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeEvidenceGraphPath, safeFigureOcrIndexPath, safeFigureSemanticIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
-import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DOCUMENTS_DIR, DRIVER_ARTIFACT_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_DIR, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOBS_STATE_WRITE_DELAY_MS, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION, __dirname, __filename } from "../core/runtime-constants.js";
+import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DRIVER_ARTIFACT_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
+import { getPathResolver } from "../core/path-resolver.js";
 import { spawn } from "../core/process-runner.js";
 import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
 import { buildEvidenceGraph } from "./evidence-graph.js";
+import { createJobStore, JobUpdateRejectedError, TERMINAL_JOB_STATES } from "./job-store.js";
+import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -43,6 +46,19 @@ export let jobSequence = 0;
 export let jobsStateWriteTimer = null;
 export let jobsStateWriteInProgress = false;
 export let jobsStateWritePending = false;
+const pendingJobWrites = new Set();
+const jobWriteChains = new Map();
+let cachedJobStore = null;
+let cachedJobStoreRoot = "";
+
+export function getJobStore() {
+  const paths = getPathResolver();
+  if (!cachedJobStore || cachedJobStoreRoot !== paths.root()) {
+    cachedJobStore = createJobStore({ paths });
+    cachedJobStoreRoot = paths.root();
+  }
+  return cachedJobStore;
+}
 
 export function nowIso() {
   return new Date().toISOString();
@@ -75,6 +91,7 @@ export function normalizeJobForPersistence(job) {
     startedMs: Number(job.startedMs || 0),
     updatedAt: job.updatedAt || null,
     updatedMs: Number(job.updatedMs || 0),
+    revision: Number(job.revision || 0),
     finishedAt: job.finishedAt || null,
     finishedMs: Number(job.finishedMs || 0),
     result: job.result || null,
@@ -100,35 +117,45 @@ export function jobsStatePayload() {
 }
 
 export async function flushJobsState() {
-  if (jobsStateWriteInProgress) {
-    jobsStateWritePending = true;
-    return;
-  }
-
   jobsStateWriteInProgress = true;
-  jobsStateWritePending = false;
-
   try {
-    await atomicWriteJson(safeJobsStatePath(), jobsStatePayload());
-  } catch (error) {
-    console.error(`[${SERVER_NAME}] Failed to persist background jobs: ${error instanceof Error ? error.message : String(error)}`);
+    while (pendingJobWrites.size) await Promise.allSettled([...pendingJobWrites]);
   } finally {
     jobsStateWriteInProgress = false;
-    if (jobsStateWritePending) {
-      jobsStateWritePending = false;
-      void flushJobsState();
-    }
+    jobsStateWritePending = false;
   }
 }
 
-export function persistJobsStateSoon() {
+function queueJobWrite(job) {
+  const snapshot = normalizeJobForPersistence(job);
+  const previous = jobWriteChains.get(snapshot.id) || Promise.resolve();
+  const operation = previous.then(async () => {
+    const store = getJobStore();
+    const current = await store.readJob(snapshot.id);
+    if (!current) return store.createJob(snapshot);
+    return store.updateJob(snapshot.id, snapshot, { updatedMs: snapshot.updatedMs });
+  }).then((persisted) => {
+    const current = jobs.get(snapshot.id);
+    if (!current || Number(persisted.revision || 0) >= Number(current.revision || 0)) jobs.set(snapshot.id, persisted);
+    return persisted;
+  }).catch((error) => {
+    if (error instanceof JobUpdateRejectedError && error.current) jobs.set(snapshot.id, error.current);
+    console.error(`[${SERVER_NAME}] ${error instanceof Error ? error.message : String(error)}`);
+    return error.current || null;
+  });
+  jobWriteChains.set(snapshot.id, operation);
+  pendingJobWrites.add(operation);
   jobsStateWritePending = true;
-  if (jobsStateWriteTimer) return;
+  operation.finally(() => {
+    pendingJobWrites.delete(operation);
+    if (jobWriteChains.get(snapshot.id) === operation) jobWriteChains.delete(snapshot.id);
+  });
+  return operation;
+}
 
-  jobsStateWriteTimer = setTimeout(() => {
-    jobsStateWriteTimer = null;
-    void flushJobsState();
-  }, JOBS_STATE_WRITE_DELAY_MS);
+export function persistJobsStateSoon(job = null) {
+  if (job) return queueJobWrite(job);
+  return Promise.all([...jobs.values()].map(queueJobWrite));
 }
 
 export function trimJobHistory({ persist = false } = {}) {
@@ -143,10 +170,11 @@ export function trimJobHistory({ persist = false } = {}) {
       break;
     }
     jobs.delete(old.id);
+    void getJobStore().deleteJob(old.id).catch((error) => console.error(`[${SERVER_NAME}] Failed to trim job ${old.id}: ${error.message}`));
     changed = true;
   }
 
-  if (changed && persist) persistJobsStateSoon();
+  if (changed && persist) void Promise.all([...jobs.values()].map(queueJobWrite));
 }
 
 export function activeJobCount() {
@@ -154,7 +182,11 @@ export function activeJobCount() {
 }
 
 export function updateJob(job, patch = {}) {
-  Object.assign(job, patch, { updatedAt: nowIso(), updatedMs: Date.now() });
+  if (TERMINAL_JOB_STATES.has(job.status) && patch.status && patch.status !== job.status) {
+    throw new JobUpdateRejectedError(job.id, `terminal state ${job.status} is monotonic and cannot become ${patch.status}`, job);
+  }
+  const updatedMs = Math.max(Date.now(), Number(job.updatedMs || 0) + 1);
+  Object.assign(job, patch, { updatedAt: new Date(updatedMs).toISOString(), updatedMs });
   if (patch.message) {
     job.log = job.log || [];
     job.log.push({ at: job.updatedAt, message: patch.message, phase: patch.phase || job.phase || "" });
@@ -162,28 +194,33 @@ export function updateJob(job, patch = {}) {
   }
   jobs.set(job.id, job);
   trimJobHistory();
-  persistJobsStateSoon();
+  queueJobWrite(job);
   return job;
 }
 
 export async function loadJobsStateFromDisk() {
-  await fs.mkdir(INDEX_DIR, { recursive: true });
-  const statePath = safeJobsStatePath();
-  if (!(await pathExists(statePath))) return;
-
-  let parsed;
-  try {
-    parsed = JSON.parse(await fs.readFile(statePath, "utf-8"));
-  } catch (error) {
-    console.error(`[${SERVER_NAME}] Ignoring unreadable background jobs state: ${error instanceof Error ? error.message : String(error)}`);
-    return;
+  const store = getJobStore();
+  await fs.mkdir(getPathResolver().jobsDir(), { recursive: true });
+  let loadedJobs = await store.listJobs();
+  let legacySequence = 0;
+  const legacyPath = getPathResolver().legacyJobsState();
+  if (!loadedJobs.length && await pathExists(legacyPath)) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(legacyPath, "utf-8"));
+      legacySequence = Number(parsed.jobSequence || 0);
+      for (const legacyJob of parsed.jobs || []) {
+        const normalized = normalizeJobForPersistence(legacyJob);
+        if (normalized) await store.createJob(normalized).catch((error) => {
+          if (!(error instanceof JobUpdateRejectedError)) throw error;
+        });
+      }
+      loadedJobs = await store.listJobs();
+    } catch (error) {
+      console.error(`[${SERVER_NAME}] Unable to migrate legacy background jobs: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-
-  const loadedJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-  const now = nowIso();
-  const nowMs = Date.now();
-  let changed = false;
-  let maxSequence = Number(parsed.jobSequence || 0);
+  loadedJobs = await store.recoverJobs();
+  let maxSequence = legacySequence;
 
   jobs.clear();
   for (const loadedJob of loadedJobs) {
@@ -192,55 +229,29 @@ export async function loadJobsStateFromDisk() {
 
     maxSequence = Math.max(maxSequence, parseJobSequenceFromId(job.id));
 
-    const orchestratorPid = Number(job.metadata?.orchestratorPid || 0);
-    let orchestratorAlive = false;
-    if (orchestratorPid > 0) {
-      try { process.kill(orchestratorPid, 0); orchestratorAlive = true; } catch { orchestratorAlive = false; }
-    }
-    if ((job.status === "running" || job.status === "queued") && !orchestratorAlive) {
-      job.status = "failed";
-      job.phase = "interrupted";
-      job.message = "Server restarted before this background job completed";
-      job.error = "Interrupted by MCP server restart; start a new job if this index is still incomplete.";
-      job.finishedAt = job.finishedAt || now;
-      job.finishedMs = job.finishedMs || nowMs;
-      job.updatedAt = now;
-      job.updatedMs = nowMs;
-      job.log = Array.isArray(job.log) ? job.log.slice(-JOB_LOG_LIMIT) : [];
-      job.log.push({ at: now, phase: "interrupted", message: job.message });
-      if (job.log.length > JOB_LOG_LIMIT) job.log = job.log.slice(-JOB_LOG_LIMIT);
-      changed = true;
-    }
-
     jobs.set(job.id, job);
   }
 
   jobSequence = Math.max(jobSequence, maxSequence);
   trimJobHistory();
-  if (changed) await flushJobsState();
 }
 
 
 export async function refreshJobsStateFromDisk() {
-  const statePath = safeJobsStatePath();
-  if (!(await pathExists(statePath))) return;
-  let parsed;
-  try {
-    parsed = JSON.parse(await fs.readFile(statePath, "utf-8"));
-  } catch {
-    return;
-  }
-  const loadedJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+  const loadedJobs = await getJobStore().listJobs();
   let maxSequence = jobSequence;
+  const loadedIds = new Set();
   for (const loadedJob of loadedJobs) {
     const job = normalizeJobForPersistence(loadedJob);
     if (!job || !job.id) continue;
+    loadedIds.add(job.id);
     maxSequence = Math.max(maxSequence, parseJobSequenceFromId(job.id));
     const current = jobs.get(job.id);
     if (!current || Number(job.updatedMs || 0) >= Number(current.updatedMs || 0)) {
       jobs.set(job.id, job);
     }
   }
+  for (const id of [...jobs.keys()]) if (!loadedIds.has(id)) jobs.delete(id);
   jobSequence = Math.max(jobSequence, maxSequence);
 }
 
@@ -418,9 +429,10 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
   try {
     const child = spawn(
       process.execPath,
-      [__filename, "--worker-rebuild-artifact", encoded],
+      [getPathResolver().appEntry(), "--worker-rebuild-artifact", encoded],
       {
-        cwd: __dirname,
+        cwd: getPathResolver().root(),
+        env: { ...process.env, RENESAS_MCP_ROOT: getPathResolver().root() },
         detached: true,
         stdio: "ignore",
         windowsHide: true,
@@ -594,7 +606,7 @@ export async function readArtifactStatus(entry, filename) {
 export async function buildArtifactManifest(filename, options = {}) {
   let source = {};
   try {
-    source = await getPdfSourceInfo(filename);
+    source = await getPdfSourceInfo(filename, { includeHash: true });
   } catch {
     source = {};
   }
@@ -686,8 +698,8 @@ export function getIndexStatusUltraLite(filename) {
     mode: "ultra-lite",
     serverVersion: SERVER_VERSION,
     generatedAt: nowIso(),
-    documentsDir: DOCUMENTS_DIR,
-    indexDir: INDEX_DIR,
+    documentsDir: getPathResolver().documentsDir(),
+    indexDir: getPathResolver().indexDir(),
     jobsStatePath: safeJobsStatePath(),
     health: "UNKNOWN",
     pdf: {
@@ -786,11 +798,21 @@ export function pdfInfoArtifactBlock({
   return lines.filter(Boolean).join("\n");
 }
 
-export function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
-  const job = jobs.get(jobId);
+export async function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
+  const store = getJobStore();
+  let job = await store.readJob(jobId) || jobs.get(jobId);
   if (!job) return null;
   if (["done", "failed", "cancelled"].includes(job.status)) return job;
-  const cancelled = updateJob(job, { status: "cancelled", phase: "cancelled", message: reason, finishedAt: nowIso(), finishedMs: Date.now(), error: reason });
+  if (!(await store.readJob(jobId))) job = await store.createJob(job);
+  const updatedMs = Math.max(Date.now(), Number(job.updatedMs || 0) + 1);
+  const updatedAt = new Date(updatedMs).toISOString();
+  const patch = {
+    status: "cancelled", phase: "cancelled", message: reason, finishedAt: updatedAt, finishedMs: updatedMs,
+    updatedAt, updatedMs, error: reason,
+    log: [...(job.log || []).slice(-(JOB_LOG_LIMIT - 1)), { at: updatedAt, phase: "cancelled", message: reason }],
+  };
+  const cancelled = await store.updateJob(jobId, patch, { updatedMs });
+  jobs.set(jobId, cancelled);
   const cancelPath = job.metadata?.cancelPath;
   if (cancelPath) {
     try {
@@ -809,19 +831,16 @@ export function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
   return cancelled;
 }
 
-export function cleanupBackgroundJobs(options = {}) {
+export async function cleanupBackgroundJobs(options = {}) {
   const includeRunning = Boolean(options.includeRunning);
   const olderThanHours = Number(options.olderThanHours ?? 0);
   const statuses = new Set(Array.isArray(options.statuses) && options.statuses.length ? options.statuses : ["done", "failed", "cancelled"]);
-  const cutoffMs = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1000 : 0;
-  const removed = [];
-  for (const job of [...jobs.values()]) {
-    if (!includeRunning && (job.status === "running" || job.status === "queued")) continue;
-    if (!statuses.has(job.status)) continue;
-    if (cutoffMs && Number(job.updatedMs || job.createdMs || 0) > cutoffMs) continue;
-    jobs.delete(job.id); removed.push(job.id);
-  }
-  if (removed.length) persistJobsStateSoon();
+  const removed = await getJobStore().cleanupJobs({
+    includeRunning,
+    statuses: [...statuses],
+    olderThanMs: olderThanHours > 0 ? olderThanHours * 60 * 60 * 1000 : 0,
+  });
+  for (const id of removed) jobs.delete(id);
   return removed;
 }
 
@@ -834,7 +853,7 @@ export async function rewriteMainIndexCounts(filename, patch = {}) {
   return indexData;
 }
 
-export async function rebuildArtifact(filename, artifact, options = {}) {
+async function rebuildArtifactOperation(filename, artifact, options = {}) {
   const normalized = normalizeArtifactName(artifact);
   const forceLock = Boolean(options.forceLock);
   const force = Boolean(options.force);
@@ -900,6 +919,13 @@ export async function rebuildArtifact(filename, artifact, options = {}) {
   }
   if (normalized === "driver") throw new Error("driver artifact rebuild is intentionally not automatic. Use build_driver_evidence_pack or source_review_prompt_pack with explicit module/focus inputs.");
   throw new Error(`Unknown artifact: ${artifact}. Supported: pages, chunk-index, sections, tables, registers, bitfields, sequences, cautions, figures, evidence-graph, figure_ocr, figure_semantic, core/all.`);
+}
+
+export async function rebuildArtifact(filename, artifact, options = {}) {
+  return withSourceIdentityCache(async () => {
+    await getPdfSourceInfo(filename, { includeHash: true });
+    return rebuildArtifactOperation(filename, artifact, options);
+  });
 }
 
 export async function startRebuildArtifactJob(filename, artifact, options = {}) {
