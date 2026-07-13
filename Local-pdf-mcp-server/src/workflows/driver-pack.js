@@ -1,4 +1,4 @@
-import { appendEvidenceContract, canonicalSymbol, clampInteger, clampTopK, compactText, confidenceLevel, evidenceFromChunk, getPdfSourceInfo, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, canonicalSymbol, clampInteger, clampTopK, compactText, confidenceLevel, evidenceFromChunk, getPdfSourceInfo, isArtifactPublicationStateError, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_DRIVER_PACK_BUDGET_MS, DEFAULT_DRIVER_PACK_CAUTION_TOPICS, DEFAULT_DRIVER_PACK_MODE, DEFAULT_DRIVER_PACK_REGISTERS, DEFAULT_DRIVER_PACK_SEQUENCE_TOPICS, DEFAULT_DRIVER_TASK_BUDGET_MS, DEFAULT_PAGE_RANGE, DRIVER_PACK_BUDGET_SAFETY_MS, DRIVER_PACK_FAST_CAUTION_LIMIT, DRIVER_PACK_FAST_SEQUENCE_LIMIT, DRIVER_PACK_FULL_MIN_BUDGET_MS, MAX_CAUTION_EVIDENCE_LINES, MAX_DRIVER_PACK_BUDGET_MS, MAX_DRIVER_TASK_HINTS, MAX_REGISTER_SUMMARY_CHUNKS, MAX_SEQUENCE_EVIDENCE_LINES, MIN_DRIVER_PACK_BUDGET_MS } from "../core/runtime-constants.js";
 import path from "node:path";
@@ -390,7 +390,8 @@ export async function collectDriverPackSequencesFast(filename, moduleType, focus
   try {
     sequencesIndex = await loadSequencesIndex(filename);
     if (!sequencesIndex) return [];
-  } catch {
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
     return [];
   }
 
@@ -433,7 +434,8 @@ export async function collectDriverPackCautionsFast(filename, moduleType, focus,
   try {
     cautionsIndex = await loadCautionsIndex(filename);
     if (!cautionsIndex) return [];
-  } catch {
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
     return [];
   }
 
@@ -1035,7 +1037,9 @@ export async function collectTaskSequenceHints(filename, topics, registers) {
 
   try {
     sequencesIndex = await loadSequencesIndex(filename);
-  } catch {}
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
+  }
 
   if (sequencesIndex?.sequences?.length) {
     const selectedIds = new Set();
@@ -1083,7 +1087,9 @@ export async function collectTaskCautionHints(filename, topics, registers) {
 
   try {
     cautionsIndex = await loadCautionsIndex(filename);
-  } catch {}
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
+  }
 
   if (cautionsIndex?.cautions?.length) {
     const selectedIds = new Set();

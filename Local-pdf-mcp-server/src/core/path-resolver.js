@@ -68,6 +68,7 @@ export function createPathResolver(config = DEFAULT_RUNTIME_CONFIG, pathImpl = p
     sequences: (filename) => pdfArtifact(filename, ".sequences.json", "sequences index"),
     cautions: (filename) => pdfArtifact(filename, ".cautions.json", "cautions index"),
     figures: (filename) => pdfArtifact(filename, ".figures.json", "figures index"),
+    figureLookup: (filename) => pdfArtifact(filename, ".figures.lookup.json", "figures lookup index"),
     evidenceGraph: (filename) => pdfArtifact(filename, ".evidence-graph.json", "evidence graph"),
     manifest: (filename) => pdfArtifact(filename, ".manifest.json", "artifact manifest"),
     jobsDir: () => ensureInsideRoot(pathImpl.join(roots.indexDir, "jobs"), roots.indexDir, "jobs directory"),

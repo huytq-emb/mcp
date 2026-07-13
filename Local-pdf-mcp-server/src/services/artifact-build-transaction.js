@@ -4,7 +4,7 @@ import path from "node:path";
 import { replaceFileAtomic, atomicWriteJson } from "../core/atomic-file.js";
 import { getPathResolver, getPathResolverDependencies, withPathResolver } from "../core/path-resolver.js";
 import { EVIDENCE_GRAPH_SCHEMA_VERSION } from "../core/runtime-constants.js";
-import { loadAndValidateCoreArtifactGenerations } from "../artifacts/generation.js";
+import { loadAndValidateCoreArtifactGenerations, loadCommittedReusableCoreArtifact } from "../artifacts/generation.js";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, contentSourceFingerprint } from "../artifacts/manifest.js";
 import { assertSameContentSource, requireStrongSourceIdentity } from "../artifacts/source-identity.js";
 import { validateEvidenceGraph } from "./evidence-graph.js";
@@ -19,6 +19,7 @@ const ARTIFACT_METHODS = Object.freeze({
   cautions: "cautions",
   sequences: "sequences",
   figures: "figures",
+  "figure-lookup": "figureLookup",
   "evidence-graph": "evidenceGraph",
   manifest: "manifest",
   "pages-partial": "pagesPartial",
@@ -76,6 +77,7 @@ function createStagedResolver(baseResolver, stageDir, buildId) {
     sequences: stagedPath("sequences"),
     cautions: stagedPath("cautions"),
     figures: stagedPath("figures"),
+    figureLookup: stagedPath("figureLookup"),
     evidenceGraph: stagedPath("evidenceGraph"),
     manifest: stagedPath("manifest"),
     artifactBuildId: buildId,
@@ -111,15 +113,14 @@ export async function createStagedArtifactBuild(filename, options = {}) {
 
 export async function seedStagedPagesCache(build) {
   const sourceFingerprint = contentSourceFingerprint(build.source);
-  try {
-    const value = JSON.parse(await build.fs.readFile(build.activePaths.pages, "utf8"));
-    if (contentSourceFingerprint(value.source || value) !== sourceFingerprint || !Array.isArray(value.pages)) return false;
-    await build.fs.copyFile(build.activePaths.pages, build.stagedPaths.pages);
-    return true;
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    return false;
-  }
+  const reusable = await withPathResolver(build.activeResolver, () => loadCommittedReusableCoreArtifact(
+    build.filename,
+    "pages",
+    { expectedSourceFingerprint: sourceFingerprint },
+  ));
+  if (!reusable) return false;
+  await build.fs.copyFile(build.activePaths.pages, build.stagedPaths.pages);
+  return true;
 }
 
 function activeArtifactPathsForGraph(build, graph = {}) {
@@ -210,7 +211,7 @@ async function replaceFromFile(build, sourcePath, targetPath, key, options) {
   await build.fs.copyFile(sourcePath, incomingPath);
   const replace = options.replaceFile || replaceFileAtomic;
   await replace(incomingPath, targetPath, { fs: build.fs, ...(options.replaceOptions || {}) });
-  options.onPublish?.(key, targetPath);
+  await options.onPublish?.(key, targetPath);
 }
 
 async function restoreSnapshot(build, snapshot, options) {
@@ -223,13 +224,15 @@ async function restoreSnapshot(build, snapshot, options) {
 
 export async function promoteStagedGeneration(build, options = {}) {
   const publishKeys = [...FULL_BUILD_ARTIFACT_KEYS];
-  const snapshotKeys = [...publishKeys, ...PARTIAL_ARTIFACT_KEYS, "manifest"];
+  const derivedInvalidationKeys = ["figure-lookup"];
+  const snapshotKeys = [...publishKeys, ...PARTIAL_ARTIFACT_KEYS, ...derivedInvalidationKeys, "manifest"];
   const snapshots = await snapshotTargets(build, snapshotKeys);
   const previousManifest = snapshots.get("manifest");
   let publicationStarted = false;
   try {
     const readyManifest = JSON.parse(await build.fs.readFile(build.stagedPaths.manifest, "utf8"));
     if (readyManifest.buildStatus !== "ready" || readyManifest.generation?.buildId !== build.id) throw new Error("Refusing to promote a staged generation without its ready commit manifest");
+    await options.verifyBeforePublish?.();
     const incompleteManifest = {
       ...readyManifest,
       buildStatus: "incomplete",
@@ -238,13 +241,20 @@ export async function promoteStagedGeneration(build, options = {}) {
     };
     await atomicWriteJson(build.activePaths.manifest, incompleteManifest, { fs: build.fs });
     publicationStarted = true;
-    options.onPublish?.("manifest:incomplete", build.activePaths.manifest);
+    await options.onPublish?.("manifest:incomplete", build.activePaths.manifest);
 
     for (const key of publishKeys) await replaceFromFile(build, build.stagedPaths[key], build.activePaths[key], key, options);
     for (const key of PARTIAL_ARTIFACT_KEYS) {
       await build.fs.rm(build.activePaths[key], { force: true });
-      options.onPublish?.(key, build.activePaths[key]);
+      await options.onPublish?.(key, build.activePaths[key]);
     }
+    for (const key of derivedInvalidationKeys) {
+      await build.fs.rm(build.activePaths[key], { force: true });
+      await options.onPublish?.(`${key}:invalidated`, build.activePaths[key]);
+    }
+    // The source verifier runs after the last active artifact mutation and
+    // immediately before the ready commit marker is installed.
+    await options.verifyBeforeCommit?.();
     // This is the generation commit point. No active artifact is modified
     // after the ready manifest is atomically installed.
     await replaceFromFile(build, build.stagedPaths.manifest, build.activePaths.manifest, "manifest:ready", options);
@@ -252,7 +262,7 @@ export async function promoteStagedGeneration(build, options = {}) {
   } catch (error) {
     if (!publicationStarted) throw error;
     const rollbackErrors = [];
-    for (const key of [...publishKeys, ...PARTIAL_ARTIFACT_KEYS].reverse()) {
+    for (const key of [...publishKeys, ...PARTIAL_ARTIFACT_KEYS, ...derivedInvalidationKeys].reverse()) {
       try { await restoreSnapshot(build, snapshots.get(key), options); }
       catch (rollbackError) { rollbackErrors.push(rollbackError); }
     }

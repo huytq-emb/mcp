@@ -300,6 +300,10 @@ export async function assertArtifactPublicationReadable(filename) {
   return manifest;
 }
 
+export function isArtifactPublicationStateError(error) {
+  return error?.code === "ARTIFACT_GENERATION_INCOMPLETE";
+}
+
 export async function atomicWriteJson(targetPath, value) {
   let payload = value;
   const indexDir = getPathResolver().indexDir();
@@ -534,12 +538,7 @@ export function safeFiguresIndexPath(filename) {
 }
 
 export function safeFigureLookupIndexPath(filename) {
-  ensurePdfFilename(filename);
-  return ensureInsideRoot(
-    path.join(getPathResolver().indexDir(), `${filename}.figures.lookup.json`),
-    getPathResolver().indexDir(),
-    "figures lookup index"
-  );
+  return getPathResolver().figureLookup(filename);
 }
 
 export function safeFigureOcrIndexPath(filename) {

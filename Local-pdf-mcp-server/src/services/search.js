@@ -1,4 +1,4 @@
-import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
 import { withVisualSemanticGuard } from "../core/visual-guard.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, HYBRID_BM25_B, HYBRID_BM25_K1, HYBRID_BM25_WEIGHT, HYBRID_CANDIDATE_LIMIT, HYBRID_MIN_SCORE, HYBRID_PROXIMITY_WEIGHT, HYBRID_PROXIMITY_WINDOW, MAX_BITFIELD_TABLE_ROWS, MAX_HYBRID_TOP_K, MAX_PREVIEW_CHARS, MAX_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
@@ -507,7 +507,8 @@ export async function buildHybridContext(filename, hybrid) {
         context.relatedRegisters.add(entry.name);
         for (const alias of entry.aliases || []) context.relatedRegisters.add(alias);
       }
-    } catch {
+    } catch (error) {
+      if (isArtifactPublicationStateError(error)) throw error;
       // Register index is optional for hybrid search.
     }
   }
@@ -518,7 +519,8 @@ export async function buildHybridContext(filename, hybrid) {
     for (const section of results.slice(0, 5)) {
       if (section.page) context.relatedPages.add(section.page);
     }
-  } catch {
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
     // Section index is optional for hybrid search.
   }
 
@@ -543,7 +545,8 @@ export async function buildHybridContext(filename, hybrid) {
         }
         for (const reg of sequence.relatedRegisters || []) context.relatedRegisters.add(reg);
       }
-    } catch {
+    } catch (error) {
+      if (isArtifactPublicationStateError(error)) throw error;
       // Sequence index is optional for hybrid search.
     }
   }
@@ -575,7 +578,8 @@ export async function buildHybridContext(filename, hybrid) {
         }
         for (const reg of caution.relatedRegisters || []) context.relatedRegisters.add(reg);
       }
-    } catch {
+    } catch (error) {
+      if (isArtifactPublicationStateError(error)) throw error;
       // Caution index is optional for hybrid search.
     }
   }
@@ -985,7 +989,8 @@ export async function selectHybridCandidateChunks(filename, indexData, hybrid, c
     const searchTopK = Math.min(MAX_TOP_K, Math.max(topK * 24, 80));
     const { results } = await searchPdfIndex(filename, hybrid.raw, searchTopK);
     for (const chunk of results) add(chunk);
-  } catch {
+  } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
     // Full fallback below keeps hybrid search usable if lexical search is unavailable.
   }
 

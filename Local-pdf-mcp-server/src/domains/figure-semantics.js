@@ -5,6 +5,7 @@ import {
   compactText as runtimeCompactText,
   ensurePdfFilename,
   getPdfSourceInfo,
+  isArtifactPublicationStateError,
   isSamePdfSource,
   pathExists,
   readJsonCached,
@@ -66,7 +67,10 @@ function bboxSimilar(a = [], b = []) {
 async function pageTextFor(filename, page) {
   const pageNumber = Number(page || 0);
   if (!pageNumber) return { text: "", source: "" };
-  const cached = await loadPagesCache(filename).catch(() => null);
+  const cached = await loadPagesCache(filename).catch((error) => {
+    if (isArtifactPublicationStateError(error)) throw error;
+    return null;
+  });
   const cachedPage = cached?.pages?.find((item) => Number(item.page) === pageNumber);
   if (cachedPage) return { text: String(cachedPage.text || ""), source: safePagesCachePath(filename) };
   try {

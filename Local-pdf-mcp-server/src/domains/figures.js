@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath, safeTablesIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath, safeTablesIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION, MAX_RENDER_DPI, MIN_RENDER_DPI } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
@@ -649,7 +649,10 @@ export async function rebuildFigureManifest(filename, options = {}) {
     pageCache = await readJsonCached(safePagesCachePath(filename));
   }
   if (page) {
-    const existing = await loadFiguresIndex(filename).catch(() => null);
+    const existing = await loadFiguresIndex(filename).catch((error) => {
+      if (isArtifactPublicationStateError(error)) throw error;
+      return null;
+    });
     const pageIndex = await buildFiguresIndex(filename, pageCache, { force: Boolean(options.force), page });
     let merged;
     if (existing) {
@@ -780,6 +783,7 @@ export async function getCachedOrExtractedPageText(filename, pageNumber) {
     const text = pageTextFromCache(cache, pageNumber);
     if (text) return { text, source: "pages-cache", warning: "" };
   } catch (error) {
+    if (isArtifactPublicationStateError(error)) throw error;
     if (!isRuntimePortNotWired(error)) warnings.push(`pages cache unavailable: ${String(error?.message || error).slice(0, 120)}`);
     try {
       const cache = await readJsonCached(safePagesCachePath(filename));

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import { CORE_GENERATION_ARTIFACTS, loadAndValidateCoreArtifactGenerations } from "../artifacts/generation.js";
 import {
+  assertArtifactPublicationReadable,
   atomicWriteJson,
   canonicalSymbol,
   getPdfSourceInfo,
@@ -805,6 +806,7 @@ export async function buildEvidenceGraph(filename) {
 }
 
 export async function loadEvidenceGraph(filename, { buildIfMissing = false } = {}) {
+  await assertArtifactPublicationReadable(filename);
   const filePath = safeEvidenceGraphPath(filename);
   if (!(await pathExists(filePath))) {
     if (buildIfMissing) return buildEvidenceGraph(filename);

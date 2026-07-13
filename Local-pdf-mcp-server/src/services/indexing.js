@@ -1,4 +1,4 @@
-import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
+import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver, withPathResolver } from "../core/path-resolver.js";
@@ -1017,7 +1017,10 @@ export async function buildRegistersIndex(filename, indexData = null, sectionsIn
   const sectionIndexData = sectionsIndex || (await getSectionsIndex(filename));
   const pageCache = await getPagesCache(filename);
   const byName = new Map();
-  const tableIndexData = tablesIndex || await loadTablesIndex(filename).catch(() => null);
+  const tableIndexData = tablesIndex || await loadTablesIndex(filename).catch((error) => {
+    if (isArtifactPublicationStateError(error)) throw error;
+    return null;
+  });
 
   // Coordinate tables preserve columns and row provenance better than flattened page text.
   for (const table of tableIndexData?.tables || []) {
@@ -1605,7 +1608,22 @@ export async function buildPdfIndex(filename, options = {}) {
 
     return indexData;
       });
-      await promoteStagedGeneration(build, options.publication || {});
+      const publication = options.publication || {};
+      const verifyCurrentSource = async () => {
+        const commitSource = await getStablePdfSourceInfo(filename);
+        assertSameContentSource(build.source, commitSource, filename);
+      };
+      await promoteStagedGeneration(build, {
+        ...publication,
+        verifyBeforePublish: async () => {
+          await publication.verifyBeforePublish?.();
+          await verifyCurrentSource();
+        },
+        verifyBeforeCommit: async () => {
+          await publication.verifyBeforeCommit?.();
+          await verifyCurrentSource();
+        },
+      });
     } catch (error) {
       try { await discardStagedGeneration(build); }
       catch (cleanupError) { error.stagingCleanupError = cleanupError; }

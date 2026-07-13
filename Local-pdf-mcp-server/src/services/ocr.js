@@ -3,15 +3,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
-import { sourceFingerprint } from "../artifacts/manifest.js";
+import { contentSourceFingerprint, sourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedReusableCoreArtifact } from "../artifacts/generation.js";
 import {
   atomicWriteJson,
+  assertArtifactPublicationReadable,
   compactText,
   ensureInsideRoot,
   ensurePdfFilename,
   getPdfSourceInfo,
   getStablePdfSourceInfo,
   isSamePdfSource,
+  isArtifactPublicationStateError,
   normalizeForSearch,
   pathExists,
   readJsonCached,
@@ -255,6 +258,7 @@ export async function loadFigureOcrIndex(filename) {
 }
 
 export async function loadPythonFiguresIndex(filename) {
+  await assertArtifactPublicationReadable(filename);
   const data = await loadJsonArtifact(filename, safeFiguresIndexPath(filename), FIGURE_INDEX_SCHEMA_VERSION);
   if (!data || !Array.isArray(data.figures)) return null;
   return data;
@@ -482,7 +486,7 @@ function figureLookupEntry(figure = {}) {
   };
 }
 
-function buildFigureLookupArtifact(filename, index = {}) {
+function buildFigureLookupArtifact(filename, index = {}, committed = {}) {
   const byId = {};
   for (const figure of index.figures || []) {
     const entry = figureLookupEntry(figure);
@@ -494,46 +498,80 @@ function buildFigureLookupArtifact(filename, index = {}) {
     filename,
     generatedBy: "local-pdf-mcp-server.figure-lookup",
     createdAt: new Date().toISOString(),
-    source: index.source || null,
-    sourceFingerprint: index.sourceFingerprint || (index.source ? pdfSourceFingerprint(index.source) : ""),
+    source: committed.source || index.source || null,
+    sourceFingerprint: committed.sourceFingerprint || index.sourceFingerprint || (index.source ? pdfSourceFingerprint(index.source) : ""),
+    buildId: committed.manifest?.generation?.buildId || "",
+    figureGenerationId: index.generation?.generationId || "",
     figureCount: Object.values(byId).filter((entry, indexValue, entries) => entries.findIndex((candidate) => candidate.id === entry.id) === indexValue).length,
     aliasCount: Object.keys(byId).length,
     byId,
   };
 }
 
-async function loadFigureLookupIndex(filename) {
-  const data = await loadJsonArtifact(filename, safeFigureLookupIndexPath(filename), FIGURE_LOOKUP_SCHEMA_VERSION);
-  if (!data || !data.byId || typeof data.byId !== "object") return null;
+async function loadCommittedFiguresState(filename) {
+  const manifest = await assertArtifactPublicationReadable(filename);
+  if (!manifest || manifest.buildStatus !== "ready" || !manifest.generation) return { manifest, figures: null };
+  const source = await getStablePdfSourceInfo(filename);
+  const currentSourceFingerprint = contentSourceFingerprint(source);
+  const figures = await loadCommittedReusableCoreArtifact(filename, "figures", {
+    expectedSourceFingerprint: currentSourceFingerprint,
+  });
+  if (!figures) {
+    const error = new Error(`Committed figures generation for ${filename} is missing, stale, or incompatible; run index_pdf to publish a complete generation.`);
+    error.code = "ARTIFACT_GENERATION_INVALID";
+    throw error;
+  }
+  return { manifest, figures, source, sourceFingerprint: currentSourceFingerprint };
+}
+
+export async function loadFigureLookupIndex(filename, options = {}) {
+  const committed = options.committed || await loadCommittedFiguresState(filename);
+  if (!committed.figures) return null;
+  const filePath = safeFigureLookupIndexPath(filename);
+  let data;
+  try { data = JSON.parse(await fs.readFile(filePath, "utf8")); }
+  catch (error) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+  if (data.schemaVersion !== FIGURE_LOOKUP_SCHEMA_VERSION || data.filename !== filename || data.artifactComplete !== true) return null;
+  if (!data.byId || typeof data.byId !== "object" || Array.isArray(data.byId)) return null;
+  if (!isSamePdfSource(data.source, committed.source) || data.sourceFingerprint !== committed.sourceFingerprint) return null;
+  if (data.buildId !== committed.manifest.generation.buildId) return null;
+  if (data.figureGenerationId !== committed.figures.generation.generationId) return null;
+  const expected = buildFigureLookupArtifact(filename, committed.figures, committed);
+  if (Number(data.figureCount) !== expected.figureCount || Number(data.aliasCount) !== expected.aliasCount) return null;
+  if (JSON.stringify(data.byId) !== JSON.stringify(expected.byId)) return null;
   return data;
 }
 
-async function writeFigureLookupIndex(filename, index) {
-  const lookup = buildFigureLookupArtifact(filename, index);
+async function writeFigureLookupIndex(filename, committed) {
+  const lookup = buildFigureLookupArtifact(filename, committed.figures, committed);
   await atomicWriteJson(safeFigureLookupIndexPath(filename), lookup);
   return lookup;
 }
 
 export async function ensureFigureLookupIndex(filename, index = null, options = {}) {
   ensurePdfFilename(filename);
+  const committed = options.committed || await loadCommittedFiguresState(filename);
+  if (!committed.figures) return null;
   if (!options.force) {
-    const existing = await loadFigureLookupIndex(filename).catch(() => null);
+    const existing = await loadFigureLookupIndex(filename, { committed });
     if (existing) return existing;
   }
-  const figuresIndex = index || await loadPythonFiguresIndex(filename);
-  if (!figuresIndex || !Array.isArray(figuresIndex.figures)) return null;
-  return writeFigureLookupIndex(filename, figuresIndex);
+  // The caller-provided index may still be staged or only partially written.
+  // Always derive the cache from the strictly validated committed artifact.
+  void index;
+  return writeFigureLookupIndex(filename, committed);
 }
 
-async function resolveFigureTarget(filename, args = {}) {
+export async function resolveFigureTarget(filename, args = {}) {
   const figureId = String(args.figure_id || args.figureId || "").trim();
   if (figureId) {
-    let lookup = null;
-    try {
-      lookup = await loadFigureLookupIndex(filename);
-    } catch {
-      lookup = null;
-    }
+    const committed = await loadCommittedFiguresState(filename);
+    const lookup = committed.figures
+      ? await ensureFigureLookupIndex(filename, committed.figures, { committed })
+      : null;
     const lookupFigure = lookup?.byId?.[figureId];
     if (lookupFigure) {
       const bbox = normalizeBbox(lookupFigure.bbox);
@@ -555,10 +593,11 @@ async function resolveFigureTarget(filename, args = {}) {
       };
     }
 
-    let index = null;
+    let index = committed.figures;
     try {
-      index = await loadPythonFiguresIndex(filename);
+      if (!index) index = await loadPythonFiguresIndex(filename);
     } catch (error) {
+      if (isArtifactPublicationStateError(error)) throw error;
       return failureFromError(error, "FIGURES_INDEX_UNAVAILABLE", { filename, figure_id: figureId });
     }
     if (!index) {
@@ -568,7 +607,7 @@ async function resolveFigureTarget(filename, args = {}) {
     if (!figure) {
       return softFailure("FIGURE_ID_NOT_FOUND", `figure_id was not found in the figures index: ${figureId}`, { filename, figure_id: figureId });
     }
-    await writeFigureLookupIndex(filename, index).catch(() => {});
+    if (committed.figures) await writeFigureLookupIndex(filename, committed);
     const bbox = normalizeBbox(figure.bbox);
     if (!bbox) {
       const fallbackPage = Number(figure.page || 0);
@@ -2119,7 +2158,8 @@ export async function inspectFigureOnDemand(args = {}) {
   let target = null;
   try {
     target = await resolveFigureTarget(String(args.filename || "").trim(), args);
-  } catch {
+  } catch (error) {
+    if (isArtifactPublicationStateError(error) || error?.code === "ARTIFACT_GENERATION_INVALID") throw error;
     target = null;
   }
   const figure = target?.figure || null;

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { ARTIFACT_DEPENDENCIES, contentSourceFingerprint } from "./manifest.js";
+import { ARTIFACT_DEPENDENCIES, ARTIFACT_MANIFEST_SCHEMA_VERSION, contentSourceFingerprint } from "./manifest.js";
 import { requireStrongSourceIdentity } from "./source-identity.js";
 import {
   BITFIELD_INDEX_SCHEMA_VERSION,
@@ -21,12 +21,12 @@ import {
   safeFiguresIndexPath,
   safeIndexPath,
   safePagesCachePath,
+  safeArtifactManifestPath,
   safeRegistersIndexPath,
   safeSectionsIndexPath,
   safeSequencesIndexPath,
   safeTablesIndexPath,
 } from "../core/runtime-helpers.js";
-
 export const CORE_GENERATION_ARTIFACTS = Object.freeze({
   pages: safePagesCachePath,
   "chunk-index": safeIndexPath,
@@ -125,7 +125,11 @@ async function loadArtifact(filename, key) {
   const filePath = pathFor(filename);
   let value;
   try { value = JSON.parse(await fs.readFile(filePath, "utf8")); }
-  catch (error) { throw new Error(`Required artifact ${key} is unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+  catch (error) {
+    const wrapped = new Error(`Required artifact ${key} is unavailable: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    if (error?.code) wrapped.code = error.code;
+    throw wrapped;
+  }
   if (value.filename !== filename) throw new Error(`Artifact ${key} belongs to ${value.filename || "an unknown file"}, not ${filename}.`);
   validateArtifactShape(key, value);
   return { key, filePath, value };
@@ -202,4 +206,56 @@ export async function loadAndValidateCoreArtifactGenerations(filename, { sourceF
     }
   }
   return Object.fromEntries(Object.entries(loaded).map(([key, artifact]) => [key, artifact.value]));
+}
+
+function isOrdinaryReuseRejection(error) {
+  return !["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE", "ENOSPC", "EROFS"].includes(String(error?.code || error?.cause?.code || ""));
+}
+
+/**
+ * Load an active core artifact only when the ready manifest commits the exact
+ * generation represented by its bytes. Ordinary cache incompatibility is a
+ * miss; filesystem failures which would make a rebuild unsafe still surface.
+ */
+export async function loadCommittedReusableCoreArtifact(filename, key, { expectedSourceFingerprint } = {}) {
+  const pathFor = CORE_GENERATION_ARTIFACTS[key];
+  if (!pathFor) throw new Error(`Unsupported generation artifact: ${key}`);
+
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(safeArtifactManifestPath(filename), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+
+  try {
+    if (manifest.schemaVersion !== ARTIFACT_MANIFEST_SCHEMA_VERSION) return null;
+    if (manifest.filename !== filename || manifest.buildStatus !== "ready" || manifest.health === "fail") return null;
+    if (!manifest.generation || typeof manifest.generation !== "object" || !manifest.generation.buildId) return null;
+    requireStrongSourceIdentity(manifest.source, `Committed manifest for ${filename}`);
+    const manifestSourceFingerprint = contentSourceFingerprint(manifest.source);
+    if (!expectedSourceFingerprint || manifestSourceFingerprint !== expectedSourceFingerprint) return null;
+    if (manifest.source.fingerprint !== expectedSourceFingerprint || manifest.generation.sourceFingerprint !== expectedSourceFingerprint) return null;
+    if (!manifest.artifacts?.[key]?.ok || manifest.artifacts[key].status !== "ok") return null;
+    const committedGenerationId = manifest.generation.artifactGenerations?.[key];
+    if (!committedGenerationId) return null;
+
+    // Probe separately so permission and device failures are not hidden by the
+    // validation layer's human-readable compatibility error.
+    try { await fs.access(pathFor(filename)); }
+    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+
+    const artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
+      sourceFingerprint: expectedSourceFingerprint,
+      keys: [key],
+    });
+    const artifact = artifacts[key];
+    if (artifact?.artifactComplete !== true) return null;
+    if (artifact.generation?.generationId !== committedGenerationId) return null;
+    return artifact;
+  } catch (error) {
+    if (isOrdinaryReuseRejection(error)) return null;
+    throw error;
+  }
 }
