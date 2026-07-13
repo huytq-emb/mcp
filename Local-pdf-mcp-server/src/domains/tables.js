@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import {
+  assertArtifactPublicationReadable,
   atomicWriteJson,
   getPdfSourceInfo,
   isSamePdfSource,
@@ -16,7 +17,8 @@ import {
   SERVER_VERSION,
   TABLE_INDEX_SCHEMA_VERSION,
 } from "../core/runtime-constants.js";
-import { getPathResolver } from "../core/path-resolver.js";
+import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
+import { isCompatibleBuildCheckpoint } from "../artifacts/source-identity.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { coordinateItemsToRows, extractTablesFromCoordinateRows } from "./manual-intelligence.js";
 
@@ -239,13 +241,12 @@ export function stitchTablesAcrossPages(tables) {
   }));
 }
 
-async function readPartialTables(filename, source) {
+async function readPartialTables(filename, source, buildId) {
   const partialPath = safeTablesPartialIndexPath(filename);
   if (!(await pathExists(partialPath))) return null;
   try {
     const partial = JSON.parse(await fs.readFile(partialPath, "utf-8"));
-    if (partial.schemaVersion !== TABLE_INDEX_SCHEMA_VERSION || partial.filename !== filename) return null;
-    if (!isSamePdfSource(partial.source, source)) return null;
+    if (!isCompatibleBuildCheckpoint(partial, { filename, buildId, source, schemaVersion: TABLE_INDEX_SCHEMA_VERSION })) return null;
     return partial;
   } catch {
     return null;
@@ -255,8 +256,9 @@ async function readPartialTables(filename, source) {
 export async function buildTablesIndex(filename, indexData, pageCache, sectionsIndex = null, options = {}) {
   await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
   const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const buildId = String(options.buildId || getArtifactBuildId() || `tables-${source.sha256}`);
   const candidates = selectTableCandidatePages(pageCache, indexData, options);
-  const partial = options.resume === false ? null : await readPartialTables(filename, source);
+  const partial = options.resume === false ? null : await readPartialTables(filename, source, buildId);
   const completed = new Set(partial?.completedPages || []);
   const rawTables = (partial?.tables || []).map(compactTableForArtifact);
   const pdf = await loadPdfDocument(filename);
@@ -278,6 +280,7 @@ export async function buildTablesIndex(filename, indexData, pageCache, sectionsI
         schemaVersion: TABLE_INDEX_SCHEMA_VERSION,
         serverVersion: SERVER_VERSION,
         filename,
+        buildId,
         updatedAt: new Date().toISOString(),
         source,
         candidatePages: candidates,
@@ -314,6 +317,7 @@ export async function buildTablesIndex(filename, indexData, pageCache, sectionsI
 }
 
 export async function loadTablesIndex(filename) {
+  await assertArtifactPublicationReadable(filename);
   const tablesPath = safeTablesIndexPath(filename);
   if (!(await pathExists(tablesPath))) return null;
   try {

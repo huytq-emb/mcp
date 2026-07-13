@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
 import { buildEvidenceGraph } from "./evidence-graph.js";
-import { createJobStore, JobUpdateRejectedError, TERMINAL_JOB_STATES } from "./job-store.js";
+import { createJobStore, DEFAULT_QUEUED_JOB_GRACE_MS, JobUpdateRejectedError, TERMINAL_JOB_STATES } from "./job-store.js";
 import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 
 
@@ -41,18 +41,41 @@ const rebuildFigureSemanticsArtifact = createRuntimePort("rebuildFigureSemantics
 // Background jobs / timeout hardening
 // -----------------------------------------------------------------------------
 
-export const jobs = new Map();
-export let jobSequence = 0;
-export let jobsStateWriteTimer = null;
-export let jobsStateWriteInProgress = false;
-export let jobsStateWritePending = false;
-const pendingJobWrites = new Set();
-const pendingJobWriteFailures = [];
-const jobWriteChains = new Map();
+const jobRuntimeStates = new WeakMap();
 const jobStoresByResolver = new WeakMap();
 
+export function createJobRuntimeState() {
+  return {
+    jobs: new Map(),
+    jobSequence: 0,
+    pendingWrites: new Set(),
+    pendingFailures: [],
+    writeChains: new Map(),
+    jobsStateWriteInProgress: false,
+    jobsStateWritePending: false,
+  };
+}
+
+function jobRuntimeScope(resolver = getPathResolver()) {
+  return resolver?.jobRuntimeScope || resolver;
+}
+
+export function getJobRuntimeState(resolver = getPathResolver()) {
+  const scope = jobRuntimeScope(resolver);
+  let state = jobRuntimeStates.get(scope);
+  if (!state) {
+    state = createJobRuntimeState();
+    jobRuntimeStates.set(scope, state);
+  }
+  return state;
+}
+
+export function getJobsMap(resolver = getPathResolver()) {
+  return getJobRuntimeState(resolver).jobs;
+}
+
 export function getJobStore() {
-  const paths = getPathResolver();
+  const paths = jobRuntimeScope(getPathResolver());
   let store = jobStoresByResolver.get(paths);
   if (!store) {
     const dependencies = getPathResolverDependencies(paths);
@@ -63,12 +86,18 @@ export function getJobStore() {
 }
 
 export function nowIso() {
-  return new Date().toISOString();
+  const clock = getJobStore().clock;
+  return typeof clock?.nowIso === "function" ? clock.nowIso() : new Date(clock?.now?.() ?? Date.now()).toISOString();
+}
+
+function jobNowMs() {
+  return Number(getJobStore().clock?.now?.() ?? Date.now());
 }
 
 export function createJobId(type) {
-  jobSequence += 1;
-  return `${type}-${Date.now()}-${jobSequence}`;
+  const state = getJobRuntimeState();
+  state.jobSequence += 1;
+  return `${type}-${jobNowMs()}-${state.jobSequence}`;
 }
 
 export function parseJobSequenceFromId(id) {
@@ -103,7 +132,8 @@ export function normalizeJobForPersistence(job) {
 }
 
 export function jobsStatePayload() {
-  const serializedJobs = [...jobs.values()]
+  const state = getJobRuntimeState();
+  const serializedJobs = [...state.jobs.values()]
     .map(normalizeJobForPersistence)
     .filter(Boolean)
     .sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
@@ -112,52 +142,56 @@ export function jobsStatePayload() {
     schemaVersion: JOBS_STATE_SCHEMA_VERSION,
     serverVersion: SERVER_VERSION,
     updatedAt: nowIso(),
-    updatedMs: Date.now(),
-    jobSequence,
+    updatedMs: jobNowMs(),
+    jobSequence: state.jobSequence,
     jobs: serializedJobs,
   };
 }
 
 export async function flushJobsState() {
-  jobsStateWriteInProgress = true;
+  const state = getJobRuntimeState();
+  state.jobsStateWriteInProgress = true;
   try {
-    while (pendingJobWrites.size) {
-      try { await Promise.all([...pendingJobWrites]); }
-      catch { /* Drain every queued write, then surface the first persistence failure below. */ }
+    while (state.pendingWrites.size) {
+      try { await Promise.all([...state.pendingWrites]); }
+      catch { /* Drain every queued write, then surface persistence failures below. */ }
     }
-    if (pendingJobWriteFailures.length) throw pendingJobWriteFailures.shift();
+    const failures = state.pendingFailures.splice(0);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Multiple background job persistence operations failed");
   } finally {
-    jobsStateWriteInProgress = false;
-    jobsStateWritePending = false;
+    state.jobsStateWriteInProgress = false;
+    state.jobsStateWritePending = false;
   }
 }
 
 function queueJobWrite(job) {
+  const state = getJobRuntimeState();
+  const store = getJobStore();
   const snapshot = normalizeJobForPersistence(job);
-  const previous = jobWriteChains.get(snapshot.id) || Promise.resolve();
+  const previous = state.writeChains.get(snapshot.id) || Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
-    const store = getJobStore();
     const current = await store.readJob(snapshot.id);
     if (!current) return store.createJob(snapshot);
     return store.updateJob(snapshot.id, snapshot, { updatedMs: snapshot.updatedMs });
   }).then((persisted) => {
-    const current = jobs.get(snapshot.id);
-    if (!current || Number(persisted.revision || 0) >= Number(current.revision || 0)) jobs.set(snapshot.id, persisted);
+    const current = state.jobs.get(snapshot.id);
+    if (!current || Number(persisted.revision || 0) >= Number(current.revision || 0)) state.jobs.set(snapshot.id, persisted);
     return persisted;
   }).catch((error) => {
     if (error instanceof JobUpdateRejectedError && error.current) {
-      jobs.set(snapshot.id, error.current);
+      state.jobs.set(snapshot.id, error.current);
       return error.current;
     }
-    pendingJobWriteFailures.push(error);
+    state.pendingFailures.push(error);
     throw error;
   });
-  jobWriteChains.set(snapshot.id, operation);
-  pendingJobWrites.add(operation);
-  jobsStateWritePending = true;
+  state.writeChains.set(snapshot.id, operation);
+  state.pendingWrites.add(operation);
+  state.jobsStateWritePending = true;
   const cleanup = () => {
-    pendingJobWrites.delete(operation);
-    if (jobWriteChains.get(snapshot.id) === operation) jobWriteChains.delete(snapshot.id);
+    state.pendingWrites.delete(operation);
+    if (state.writeChains.get(snapshot.id) === operation) state.writeChains.delete(snapshot.id);
   };
   void operation.then(cleanup, cleanup);
   void operation.catch(() => {});
@@ -165,6 +199,7 @@ function queueJobWrite(job) {
 }
 
 export async function persistInitialJob(job) {
+  const jobs = getJobsMap();
   const snapshot = normalizeJobForPersistence(job);
   if (!snapshot) throw new Error("Cannot persist a background job without an ID");
   try {
@@ -183,10 +218,11 @@ export async function persistInitialJob(job) {
 
 export function persistJobsStateSoon(job = null) {
   if (job) return queueJobWrite(job);
-  return Promise.all([...jobs.values()].map(queueJobWrite));
+  return Promise.all([...getJobsMap().values()].map(queueJobWrite));
 }
 
 export function trimJobHistory({ persist = false } = {}) {
+  const jobs = getJobsMap();
   const items = [...jobs.values()].sort((a, b) => Number(a.createdMs || 0) - Number(b.createdMs || 0));
   let changed = false;
 
@@ -206,27 +242,29 @@ export function trimJobHistory({ persist = false } = {}) {
 }
 
 export function activeJobCount() {
-  return [...jobs.values()].filter((job) => job.status === "running" || job.status === "queued").length;
+  return [...getJobsMap().values()].filter((job) => job.status === "running" || job.status === "queued").length;
 }
 
 export function updateJob(job, patch = {}) {
   if (TERMINAL_JOB_STATES.has(job.status) && patch.status && patch.status !== job.status) {
     throw new JobUpdateRejectedError(job.id, `terminal state ${job.status} is monotonic and cannot become ${patch.status}`, job);
   }
-  const updatedMs = Math.max(Date.now(), Number(job.updatedMs || 0) + 1);
+  const updatedMs = Math.max(jobNowMs(), Number(job.updatedMs || 0) + 1);
   Object.assign(job, patch, { updatedAt: new Date(updatedMs).toISOString(), updatedMs });
   if (patch.message) {
     job.log = job.log || [];
     job.log.push({ at: job.updatedAt, message: patch.message, phase: patch.phase || job.phase || "" });
     if (job.log.length > JOB_LOG_LIMIT) job.log = job.log.slice(-JOB_LOG_LIMIT);
   }
-  jobs.set(job.id, job);
+  getJobsMap().set(job.id, job);
   trimJobHistory();
   queueJobWrite(job);
   return job;
 }
 
 export async function loadJobsStateFromDisk(options = {}) {
+  const state = getJobRuntimeState();
+  const jobs = state.jobs;
   const store = getJobStore();
   const fsOps = store.fs || fs;
   await fsOps.mkdir(getPathResolver().jobsDir(), { recursive: true });
@@ -261,20 +299,21 @@ export async function loadJobsStateFromDisk(options = {}) {
     jobs.set(job.id, job);
   }
 
-  jobSequence = Math.max(jobSequence, maxSequence);
+  state.jobSequence = Math.max(state.jobSequence, maxSequence);
   trimJobHistory();
 }
 
 export async function claimDetachedJob(jobId, options = {}) {
+  const state = getJobRuntimeState();
   const claimed = await getJobStore().claimDetachedJob(jobId, options);
-  jobs.set(claimed.id, claimed);
-  jobSequence = Math.max(jobSequence, parseJobSequenceFromId(claimed.id));
+  state.jobs.set(claimed.id, claimed);
+  state.jobSequence = Math.max(state.jobSequence, parseJobSequenceFromId(claimed.id));
   return claimed;
 }
 
 async function persistDetachedPid(jobId, pid) {
   const persisted = await getJobStore().recordDetachedPid(jobId, pid);
-  jobs.set(jobId, persisted);
+  getJobsMap().set(jobId, persisted);
   return persisted;
 }
 
@@ -282,7 +321,7 @@ async function persistJobFailure(jobId, error, phase) {
   const store = getJobStore();
   const current = await store.readJob(jobId);
   if (!current || TERMINAL_JOB_STATES.has(current.status)) return current;
-  const updatedMs = Math.max(Date.now(), Number(current.updatedMs || 0) + 1);
+  const updatedMs = Math.max(jobNowMs(), Number(current.updatedMs || 0) + 1);
   const updatedAt = new Date(updatedMs).toISOString();
   const failed = await store.updateJob(jobId, {
     status: "failed",
@@ -294,14 +333,45 @@ async function persistJobFailure(jobId, error, phase) {
     updatedMs,
     error: error instanceof Error ? error.message : String(error),
   }, { updatedMs });
-  jobs.set(jobId, failed);
+  getJobsMap().set(jobId, failed);
+  return failed;
+}
+
+export async function handleDetachedWorkerFailure({ jobId, job = null, error, phase = "worker-claim-failed" } = {}) {
+  const id = String(jobId || job?.id || "").trim();
+  if (!id) return null;
+  const store = getJobStore();
+  const current = await store.readJob(id);
+  // A detached worker must never recreate a missing record, and a late worker
+  // must never move a cancelled or otherwise terminal job backward.
+  if (!current || TERMINAL_JOB_STATES.has(current.status)) {
+    if (current) getJobsMap().set(id, current);
+    return current;
+  }
+  const updatedMs = Math.max(jobNowMs(), Number(current.updatedMs || 0) + 1);
+  const updatedAt = new Date(updatedMs).toISOString();
+  const reason = error instanceof Error ? error.stack || error.message : String(error);
+  const failed = await store.updateJob(id, {
+    status: "failed",
+    phase,
+    message: phase === "worker-claim-failed" ? "Detached worker could not claim its persisted job" : "Detached external worker failed",
+    error: `${reason}\nStart a new background job if the artifact build is incomplete.`,
+    finishedAt: updatedAt,
+    finishedMs: updatedMs,
+    updatedAt,
+    updatedMs,
+    log: [...(current.log || []).slice(-(JOB_LOG_LIMIT - 1)), { at: updatedAt, phase, message: "Detached worker failure recorded" }],
+  }, { updatedMs });
+  getJobsMap().set(id, failed);
   return failed;
 }
 
 
 export async function refreshJobsStateFromDisk() {
+  const state = getJobRuntimeState();
+  const jobs = state.jobs;
   const loadedJobs = await getJobStore().listJobs();
-  let maxSequence = jobSequence;
+  let maxSequence = state.jobSequence;
   const loadedIds = new Set();
   for (const loadedJob of loadedJobs) {
     const job = normalizeJobForPersistence(loadedJob);
@@ -314,14 +384,34 @@ export async function refreshJobsStateFromDisk() {
     }
   }
   for (const id of [...jobs.keys()]) if (!loadedIds.has(id)) jobs.delete(id);
-  jobSequence = Math.max(jobSequence, maxSequence);
+  state.jobSequence = Math.max(state.jobSequence, maxSequence);
 }
 
 export async function refreshJobStateFromDisk(jobId) {
+  const jobs = getJobsMap();
   const loaded = await getJobStore().readJob(jobId);
   if (loaded) jobs.set(jobId, normalizeJobForPersistence(loaded));
   else jobs.delete(jobId);
   return loaded;
+}
+
+export async function recoverJob(jobId, options = {}) {
+  const recovered = await getJobStore().recoverJob(jobId, {
+    queuedGraceMs: options.queuedGraceMs ?? DEFAULT_QUEUED_JOB_GRACE_MS,
+    ...(options.isProcessAlive ? { isProcessAlive: options.isProcessAlive } : {}),
+  });
+  const jobs = getJobsMap();
+  if (recovered) jobs.set(jobId, normalizeJobForPersistence(recovered));
+  else jobs.delete(jobId);
+  return recovered;
+}
+
+export async function recoverJobs(options = {}) {
+  const recovered = await getJobStore().recoverJobs({
+    queuedGraceMs: options.queuedGraceMs ?? DEFAULT_QUEUED_JOB_GRACE_MS,
+    ...(options.isProcessAlive ? { isProcessAlive: options.isProcessAlive } : {}),
+  });
+  return recovered;
 }
 
 export function jobSnapshot(job) {
@@ -338,7 +428,7 @@ export function jobSnapshot(job) {
     startedAt: job.startedAt || null,
     updatedAt: job.updatedAt || null,
     finishedAt: job.finishedAt || null,
-    durationMs: job.startedMs ? ((job.finishedMs || Date.now()) - job.startedMs) : 0,
+    durationMs: job.startedMs ? ((job.finishedMs || jobNowMs()) - job.startedMs) : 0,
     result: job.result || null,
     error: job.error || null,
     metadata: job.metadata || {},
@@ -363,7 +453,7 @@ export function formatJobStatus(job) {
     `Created: ${job.createdAt}`,
     job.startedAt ? `Started: ${job.startedAt}` : null,
     job.finishedAt ? `Finished: ${job.finishedAt}` : null,
-    job.startedMs ? `Duration: ${(job.finishedMs || Date.now()) - job.startedMs} ms` : null,
+    job.startedMs ? `Duration: ${(job.finishedMs || jobNowMs()) - job.startedMs} ms` : null,
     job.result ? "" : null,
     job.result ? "Result:" : null,
     job.result ? JSON.stringify(job.result, null, 2) : null,
@@ -376,7 +466,7 @@ export function formatJobStatus(job) {
 }
 
 export function formatJobsList() {
-  const rows = [...jobs.values()].sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
+  const rows = [...getJobsMap().values()].sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
   if (!rows.length) return "No background jobs.";
   return [
     "Background jobs",
@@ -396,6 +486,7 @@ export function formatJobsList() {
 }
 
 export function startBackgroundJob(type, filename, runner, metadata = {}) {
+  const jobs = getJobsMap();
   trimJobHistory({ persist: true });
   if (activeJobCount() >= MAX_ACTIVE_JOBS) {
     throw new Error(`Too many active jobs (${MAX_ACTIVE_JOBS}). Wait for a running job to finish before starting another.`);
@@ -409,9 +500,9 @@ export function startBackgroundJob(type, filename, runner, metadata = {}) {
     phase: "queued",
     message: "Queued",
     createdAt: nowIso(),
-    createdMs: Date.now(),
+    createdMs: jobNowMs(),
     updatedAt: nowIso(),
-    updatedMs: Date.now(),
+    updatedMs: jobNowMs(),
     metadata,
     log: [],
   };
@@ -421,13 +512,13 @@ export function startBackgroundJob(type, filename, runner, metadata = {}) {
   setTimeout(async () => {
     try {
       if (job.status === "cancelled") return;
-      updateJob(job, { status: "running", phase: "start", message: "Job started", startedAt: nowIso(), startedMs: Date.now() });
+      updateJob(job, { status: "running", phase: "start", message: "Job started", startedAt: nowIso(), startedMs: jobNowMs() });
       const result = await runner(job);
       if (job.status === "cancelled") return;
-      updateJob(job, { status: "done", phase: "done", message: "Job completed", finishedAt: nowIso(), finishedMs: Date.now(), result });
+      updateJob(job, { status: "done", phase: "done", message: "Job completed", finishedAt: nowIso(), finishedMs: jobNowMs(), result });
     } catch (error) {
       if (job.status === "cancelled") return;
-      updateJob(job, { status: "failed", phase: "failed", message: "Job failed", finishedAt: nowIso(), finishedMs: Date.now(), error: error instanceof Error ? error.message : String(error) });
+      updateJob(job, { status: "failed", phase: "failed", message: "Job failed", finishedAt: nowIso(), finishedMs: jobNowMs(), error: error instanceof Error ? error.message : String(error) });
     }
   }, BACKGROUND_JOB_START_DELAY_MS);
 
@@ -451,6 +542,7 @@ export async function startIndexPdfJob(filename, options = {}) {
 }
 
 export async function startExternalRebuildArtifactJob(filename, artifact, options = {}) {
+  const jobs = getJobsMap();
   trimJobHistory({ persist: true });
   if (activeJobCount() >= MAX_ACTIVE_JOBS) {
     throw new Error(`Too many active jobs (${MAX_ACTIVE_JOBS}). Wait for a running job to finish before starting another.`);
@@ -465,9 +557,9 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
     phase: "queued",
     message: "Queued in detached external worker process",
     createdAt: nowIso(),
-    createdMs: Date.now(),
+    createdMs: jobNowMs(),
     updatedAt: nowIso(),
-    updatedMs: Date.now(),
+    updatedMs: jobNowMs(),
     metadata: { artifact: normalized, forceLock: Boolean(options.forceLock), force: Boolean(options.force), worker: true, detached: true, engineMode: process.env.RENESAS_MCP_EXTRACTION_ENGINE || "auto" },
     log: [],
   };
@@ -758,7 +850,7 @@ export async function getIndexStatus(filename, options = {}) {
   const required = artifacts.filter((a) => !a.optional && a.key !== "visual-evidence");
   const missing = required.filter((a) => !a.exists).map((a) => a.key);
   const broken = required.filter((a) => a.exists && !a.ok).map((a) => a.key);
-  const relatedJobs = [...jobs.values()].filter((job) => job.filename === filename).sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0)).slice(0, 8).map(jobSnapshot);
+  const relatedJobs = [...getJobsMap().values()].filter((job) => job.filename === filename).sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0)).slice(0, 8).map(jobSnapshot);
   const manifest = await loadArtifactManifest(filename);
   return { filename, pdf: { size: stat.size, modifiedAt: stat.mtime.toISOString(), pageCount, pageCountSource }, lock: { exists: lockExists, path: lockPath }, health: missing.length || broken.length ? "WARN" : "OK", missing, broken, artifacts, manifest, relatedJobs };
 }
@@ -879,12 +971,13 @@ export function pdfInfoArtifactBlock({
 }
 
 export async function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
+  const jobs = getJobsMap();
   const store = getJobStore();
   let job = await store.readJob(jobId) || jobs.get(jobId);
   if (!job) return null;
   if (["done", "failed", "cancelled"].includes(job.status)) return job;
   if (!(await store.readJob(jobId))) job = await store.createJob(job);
-  const updatedMs = Math.max(Date.now(), Number(job.updatedMs || 0) + 1);
+  const updatedMs = Math.max(jobNowMs(), Number(job.updatedMs || 0) + 1);
   const updatedAt = new Date(updatedMs).toISOString();
   const patch = {
     status: "cancelled", phase: "cancelled", message: reason, finishedAt: updatedAt, finishedMs: updatedMs,
@@ -912,6 +1005,7 @@ export async function cancelBackgroundJob(jobId, reason = "Cancelled by user") {
 }
 
 export async function cleanupBackgroundJobs(options = {}) {
+  const jobs = getJobsMap();
   const includeRunning = Boolean(options.includeRunning);
   const olderThanHours = Number(options.olderThanHours ?? 0);
   const statuses = new Set(Array.isArray(options.statuses) && options.statuses.length ? options.statuses : ["done", "failed", "cancelled"]);
@@ -944,7 +1038,6 @@ async function rebuildArtifactOperation(filename, artifact, options = {}) {
   if (["all", "core", "chunk-index"].includes(normalized)) {
     if (onProgress) onProgress({ phase: normalized === "chunk-index" ? "rebuild-chunk-index" : "rebuild-core", current: 0, total: 0, unit: "" });
     const indexData = await buildPdfIndex(filename, { forceLock, chunkSize, chunkOverlap, reusePageCache: true, onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine });
-    await writeArtifactManifest(filename, { buildStatus: "ready", notes: [`rebuilt ${normalized}`], clearStale: true });
     return { artifact: normalized, rebuilt: ["pages", "sections", "chunk-index", "tables", "registers", "bitfields", "cautions", "sequences", "figures", "evidence-graph"], counts: { pages: indexData.pageCount, chunks: indexData.chunkCount, tables: indexData.tableCount, registers: indexData.registerCount, bitfields: indexData.bitfieldCount, sequences: indexData.sequenceCount, cautions: indexData.cautionCount, figures: indexData.figureCount, evidenceGraphEntities: indexData.evidenceGraphEntityCount || 0 } };
   }
   if (normalized === "pages") {

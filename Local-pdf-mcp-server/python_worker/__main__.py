@@ -70,7 +70,7 @@ def main() -> int:
         elif operation == "pages.build":
             output_path = ensure_inside(outputs["artifactPath"], roots, "artifact path")
             checkpoint_path = ensure_inside(outputs["checkpointPath"], roots, "checkpoint path") if outputs.get("checkpointPath") else None
-            artifact = build_pages_cache(pdf_path, inputs["filename"], output_path, checkpoint_path, lambda c, t: progress(c, t, "build-pages-cache"), cancel_path, int(options.get("checkpointEvery", 50)))
+            artifact = build_pages_cache(pdf_path, inputs["filename"], output_path, checkpoint_path, lambda c, t: progress(c, t, "build-pages-cache"), cancel_path, int(options.get("checkpointEvery", 50)), str(options.get("buildId", "")))
             source = artifact["source"]
             descriptor = artifact_descriptor("pages", output_path, 1, artifact["pageCount"])
             emit("artifact", request_id, artifact=descriptor)
@@ -155,7 +155,7 @@ def main() -> int:
             pages_path = ensure_inside(inputs["pagesPath"], roots, "pages artifact")
             pages_data = load_json(str(pages_path))
             checkpoint_path = ensure_inside(outputs["tablesCheckpointPath"], roots, "tables checkpoint path") if outputs.get("tablesCheckpointPath") else None
-            structured = build_structured(inputs["filename"], pdf_path, pages_data, options.get("candidatePages"), lambda c, t: progress(c, t, "structured-tables"), cancel_path, checkpoint_path)
+            structured = build_structured(inputs["filename"], pdf_path, pages_data, options.get("candidatePages"), lambda c, t: progress(c, t, "structured-tables"), cancel_path, checkpoint_path, str(options.get("buildId", "")))
             requested = ["tables", "registers", "bitfields", "cautions"] if operation == "structured.build" else [operation.split(".")[0]]
             descriptors = []
             schemas = {"tables": 1, "registers": 1, "bitfields": 3, "cautions": 1}

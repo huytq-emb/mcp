@@ -301,6 +301,7 @@ def extract_tables(
     checkpoint_path: Path | None = None,
     filename: str = "",
     checkpoint_every: int = 100,
+    build_id: str = "",
 ) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     completed: set[int] = set()
@@ -309,7 +310,7 @@ def extract_tables(
         try:
             import orjson
             partial = orjson.loads(checkpoint_path.read_bytes())
-            if partial.get("schemaVersion") == 1 and partial.get("filename") == filename and partial.get("source") == source:
+            if partial.get("schemaVersion") == 1 and partial.get("filename") == filename and partial.get("buildId") == build_id and partial.get("source") == source:
                 tables = list(partial.get("tables", []))
                 completed = {int(page) for page in partial.get("completedPages", [])}
         except Exception:
@@ -333,7 +334,7 @@ def extract_tables(
                 progress(offset, len(pages))
             if checkpoint_path and (len(completed) % max(10, checkpoint_every) == 0 or len(completed) == len(pages)):
                 atomic_write_json(checkpoint_path, {
-                    "schemaVersion": 1, "partial": True, "filename": filename, "source": source,
+                    "schemaVersion": 1, "partial": True, "filename": filename, "buildId": build_id, "source": source,
                     "candidatePages": pages, "completedPages": sorted(completed), "tables": tables,
                 })
     if checkpoint_path:
@@ -634,9 +635,9 @@ def extract_pinmux_rows(tables: list[dict[str, Any]], filter_text: str = "") -> 
     return rows
 
 
-def build_structured(filename: str, pdf_path: Path, pages_data: dict[str, Any], candidate_pages: list[int] | None, progress=None, cancel_path=None, checkpoint_path: Path | None = None) -> dict[str, Any]:
+def build_structured(filename: str, pdf_path: Path, pages_data: dict[str, Any], candidate_pages: list[int] | None, progress=None, cancel_path=None, checkpoint_path: Path | None = None, build_id: str = "") -> dict[str, Any]:
     source = source_info(pdf_path)
-    extracted = extract_tables(pdf_path, candidate_pages, progress, cancel_path, checkpoint_path, filename, 100)
+    extracted = extract_tables(pdf_path, candidate_pages, progress, cancel_path, checkpoint_path, filename, 100, build_id)
     tables = {
         "schemaVersion": 1, "filename": filename, "source": source,
         "pageCount": extracted["pageCount"], "candidatePageCount": len(extracted["candidatePages"]),

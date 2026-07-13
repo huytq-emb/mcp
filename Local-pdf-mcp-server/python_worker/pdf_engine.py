@@ -102,6 +102,7 @@ def build_pages_cache(
     progress: Callable[[int, int], None] | None = None,
     cancel_path: str | None = None,
     checkpoint_every: int = 50,
+    build_id: str = "",
 ) -> dict[str, Any]:
     import orjson
 
@@ -110,7 +111,7 @@ def build_pages_cache(
     if checkpoint_path and checkpoint_path.exists():
         try:
             partial = orjson.loads(checkpoint_path.read_bytes())
-            if partial.get("schemaVersion") == 1 and partial.get("filename") == filename and partial.get("source") == source:
+            if partial.get("schemaVersion") == 1 and partial.get("filename") == filename and partial.get("buildId") == build_id and partial.get("source") == source:
                 existing = {int(page["page"]): page for page in partial.get("pages", []) if page.get("page")}
         except Exception:
             existing = {}
@@ -126,7 +127,7 @@ def build_pages_cache(
                 progress(page_number, total)
             if checkpoint_path and (page_number == total or page_number % max(10, checkpoint_every) == 0):
                 atomic_write_json(checkpoint_path, {
-                    "schemaVersion": 1, "partial": True, "filename": filename, "source": source,
+                    "schemaVersion": 1, "partial": True, "filename": filename, "buildId": build_id, "source": source,
                     "pageCount": total, "pages": [existing[key] for key in sorted(existing)],
                 })
     artifact = {

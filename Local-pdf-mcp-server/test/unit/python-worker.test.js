@@ -15,7 +15,7 @@ import {
   runPythonWorker,
   validateWorkerArtifact,
 } from "../../src/services/python-worker.js";
-import { cancelBackgroundJob, getJobStore, jobs, normalizeArtifactName } from "../../src/services/jobs.js";
+import { cancelBackgroundJob, getJobStore, getJobsMap, normalizeArtifactName } from "../../src/services/jobs.js";
 import { clearOcrHealthCache, formatOcrHealthReport, getOcrHealth, resolveOcrHealthTimeoutMs } from "../../src/services/ocr.js";
 import { searchFigureOcr } from "../../src/services/search.js";
 
@@ -72,7 +72,7 @@ test("job cancellation persists a worker sentinel", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "renesas-worker-cancel-"));
   const cancelPath = path.join(root, "cancel.requested");
   const jobId = `cancel-test-${process.pid}-${Date.now()}`;
-  jobs.set(jobId, { id: jobId, type: "test", filename: "manual.pdf", status: "running", metadata: { cancelPath }, log: [] });
+  getJobsMap().set(jobId, { id: jobId, type: "test", filename: "manual.pdf", status: "running", metadata: { cancelPath }, log: [] });
   await cancelBackgroundJob(jobId, "test cancellation");
   let sentinelText = "";
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -85,7 +85,7 @@ test("job cancellation persists a worker sentinel", async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.match(sentinelText, /test cancellation/);
-  jobs.delete(jobId);
+  getJobsMap().delete(jobId);
   await getJobStore().deleteJob(jobId);
   await fs.rm(root, { recursive: true, force: true });
 });

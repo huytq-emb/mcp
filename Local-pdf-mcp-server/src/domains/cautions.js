@@ -1,4 +1,4 @@
-import { atomicWriteJson, canonicalSymbol, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeCautionsIndexPath } from "../core/runtime-helpers.js";
+import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeCautionsIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { CAUTION_INDEX_SCHEMA_VERSION, DEFAULT_CAUTION_INDEX_TOPICS, DEFAULT_CAUTION_LIST_TOP_K, DEFAULT_PAGE_RANGE, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_INDEX_RESULTS_PER_TOPIC, MAX_CAUTION_LIST_TOP_K } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
@@ -294,6 +294,7 @@ export function riskForCautionType(type) {
 }
 
 export async function loadCautionsIndex(filename) {
+  await assertArtifactPublicationReadable(filename);
   const cautionsPath = safeCautionsIndexPath(filename);
   if (!(await pathExists(cautionsPath))) return null;
 

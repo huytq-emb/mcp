@@ -1,12 +1,13 @@
-import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
+import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
-import { getPathResolver } from "../core/path-resolver.js";
+import { getPathResolver, withPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { buildEvidenceGraph } from "./evidence-graph.js";
 import { stampCoreArtifactGenerations } from "../artifacts/generation.js";
 import { assertSameContentSource, withSourceIdentityCache } from "../artifacts/source-identity.js";
+import { createStagedArtifactBuild, discardStagedGeneration, finalizeStagedGeneration, promoteStagedGeneration, seedStagedPagesCache, validateCompleteStagedGeneration } from "./artifact-build-transaction.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -637,6 +638,7 @@ export async function buildSectionsIndex(filename, pageCache = null) {
 }
 
 export async function loadSectionsIndex(filename) {
+  await assertArtifactPublicationReadable(filename);
   const sectionsPath = safeSectionsIndexPath(filename);
 
   if (!(await pathExists(sectionsPath))) {
@@ -1149,6 +1151,7 @@ export async function buildRegistersIndex(filename, indexData = null, sectionsIn
 }
 
 export async function loadRegistersIndex(filename) {
+  await assertArtifactPublicationReadable(filename);
   const registersPath = safeRegistersIndexPath(filename);
 
   if (!(await pathExists(registersPath))) {
@@ -1445,6 +1448,12 @@ export async function buildPdfIndex(filename, options = {}) {
     const strongSource = await getStablePdfSourceInfo(filename);
     await getFileStat(filename);
 
+    const build = await createStagedArtifactBuild(filename, { source: strongSource });
+    let completedIndex;
+    try {
+      if (options.reusePageCache !== false) await seedStagedPagesCache(build);
+      completedIndex = await withPathResolver(build.resolver, async () => {
+
     const chunkSize = clampChunkSize(options.chunkSize);
     const chunkOverlap = clampChunkOverlap(options.chunkOverlap, chunkSize);
 
@@ -1591,8 +1600,21 @@ export async function buildPdfIndex(filename, options = {}) {
     assertSameContentSource(strongSource, finalSource, filename);
     if (onProgress) onProgress({ phase: "write-index", current: 0, total: 0, unit: "" });
     await writeArtifactManifest(filename, { source: finalSource, buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
+    await finalizeStagedGeneration(build, { source: finalSource });
+    await validateCompleteStagedGeneration(build, { source: finalSource });
 
     return indexData;
+      });
+      await promoteStagedGeneration(build, options.publication || {});
+    } catch (error) {
+      try { await discardStagedGeneration(build); }
+      catch (cleanupError) { error.stagingCleanupError = cleanupError; }
+      throw error;
+    }
+    await discardStagedGeneration(build).catch((error) => {
+      console.error(`[${SERVER_VERSION}] Unable to remove committed staging directory ${build.stageDir}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return completedIndex;
   }));
 }
 
@@ -1620,6 +1642,7 @@ function isIndexStructurallyCompatible(indexData, pdfStat) {
 }
 
 export async function loadPdfIndex(filename, options = {}) {
+  await assertArtifactPublicationReadable(filename);
   const indexPath = safeIndexPath(filename);
   const pdfStat = await getFileStat(filename);
 

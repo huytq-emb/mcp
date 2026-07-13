@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
-import { getPathResolver } from "../core/path-resolver.js";
+import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
 import {
   atomicWriteJson,
   getStablePdfSourceInfo,
@@ -90,6 +90,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation });
   const tempPath = path.join(workerRoot, `${kind}.json`);
   const source = await getStablePdfSourceInfo(filename);
+  const buildId = String(options.buildId || getArtifactBuildId() || `${kind}-${source.sha256}`);
   try {
     const worker = await runPythonWorker({
       requestId,
@@ -97,7 +98,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
       allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), ...(requestOptions.inputs || {}) },
       outputs: { artifactPath: tempPath, [`${kind}Path`]: tempPath, cancelPath, ...(requestOptions.outputs || {}) },
-      options: requestOptions.options || {},
+      options: { ...(requestOptions.options || {}), buildId },
     }, {
       timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS,
       onProgress: options.onProgress,
@@ -188,11 +189,12 @@ export async function runStructuredBuildHybrid(filename, options = {}) {
   };
   const outputs = Object.fromEntries(Object.keys(targetPaths).map((kind) => [`${kind}Path`, path.join(workerRoot, `${kind}.json`)]));
   const source = await getStablePdfSourceInfo(filename);
+  const buildId = String(options.buildId || getArtifactBuildId() || `structured-${source.sha256}`);
   try {
     const worker = await runPythonWorker({
       requestId, operation: "structured.build", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), pagesPath: safePagesCachePath(filename) },
-      outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [] },
+      outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [], buildId },
     }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr });
     assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = [];

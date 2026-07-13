@@ -7,7 +7,8 @@ import { errorResult } from "../core/runtime-helpers.js";
 import {
   flushJobsState,
   claimDetachedJob,
-  jobs,
+  getJobsMap,
+  handleDetachedWorkerFailure,
   loadJobsStateFromDisk,
   normalizeArtifactName,
   nowIso,
@@ -28,9 +29,12 @@ export async function runWorkerRebuildArtifact(encoded) {
   const jobId = String(payload.jobId || "").trim();
   if (!jobId) throw new Error("Detached worker payload is missing its persistent job ID");
 
-  let job = await claimDetachedJob(jobId, { pid: process.pid, artifact, filename });
+  let job = null;
+  let claimed = false;
 
   try {
+    job = await claimDetachedJob(jobId, { pid: process.pid, artifact, filename });
+    claimed = true;
     const result = await rebuildArtifact(filename, artifact, {
       ...options,
       onProgress: (event = {}) => {
@@ -56,19 +60,26 @@ export async function runWorkerRebuildArtifact(encoded) {
       },
     });
     await refreshJobStateFromDisk(jobId);
-    job = jobId ? jobs.get(jobId) : job;
-    if (job?.status === "cancelled") return;
+    job = jobId ? getJobsMap().get(jobId) : job;
+    if (job && ["done", "failed", "cancelled"].includes(job.status)) return;
     if (job) {
       updateJob(job, { status: "done", phase: "done", message: "Detached external worker completed", finishedAt: nowIso(), finishedMs: Date.now(), result: { ok: true, filename, artifact, result } });
       await flushJobsState();
     }
   } catch (error) {
-    await refreshJobStateFromDisk(jobId);
-    job = jobId ? jobs.get(jobId) : job;
-    if (job?.status === "cancelled") return;
-    if (job) {
-      updateJob(job, { status: "failed", phase: "worker-failed", message: "Detached external worker failed", finishedAt: nowIso(), finishedMs: Date.now(), error: error instanceof Error ? error.stack || error.message : String(error) });
-      await flushJobsState();
+    try { await refreshJobStateFromDisk(jobId); }
+    catch (refreshError) { error.jobRefreshError = refreshError; }
+    job = jobId ? getJobsMap().get(jobId) : job;
+    if (job && ["done", "failed", "cancelled"].includes(job.status)) return;
+    if (!job && error?.current && ["done", "failed", "cancelled"].includes(error.current.status)) {
+      getJobsMap().set(jobId, error.current);
+      return;
+    }
+    try {
+      await handleDetachedWorkerFailure({ jobId, job, error, phase: claimed ? "worker-failed" : "worker-claim-failed" });
+    } catch (persistenceError) {
+      error.failurePersistenceError = persistenceError;
+      error.message = `${error.message}; additionally unable to persist detached worker failure: ${persistenceError.message}`;
     }
     throw error;
   }

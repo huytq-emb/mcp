@@ -286,6 +286,20 @@ export async function atomicWriteFile(targetPath, data, encoding = "utf-8") {
   return writeFileAtomically(targetPath, data, encoding);
 }
 
+export async function assertArtifactPublicationReadable(filename) {
+  const manifestPath = getPathResolver().manifest(filename);
+  if (!(await pathExists(manifestPath))) return null;
+  let manifest;
+  try { manifest = JSON.parse(await fs.readFile(manifestPath, "utf-8")); }
+  catch (error) { throw new Error(`Artifact generation commit marker is unreadable: ${error instanceof Error ? error.message : String(error)}`); }
+  if (["incomplete", "promotion_failed", "failed"].includes(String(manifest.buildStatus || ""))) {
+    const error = new Error(`Artifact generation for ${filename} is ${manifest.buildStatus}; readers must wait for or start a successful full rebuild.`);
+    error.code = "ARTIFACT_GENERATION_INCOMPLETE";
+    throw error;
+  }
+  return manifest;
+}
+
 export async function atomicWriteJson(targetPath, value) {
   let payload = value;
   const indexDir = getPathResolver().indexDir();

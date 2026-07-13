@@ -11,7 +11,7 @@ import { DEFAULT_GOLDEN_PROFILE } from "../../eval/golden.js";
 import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalCases, maybeWriteEvalReport, runEvalSuite } from "../../eval/runtime.js";
 import { doctorPdfs, formatDoctorReport, maybeWriteDoctorReports } from "../../services/doctor.js";
 import { buildPdfIndex, isIndexUsable, loadRegistersIndex, loadSectionsIndex } from "../../services/indexing.js";
-import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, jobs, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob } from "../../services/jobs.js";
+import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, getJobsMap, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, recoverJob, recoverJobs, refreshJobStateFromDisk, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob } from "../../services/jobs.js";
 import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth } from "../../services/ocr.js";
 import { getHybridRuntimeStatus } from "../../services/python-worker.js";
 import { loadPagesCache } from "../../services/pdf.js";
@@ -103,12 +103,14 @@ async function handle_mcp_control(args = {}, meta = {}) {
         ].join("\n"));
       }
       if (action === "job_status") {
-        await refreshJobsStateFromDisk();
         const jobId = args.job_id.trim();
-        const job = jobs.get(jobId);
+        await recoverJob(jobId);
+        await refreshJobStateFromDisk(jobId);
+        const job = getJobsMap().get(jobId);
         return textResult(formatJobStatus(job));
       }
       if (action === "list_jobs") {
+        await recoverJobs();
         await refreshJobsStateFromDisk();
         return textResult(formatJobsList());
       }
@@ -127,7 +129,7 @@ async function handle_mcp_control(args = {}, meta = {}) {
           `Removed jobs: ${removed.length}`,
           ...removed.map((id) => `- ${id}`),
           "",
-          `Remaining jobs: ${jobs.size}`,
+          `Remaining jobs: ${getJobsMap().size}`,
           `Persistent job state: ${safeJobsStatePath()}`,
         ].join("\n"));
       }
@@ -467,14 +469,16 @@ async function handle_start_index_pdf(args = {}, meta = {}) {
 
 async function handle_job_status(args = {}, meta = {}) {
   const name = meta.name || "job_status";
-    await refreshJobsStateFromDisk();
     const jobId = String(args.job_id || "").trim();
-    const job = jobs.get(jobId);
+    await recoverJob(jobId);
+    await refreshJobStateFromDisk(jobId);
+    const job = getJobsMap().get(jobId);
     return textResult(formatJobStatus(job));
 }
 
 async function handle_list_jobs(args = {}, meta = {}) {
   const name = meta.name || "list_jobs";
+    await recoverJobs();
     await refreshJobsStateFromDisk();
     return textResult(formatJobsList());
 }
@@ -498,7 +502,7 @@ async function handle_cleanup_jobs(args = {}, meta = {}) {
       `Removed jobs: ${removed.length}`,
       ...removed.map((id) => `- ${id}`),
       "",
-      `Remaining jobs: ${jobs.size}`,
+      `Remaining jobs: ${getJobsMap().size}`,
       `Persistent job state: ${safeJobsStatePath()}`,
     ].join("\n"));
 }

@@ -439,6 +439,9 @@ async function validateManifestFreshness(filename, currentSourceFingerprint) {
   if (manifest.filename !== filename || manifest.source?.fingerprint !== currentSourceFingerprint) {
     throw new Error("Artifact manifest has a stale source fingerprint. Rebuild the full index before using the evidence graph.");
   }
+  if (["incomplete", "promotion_failed", "failed"].includes(String(manifest.buildStatus || ""))) {
+    throw new Error(`Artifact generation is ${manifest.buildStatus}; the evidence graph is not committed and cannot be read.`);
+  }
   const stale = new Set(manifest.staleArtifacts || []);
   const invalid = Object.keys(GRAPH_ARTIFACTS).filter((key) => stale.has(key) || ["stale", "incompatible", "broken", "missing", "error"].includes(manifest.artifacts?.[key]?.status));
   if (invalid.length) throw new Error(`Artifact manifest marks graph dependencies stale: ${invalid.join(", ")}. Rebuild the full index before using the evidence graph.`);

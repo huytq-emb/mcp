@@ -1,9 +1,10 @@
-import { atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
+import { assertArtifactPublicationReadable, atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { MAX_TEXT_ITEM_GAP_SPACES, PAGE_CACHE_SCHEMA_VERSION } from "../core/runtime-constants.js";
-import { getPathResolver } from "../core/path-resolver.js";
+import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { isCompatibleBuildCheckpoint } from "../artifacts/source-identity.js";
 
 
 // -----------------------------------------------------------------------------
@@ -71,6 +72,7 @@ export async function buildPagesCache(filename, options = {}) {
   await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
   const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const buildId = String(options.buildId || getArtifactBuildId() || `pages-${source.sha256}`);
   const partialPath = safePagesPartialCachePath(filename);
   const resume = options.resume !== false;
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
@@ -81,7 +83,7 @@ export async function buildPagesCache(filename, options = {}) {
   if (resume && await pathExists(partialPath)) {
     try {
       const partial = JSON.parse(await fs.readFile(partialPath, "utf-8"));
-      if (partial.schemaVersion === PAGE_CACHE_SCHEMA_VERSION && partial.filename === filename && isSamePdfSource(partial.source, source) && Array.isArray(partial.pages)) {
+      if (isCompatibleBuildCheckpoint(partial, { filename, buildId, source, schemaVersion: PAGE_CACHE_SCHEMA_VERSION }) && Array.isArray(partial.pages)) {
         partialPages = partial.pages
           .filter((page) => Number.isFinite(Number(page.page)))
           .sort((a, b) => Number(a.page) - Number(b.page));
@@ -133,6 +135,7 @@ export async function buildPagesCache(filename, options = {}) {
         schemaVersion: PAGE_CACHE_SCHEMA_VERSION,
         partial: true,
         filename,
+        buildId,
         createdAt: new Date().toISOString(),
         source,
         pageCount,
@@ -160,6 +163,7 @@ export async function buildPagesCache(filename, options = {}) {
 }
 
 export async function loadPagesCache(filename) {
+  await assertArtifactPublicationReadable(filename);
   const cachePath = safePagesCachePath(filename);
 
   if (!(await pathExists(cachePath))) {

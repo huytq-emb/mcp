@@ -232,39 +232,43 @@ export class JobStore {
     return removed;
   }
 
-  async recoverJobs(options = {}) {
+  async recoverJob(jobId, options = {}) {
     const isProcessAlive = options.isProcessAlive || ((pid) => {
       try { process.kill(pid, 0); return true; } catch { return false; }
     });
     const queuedGraceMs = Math.max(0, Number(options.queuedGraceMs ?? DEFAULT_QUEUED_JOB_GRACE_MS));
+    return this.#withLock(jobId, async () => {
+      const current = await this.readJob(jobId);
+      if (!current || (current.status !== "queued" && current.status !== "running")) return current;
+      const pids = [current.metadata?.orchestratorPid, current.metadata?.workerPid].map(Number).filter((pid) => pid > 0);
+      if (pids.some((pid) => isProcessAlive(pid))) return current;
+      const ageMs = this.clock.now() - Number(current.createdMs || 0);
+      if (current.status === "queued" && ageMs < queuedGraceMs) return current;
+      const updatedMs = nextTimestamp(current, this.clock.now());
+      const updatedAt = new Date(updatedMs).toISOString();
+      const next = normalizedJob({
+        ...current,
+        status: "failed",
+        phase: "interrupted",
+        message: "Recorded background job processes are no longer alive",
+        error: "Interrupted because no recorded worker/orchestrator process is alive; start a new job if the index is incomplete.",
+        finishedAt: current.finishedAt || updatedAt,
+        finishedMs: current.finishedMs || updatedMs,
+        updatedAt,
+        updatedMs,
+        log: appendLog(current, { at: updatedAt, phase: "interrupted", message: "Recorded background job processes are no longer alive" }),
+      });
+      next.revision = Number(current.revision || 0) + 1;
+      await atomicWriteJson(this.paths.job(current.id), next, { fs: this.fs });
+      return next;
+    });
+  }
+
+  async recoverJobs(options = {}) {
     const recovered = [];
     for (const listedJob of await this.listJobs()) {
       if (listedJob.status !== "queued" && listedJob.status !== "running") { recovered.push(listedJob); continue; }
-      recovered.push(await this.#withLock(listedJob.id, async () => {
-        const current = await this.readJob(listedJob.id);
-        if (!current || (current.status !== "queued" && current.status !== "running")) return current || listedJob;
-        const pids = [current.metadata?.orchestratorPid, current.metadata?.workerPid].map(Number).filter((pid) => pid > 0);
-        if (pids.some((pid) => isProcessAlive(pid))) return current;
-        const ageMs = this.clock.now() - Number(current.createdMs || 0);
-        if (current.status === "queued" && ageMs < queuedGraceMs) return current;
-        const updatedMs = nextTimestamp(current, this.clock.now());
-        const updatedAt = new Date(updatedMs).toISOString();
-        const next = normalizedJob({
-          ...current,
-          status: "failed",
-          phase: "interrupted",
-          message: "Recorded background job processes are no longer alive",
-          error: "Interrupted because no recorded worker/orchestrator process is alive; start a new job if the index is incomplete.",
-          finishedAt: current.finishedAt || updatedAt,
-          finishedMs: current.finishedMs || updatedMs,
-          updatedAt,
-          updatedMs,
-          log: appendLog(current, { at: updatedAt, phase: "interrupted", message: "Recorded background job processes are no longer alive" }),
-        });
-        next.revision = Number(current.revision || 0) + 1;
-        await atomicWriteJson(this.paths.job(current.id), next, { fs: this.fs });
-        return next;
-      }));
+      recovered.push(await this.recoverJob(listedJob.id, options) || listedJob);
     }
     return recovered.sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
   }

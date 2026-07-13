@@ -110,3 +110,7 @@ export function getPathResolver() {
 export function getPathResolverDependencies(resolver = getPathResolver()) {
   return resolverDependencies.get(resolver) || {};
 }
+
+export function getArtifactBuildId(resolver = getPathResolver()) {
+  return String(resolver?.artifactBuildId || "");
+}

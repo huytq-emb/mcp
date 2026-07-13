@@ -6,7 +6,7 @@ import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
 import { withPathResolver } from "../../src/core/path-resolver.js";
 import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
-import { getJobStore, jobs, startExternalRebuildArtifactJob } from "../../src/services/jobs.js";
+import { getJobsMap, getJobStore, startExternalRebuildArtifactJob } from "../../src/services/jobs.js";
 
 function failure(code, message = code) {
   return Object.assign(new Error(message), { code });
@@ -31,10 +31,10 @@ async function withFixture(fsOps, callback) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-job-persistence-"));
   const context = createAppContext({ rootDir: root, fs: fsOps });
   wireRuntimePorts(context);
-  jobs.clear();
+  getJobsMap(context.paths).clear();
   try { return await withPathResolver(context.paths, () => callback({ root, context })); }
   finally {
-    jobs.clear();
+    getJobsMap(context.paths).clear();
     await fs.rm(root, { recursive: true, force: true });
   }
 }

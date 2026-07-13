@@ -92,6 +92,18 @@ export function assertSameContentSource(initialSource, finalSource, filename = "
   return finalSource;
 }
 
+export function isCompatibleBuildCheckpoint(checkpoint, { filename, buildId, source, schemaVersion } = {}) {
+  if (!checkpoint || checkpoint.schemaVersion !== schemaVersion || checkpoint.filename !== filename || checkpoint.buildId !== buildId) return false;
+  try {
+    requireStrongSourceIdentity(checkpoint.source, "Partial checkpoint");
+    requireStrongSourceIdentity(source, "Current checkpoint source");
+    return Number(checkpoint.source.size) === Number(source.size)
+      && String(checkpoint.source.sha256).toLowerCase() === String(source.sha256).toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 export function clearSourceIdentityCache() {
   identityCacheStorage.getStore()?.clear();
 }
