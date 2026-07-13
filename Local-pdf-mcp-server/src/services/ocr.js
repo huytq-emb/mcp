@@ -3,12 +3,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
+import { sourceFingerprint } from "../artifacts/manifest.js";
 import {
   atomicWriteJson,
   compactText,
   ensureInsideRoot,
   ensurePdfFilename,
   getPdfSourceInfo,
+  getStablePdfSourceInfo,
   isSamePdfSource,
   normalizeForSearch,
   pathExists,
@@ -20,6 +22,7 @@ import {
   safePdfPath,
   sanitizeRenderStem,
 } from "../core/runtime-helpers.js";
+import { assertSameContentSource } from "../artifacts/source-identity.js";
 import {
   PythonWorkerError,
   atomicPromoteWorkerArtifact,
@@ -268,7 +271,7 @@ export async function buildFiguresWithPython(filename, options = {}) {
   const { requestId, workerRoot, cancelPath } = await prepareWorkerRoot("figures.extract");
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figures.extract" });
   const tempPath = path.join(workerRoot, "figures.json");
-  const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const source = await getStablePdfSourceInfo(filename);
   try {
     const worker = await runPythonWorker({
       requestId,
@@ -285,6 +288,7 @@ export async function buildFiguresWithPython(filename, options = {}) {
     });
     const descriptor = worker.artifacts.find((entry) => entry.kind === "figures") || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", "Python worker did not return figures artifact metadata");
+    assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename, source });
     await atomicPromoteWorkerArtifact(validated.tempPath, safeFiguresIndexPath(filename));
     const value = JSON.parse(await fs.readFile(safeFiguresIndexPath(filename), "utf-8"));
@@ -313,7 +317,7 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation: "figure_ocr.build" });
   const tempPath = path.join(workerRoot, "figure_ocr.json");
   const checkpointPath = figureOcrCheckpointPath(filename);
-  const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const source = await getStablePdfSourceInfo(filename);
   try {
     const worker = await runPythonWorker({
       requestId,
@@ -333,6 +337,7 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
     }
     const descriptor = worker.artifacts.find((entry) => entry.kind === "figure_ocr") || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", "Python worker did not return figure OCR artifact metadata");
+    assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename, source });
     await atomicPromoteWorkerArtifact(validated.tempPath, safeFigureOcrIndexPath(filename));
     const artifact = JSON.parse(await fs.readFile(safeFigureOcrIndexPath(filename), "utf-8"));
@@ -343,7 +348,7 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
 }
 
 function pdfSourceFingerprint(source = {}) {
-  return `size=${Number(source.size || 0)};mtimeMs=${Math.round(Number(source.mtimeMs || 0))}`;
+  return sourceFingerprint(source);
 }
 
 function softFailure(errorCode, message, extra = {}) {
@@ -1260,7 +1265,7 @@ async function figureParserOnDemand(args = {}, parser = "structure", existingRen
   }
   let source;
   try {
-    source = await getPdfSourceInfo(render.filename);
+    source = await getStablePdfSourceInfo(render.filename);
   } catch (error) {
     const failure = failureFromError(error, "PDF_NOT_FOUND", { filename: render.filename, page: render.page, image_path: render.image_path });
     return {
@@ -1413,6 +1418,7 @@ async function figureParserOnDemand(args = {}, parser = "structure", existingRen
     });
     const descriptor = worker.artifacts.find((entry) => entry.kind === `figure_${parser}`) || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", `Python worker did not return ${parser} artifact metadata`);
+    assertSameContentSource(source, await getStablePdfSourceInfo(render.filename), render.filename);
     const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename: render.filename, source });
     await atomicPromoteWorkerArtifact(validated.tempPath, paths.rawPath);
     const raw = await readJsonCached(paths.rawPath);
@@ -1552,7 +1558,7 @@ export async function ocrFigureOnDemand(args = {}) {
 
   let source;
   try {
-    source = await getPdfSourceInfo(render.filename);
+    source = await getPdfSourceInfo(render.filename, { includeHash: true });
   } catch (error) {
     return failureFromError(error, "PDF_NOT_FOUND", { filename: render.filename, page: render.page, image_path: render.image_path });
   }
@@ -2055,7 +2061,7 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
         const stat = await fs.stat(cachePath);
         if (stat.size <= contextFullCacheMaxBytes()) {
           const cached = await readJsonCached(cachePath);
-          const cachedSource = source || await getPdfSourceInfo(filename);
+          const cachedSource = source || await getPdfSourceInfo(filename, { includeHash: true });
           if (cached.filename === filename && Array.isArray(cached.pages) && (!cached.source || isSamePdfSource(cached.source, cachedSource))) {
             for (const item of cached.pages) {
               const pageNumber = Number(item.page);
@@ -2213,7 +2219,7 @@ export async function inspectFigureOnDemand(args = {}) {
     : { pages: [], warnings: [] };
   const items = ocr.ok ? (ocr.ocr_text || []) : [];
   const labels = uniqueLabels(items);
-  const source = await getPdfSourceInfo(ocr.filename).catch(() => null);
+  const source = await getPdfSourceInfo(ocr.filename, { includeHash: true }).catch(() => null);
   const semanticParser = parser === "ocr" ? "ocr" : "safe";
   const semantic = ocr.semantic_evidence || buildSemanticEvidence({
     filename: ocr.filename,
@@ -2349,7 +2355,7 @@ function cacheSourceFingerprint(data = {}) {
 
 async function selectStaleBySource(files, filename) {
   if (!filename) return [];
-  const currentSource = await getPdfSourceInfo(filename);
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
   const currentFingerprint = pdfSourceFingerprint(currentSource);
   const selectedKeys = new Set();
   const byKey = new Map(files.map((item) => [`${item.kind}/${item.name}`, item]));

@@ -129,6 +129,17 @@ test("normalized evidence graph links entities and preserves conflicts", async (
   }
 });
 
+test("generation stamping rejects an artifact produced from a different PDF SHA", async () => {
+  await setup();
+  try {
+    const pages = JSON.parse(await fs.readFile(safePagesCachePath(filename), "utf8"));
+    pages.source = { ...pages.source, sha256: "f".repeat(64) };
+    await atomicWriteJson(safePagesCachePath(filename), pages);
+    const source = await getPdfSourceInfo(filename, { includeHash: true, bypassCache: true });
+    await assert.rejects(stampCoreArtifactGenerations(filename, { source, chunkingVersion: 2 }), /Artifact pages was produced from a different PDF source/);
+  } finally { await cleanup(); }
+});
+
 test("query_manual returns bounded semantic graph context that the golden evaluator consumes directly", async () => {
   await setup();
   try {

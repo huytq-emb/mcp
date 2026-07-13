@@ -97,10 +97,25 @@ test("artifact validation verifies schema filename count hash and source", async
   const data = JSON.stringify(artifact);
   await fs.writeFile(artifactPath, data);
   const descriptor = { kind: "pages", tempPath: artifactPath, schemaVersion: 1, count: 1, sizeBytes: Buffer.byteLength(data), sha256: crypto.createHash("sha256").update(data).digest("hex") };
-  const validated = await validateWorkerArtifact(descriptor, { workerRoot: root, filename: "manual.pdf", source: { size: 10, mtimeMs: 20 } });
+  const source = { size: 10, mtimeMs: 20, mtime: new Date(20).toISOString(), sha256: "a".repeat(64) };
+  const validated = await validateWorkerArtifact(descriptor, { workerRoot: root, filename: "manual.pdf", source });
   assert.equal(validated.count, 1);
-  await assert.rejects(validateWorkerArtifact({ ...descriptor, sha256: "bad" }, { workerRoot: root, filename: "manual.pdf", source: { size: 10, mtimeMs: 20 } }), /SHA-256/);
+  assert.notEqual(validated.sha256, descriptor.sha256);
+  assert.deepEqual(JSON.parse(await fs.readFile(artifactPath, "utf8")).source, source);
+  await assert.rejects(validateWorkerArtifact({ ...validated, sha256: "bad" }, { workerRoot: root, filename: "manual.pdf", source }), /SHA-256/);
   await fs.rm(root, { recursive: true, force: true });
+});
+
+test("worker artifact rejects a strong source that differs from the expected PDF", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "renesas-worker-source-mismatch-"));
+  const artifactPath = path.join(root, "pages.json");
+  try {
+    const artifact = { schemaVersion: 1, filename: "manual.pdf", source: { size: 10, mtimeMs: 20, sha256: "b".repeat(64) }, pageCount: 0, pages: [] };
+    const data = JSON.stringify(artifact);
+    await fs.writeFile(artifactPath, data);
+    const descriptor = { kind: "pages", tempPath: artifactPath, schemaVersion: 1, count: 0, sizeBytes: Buffer.byteLength(data), sha256: crypto.createHash("sha256").update(data).digest("hex") };
+    await assert.rejects(validateWorkerArtifact(descriptor, { workerRoot: root, filename: "manual.pdf", source: { size: 10, mtimeMs: 20, sha256: "a".repeat(64) } }), /Strong source identity mismatch/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test("semantic and schema worker failures are not retryable infrastructure fallbacks", () => {

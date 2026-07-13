@@ -5,6 +5,7 @@ import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, get
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION, MAX_RENDER_DPI, MIN_RENDER_DPI } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
+import { sourceFingerprint } from "../artifacts/manifest.js";
 
 
 const detectHeadings = createRuntimePort("detectHeadings");
@@ -129,7 +130,7 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
     render: { status: img ? "ready" : "missing", mode: img ? String(figure.render?.mode || "") : "", dpi: Number(figure.render?.dpi || 0), width: Number(figure.render?.width || 0), height: Number(figure.render?.height || 0), mtimeMs: Number(figure.render?.mtimeMs || 0) },
     image_access: { local_path: img ? path.resolve(img) : "", mime_type: "image/png", exists: false, agent_should_open_as_image: true },
     legacy_render_path_ignored: legacyIgnored[0] || undefined,
-    provenance: { sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : String(figure.sourceFingerprint || ""), generatedAt: new Date().toISOString() },
+    provenance: { sourceFingerprint: source ? sourceFingerprint(source) : String(figure.sourceFingerprint || ""), generatedAt: new Date().toISOString() },
     // Backward-compatible fields used by older tools.
     title: String(figure.title || figure.caption || "").trim(),
     source: String(figure.source || "").trim() || undefined,
@@ -144,7 +145,7 @@ function normalizeFigureRecord(filename, figure = {}, index = 0, source = null) 
 }
 
 async function normalizeFigureManifest(filename, index) {
-  const source = index.source || await getPdfSourceInfo(filename).catch(() => null);
+  const source = index.source || await getPdfSourceInfo(filename, { includeHash: true }).catch(() => null);
   const figures = [];
   for (const [i, fig] of (index.figures || []).entries()) {
     const rec = normalizeFigureRecord(filename, fig, i, source);
@@ -158,7 +159,7 @@ async function normalizeFigureManifest(filename, index) {
     }
     figures.push(rec);
   }
-  return { ...index, schemaVersion: 1, filename, source, sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "", figureCount: figures.length, figures };
+  return { ...index, schemaVersion: 1, filename, source, sourceFingerprint: source ? sourceFingerprint(source) : "", figureCount: figures.length, figures };
 }
 
 
@@ -429,7 +430,7 @@ export function figureFromCaption(filename, caption, ordinal = 0, pageHeadings =
 }
 
 function resultSourceFingerprint(source) {
-  return source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "";
+  return source ? sourceFingerprint(source) : "";
 }
 
 function computeKindStats(figures = []) {
@@ -480,7 +481,7 @@ async function buildCaptionOnlyManifest(filename, pageCache = null, options = {}
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     source,
-    sourceFingerprint: source ? `${Number(source.size || 0)}:${Math.round(Number(source.mtimeMs || 0))}` : "",
+    sourceFingerprint: resultSourceFingerprint(source),
     pageCount: cache.pageCount,
     partial: Boolean(requestedPage),
     pagesIndexed: requestedPage ? [requestedPage] : (cache.pages || []).map((p) => Number(p.page || 0)).filter(Boolean),
@@ -845,7 +846,7 @@ export async function tableCoverageReport(filename, options = {}) {
   let pageCache = null;
   try { pageCache = await getPagesCache(filename, { buildIfMissing: true }); }
   catch { pageCache = await readJsonCached(safePagesCachePath(filename)); }
-  const source = await getPdfSourceInfo(filename).catch(() => index.source || null);
+  const source = await getPdfSourceInfo(filename, { includeHash: true }).catch(() => index.source || null);
   const sourceFp = resultSourceFingerprint(source);
   const captions = [];
   for (const page of pageCache?.pages || []) {

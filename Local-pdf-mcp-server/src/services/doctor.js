@@ -197,6 +197,15 @@ export function validateSourceForDoctor(check, currentSource, kind, options = {}
   const strict = Boolean(options.strict);
 
   if (kind === "chunk-index") {
+    if (check.data.source) {
+      if (!check.data.source.sha256) {
+        return markCheck(check, "incompatible", "chunk index has a pre-hash PDF source identity; rebuild the index");
+      }
+      if (!isSamePdfSource(check.data.source, currentSource)) {
+        return markCheck(check, "stale", "chunk index PDF SHA-256 differs from the current PDF");
+      }
+      return check;
+    }
     const sourceSize = Number(check.data.sourceSize);
     const sourceMtime = Number(check.data.sourceModifiedMs);
     if (sourceSize !== Number(currentSource.size)) {

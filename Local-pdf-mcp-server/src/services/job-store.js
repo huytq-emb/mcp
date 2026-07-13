@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { atomicWriteJson } from "../core/atomic-file.js";
 
 export const TERMINAL_JOB_STATES = new Set(["done", "failed", "cancelled"]);
+export const DEFAULT_QUEUED_JOB_GRACE_MS = 30_000;
 
 export class JobUpdateRejectedError extends Error {
   constructor(jobId, reason, current = null) {
@@ -21,6 +22,14 @@ function normalizedJob(job = {}) {
     revision: Math.max(0, Number(job.revision || 0)),
     updatedMs: Number(job.updatedMs || 0),
   };
+}
+
+function nextTimestamp(current, now) {
+  return Math.max(Number(now), Number(current.updatedMs || 0) + 1);
+}
+
+function appendLog(job, entry) {
+  return [...(Array.isArray(job.log) ? job.log : []), entry].slice(-200);
 }
 
 export class JobStore {
@@ -122,6 +131,71 @@ export class JobStore {
     });
   }
 
+  async claimDetachedJob(jobId, options = {}) {
+    const pid = Number(options.pid || 0);
+    const artifact = String(options.artifact || "").trim();
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error("Detached job claim requires a positive worker PID");
+    return this.#withLock(jobId, async () => {
+      const current = await this.readJob(jobId);
+      if (!current) throw new JobUpdateRejectedError(jobId, "job does not exist");
+      if (current.status !== "queued") {
+        throw new JobUpdateRejectedError(jobId, `detached jobs can only be claimed from queued state, not ${current.status}`, current);
+      }
+      if (options.filename && current.filename !== options.filename) {
+        throw new JobUpdateRejectedError(jobId, `job belongs to ${current.filename || "an unknown file"}, not ${options.filename}`, current);
+      }
+      if (artifact && current.metadata?.artifact && current.metadata.artifact !== artifact) {
+        throw new JobUpdateRejectedError(jobId, `job is for artifact ${current.metadata.artifact}, not ${artifact}`, current);
+      }
+      const updatedMs = nextTimestamp(current, this.clock.now());
+      const updatedAt = new Date(updatedMs).toISOString();
+      const next = normalizedJob({
+        ...current,
+        status: "running",
+        phase: artifact ? `worker-${artifact}` : "worker-start",
+        message: "Detached external worker started",
+        startedAt: current.startedAt || updatedAt,
+        startedMs: current.startedMs || updatedMs,
+        updatedAt,
+        updatedMs,
+        metadata: {
+          ...(current.metadata || {}),
+          ...(artifact ? { artifact } : {}),
+          orchestratorPid: pid,
+          worker: true,
+          detached: true,
+        },
+        log: appendLog(current, { at: updatedAt, phase: artifact ? `worker-${artifact}` : "worker-start", message: "Detached external worker started" }),
+      });
+      next.revision = Number(current.revision || 0) + 1;
+      await atomicWriteJson(this.paths.job(jobId), next, { fs: this.fs });
+      return next;
+    });
+  }
+
+  async recordDetachedPid(jobId, pid) {
+    const numericPid = Number(pid || 0);
+    if (!Number.isInteger(numericPid) || numericPid <= 0) throw new Error("Detached job PID must be a positive integer");
+    return this.#withLock(jobId, async () => {
+      const current = await this.readJob(jobId);
+      if (!current) throw new JobUpdateRejectedError(jobId, "job does not exist");
+      if (TERMINAL_JOB_STATES.has(current.status)) {
+        if (Number(current.metadata?.orchestratorPid || 0) === numericPid) return current;
+        throw new JobUpdateRejectedError(jobId, `terminal state ${current.status} cannot record a detached PID`, current);
+      }
+      const updatedMs = nextTimestamp(current, this.clock.now());
+      const next = normalizedJob({
+        ...current,
+        metadata: { ...(current.metadata || {}), orchestratorPid: numericPid },
+        updatedAt: new Date(updatedMs).toISOString(),
+        updatedMs,
+      });
+      next.revision = Number(current.revision || 0) + 1;
+      await atomicWriteJson(this.paths.job(jobId), next, { fs: this.fs });
+      return next;
+    });
+  }
+
   async listJobs() {
     await this.fs.mkdir(this.paths.jobsDir(), { recursive: true });
     const entries = await this.fs.readdir(this.paths.jobsDir(), { withFileTypes: true });
@@ -162,23 +236,35 @@ export class JobStore {
     const isProcessAlive = options.isProcessAlive || ((pid) => {
       try { process.kill(pid, 0); return true; } catch { return false; }
     });
+    const queuedGraceMs = Math.max(0, Number(options.queuedGraceMs ?? DEFAULT_QUEUED_JOB_GRACE_MS));
     const recovered = [];
-    for (const job of await this.listJobs()) {
-      if (job.status !== "queued" && job.status !== "running") { recovered.push(job); continue; }
-      const pids = [job.metadata?.orchestratorPid, job.metadata?.workerPid].map(Number).filter((pid) => pid > 0);
-      if (pids.some((pid) => isProcessAlive(pid))) { recovered.push(job); continue; }
-      const updatedMs = Math.max(this.clock.now(), Number(job.updatedMs || 0) + 1);
-      const updatedAt = new Date(updatedMs).toISOString();
-      recovered.push(await this.updateJob(job.id, {
-        status: "failed",
-        phase: "interrupted",
-        message: "Recorded background job processes are no longer alive",
-        error: "Interrupted because no recorded worker/orchestrator process is alive; start a new job if the index is incomplete.",
-        finishedAt: job.finishedAt || updatedAt,
-        finishedMs: job.finishedMs || updatedMs,
-        updatedAt,
-        updatedMs,
-      }, { updatedMs }));
+    for (const listedJob of await this.listJobs()) {
+      if (listedJob.status !== "queued" && listedJob.status !== "running") { recovered.push(listedJob); continue; }
+      recovered.push(await this.#withLock(listedJob.id, async () => {
+        const current = await this.readJob(listedJob.id);
+        if (!current || (current.status !== "queued" && current.status !== "running")) return current || listedJob;
+        const pids = [current.metadata?.orchestratorPid, current.metadata?.workerPid].map(Number).filter((pid) => pid > 0);
+        if (pids.some((pid) => isProcessAlive(pid))) return current;
+        const ageMs = this.clock.now() - Number(current.createdMs || 0);
+        if (current.status === "queued" && ageMs < queuedGraceMs) return current;
+        const updatedMs = nextTimestamp(current, this.clock.now());
+        const updatedAt = new Date(updatedMs).toISOString();
+        const next = normalizedJob({
+          ...current,
+          status: "failed",
+          phase: "interrupted",
+          message: "Recorded background job processes are no longer alive",
+          error: "Interrupted because no recorded worker/orchestrator process is alive; start a new job if the index is incomplete.",
+          finishedAt: current.finishedAt || updatedAt,
+          finishedMs: current.finishedMs || updatedMs,
+          updatedAt,
+          updatedMs,
+          log: appendLog(current, { at: updatedAt, phase: "interrupted", message: "Recorded background job processes are no longer alive" }),
+        });
+        next.revision = Number(current.revision || 0) + 1;
+        await atomicWriteJson(this.paths.job(current.id), next, { fs: this.fs });
+        return next;
+      }));
     }
     return recovered.sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
   }

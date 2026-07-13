@@ -2,7 +2,7 @@ import { ATOMIC_WRITE_RETRY_MS, DEFAULT_BITFIELD_LIST_TOP_K, DEFAULT_CHUNK_OVERL
 import fs from "node:fs/promises";
 import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
-import { readSourceIdentity } from "../artifacts/source-identity.js";
+import { readSourceIdentity, readStableSourceIdentity } from "../artifacts/source-identity.js";
 import { atomicWriteFile as writeFileAtomically } from "./atomic-file.js";
 import { getPathResolver } from "./path-resolver.js";
 import { normalizeEvidenceContract } from "../evidence/contract.js";
@@ -415,25 +415,18 @@ export async function withIndexBuildLock(filename, options, callback) {
 
 export async function getPdfSourceInfo(filename, options = {}) {
   const filePath = safePdfPath(filename);
-  return readSourceIdentity(filePath, { includeHash: options.includeHash === true });
+  return readSourceIdentity(filePath, { includeHash: options.includeHash === true, bypassCache: options.bypassCache === true });
+}
+
+export async function getStablePdfSourceInfo(filename) {
+  return readStableSourceIdentity(safePdfPath(filename));
 }
 
 export function isSamePdfSource(cacheSource, currentSource) {
   if (!cacheSource || !currentSource) return false;
-
-  const cacheMtime = Number(cacheSource.mtimeMs);
-  const currentMtime = Number(currentSource.mtimeMs);
-
-  const cheapMatch = (
-    Number(cacheSource.size) === Number(currentSource.size) &&
-    Number.isFinite(cacheMtime) &&
-    Number.isFinite(currentMtime) &&
-    Math.abs(cacheMtime - currentMtime) < 1500
-  );
-  if (!cheapMatch) return false;
-  if (currentSource.sha256 && !cacheSource.sha256) return false;
-  if (cacheSource.sha256 && currentSource.sha256) return cacheSource.sha256 === currentSource.sha256;
-  return true;
+  if (!cacheSource.sha256 || !currentSource.sha256) return false;
+  return Number(cacheSource.size) === Number(currentSource.size)
+    && String(cacheSource.sha256).toLowerCase() === String(currentSource.sha256).toLowerCase();
 }
 
 export function ensurePdfFilename(filename) {

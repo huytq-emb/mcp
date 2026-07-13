@@ -3,7 +3,7 @@ import path from "node:path";
 import { DEFAULT_INDEX_JOB_MODE, LARGE_PDF_BACKGROUND_PAGE_THRESHOLD, SERVER_VERSION } from "../../core/runtime-constants.js";
 import { getPathResolver } from "../../core/path-resolver.js";
 import { formatManifestSummary } from "../../artifacts/manifest.js";
-import { clampChunkOverlap, clampChunkSize, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../../core/runtime-helpers.js";
+import { clampChunkOverlap, clampChunkSize, formatIndexStatusUltraMinimal, getIndexStatusUltraMinimal, getPdfSourceInfo, isIndexLockStale, jsonResult, pathExists, readIndexLock, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeHybridQualityReportJsonPath, safeHybridQualityReportMarkdownPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safePagesCachePath, safePdfPath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, textResult } from "../../core/runtime-helpers.js";
 import { createRuntimePort } from "../../core/runtime-ports.js";
 import { loadCautionsIndex } from "../../domains/cautions.js";
 import { loadSequencesIndex } from "../../domains/sequences.js";
@@ -432,13 +432,13 @@ async function handle_start_index_pdf(args = {}, meta = {}) {
     const chunkSize = clampChunkSize(args.chunk_size);
     const chunkOverlap = clampChunkOverlap(args.chunk_overlap, chunkSize);
     const indexPath = safeIndexPath(filename);
-    const pdfStat = await getFileStat(filename);
   
     if (!force && (await pathExists(indexPath))) {
       try {
         const raw = await fs.readFile(indexPath, "utf-8");
         const indexData = JSON.parse(raw);
-        if (isIndexUsable(indexData, pdfStat)) {
+        const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+        if (isIndexUsable(indexData, currentSource)) {
           return textResult([
             `Index already valid for ${filename}.`,
             `Pages: ${indexData.pageCount}`,
@@ -596,14 +596,14 @@ async function handle_index_pdf(args = {}, meta = {}) {
     const mode = String(args.mode || DEFAULT_INDEX_JOB_MODE).trim().toLowerCase();
     const indexPath = safeIndexPath(filename);
     const lockPath = safeIndexLockPath(filename);
-    const pdfStat = await getFileStat(filename);
   
     if (!force && (await pathExists(indexPath))) {
       try {
         const raw = await fs.readFile(indexPath, "utf-8");
         const indexData = JSON.parse(raw);
+        const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
   
-        if (isIndexUsable(indexData, pdfStat)) {
+        if (isIndexUsable(indexData, currentSource)) {
           const pageCache = await loadPagesCache(filename) || { pages: [], pageCount: indexData.pageCount };
           const sectionsIndex = await loadSectionsIndex(filename) || { sectionCount: indexData.sectionCount || 0 };
           const registersIndex = await loadRegistersIndex(filename) || { registerCount: indexData.registerCount || 0 };

@@ -16,5 +16,6 @@ export function createRuntimeToolRegistry(options = {}) {
     hiddenHandlers,
     hiddenDefinitions: HIDDEN_TOOL_DEFINITIONS,
     expectedAdvertisedCount: PUBLIC_TOOL_DEFINITIONS.length,
+    context: options.context || null,
   });
 }

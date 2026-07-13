@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { ARTIFACT_DEPENDENCIES, sourceFingerprint } from "./manifest.js";
+import { ARTIFACT_DEPENDENCIES, contentSourceFingerprint } from "./manifest.js";
 import { requireStrongSourceIdentity } from "./source-identity.js";
 import {
   BITFIELD_INDEX_SCHEMA_VERSION,
@@ -59,7 +59,7 @@ function contentForFingerprint(value = {}) {
 }
 
 export function artifactSourceFingerprint(value = {}) {
-  return sourceFingerprint(value.source || value);
+  return contentSourceFingerprint(value.source || value);
 }
 
 export function artifactContentFingerprint(value = {}) {
@@ -136,10 +136,16 @@ export async function stampCoreArtifactGenerations(filename, { source = null, ch
   for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) loaded[key] = await loadArtifact(filename, key);
   const currentSource = source || loaded["chunk-index"].value.source || loaded["chunk-index"].value;
   requireStrongSourceIdentity(currentSource, `Source for ${filename}`);
-  const currentSourceFingerprint = sourceFingerprint(currentSource);
+  const currentSourceFingerprint = contentSourceFingerprint(currentSource);
+  for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) {
+    const artifactSource = loaded[key].value.source || loaded[key].value;
+    requireStrongSourceIdentity(artifactSource, `Artifact ${key}`);
+    if (contentSourceFingerprint(artifactSource) !== currentSourceFingerprint) {
+      throw new Error(`Artifact ${key} was produced from a different PDF source`);
+    }
+  }
   for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) {
     const artifact = loaded[key];
-    requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
     const dependencies = Object.fromEntries(dependencyKeys(key).map((dependency) => [dependency, loaded[dependency].value.generation?.generationId || ""]));
     const generationId = generationFor(key, artifact.value, currentSourceFingerprint, dependencies, chunkingVersion);
     artifact.value.generation = {
@@ -164,7 +170,7 @@ export async function loadAndValidateCoreArtifactGenerations(filename, { sourceF
   for (const [key, artifact] of Object.entries(loaded)) {
     if (!expectedSourceFingerprint) throw new Error("A current PDF source fingerprint is required to validate index artifacts.");
     requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
-    if (!String(expectedSourceFingerprint).includes(";sha256=")) {
+    if (!/^size=\d+(?:\.\d+)?;sha256=[a-f0-9]{64}$/i.test(String(expectedSourceFingerprint))) {
       throw new Error("Current PDF source fingerprint has no SHA-256 content hash; strict generation validation requires a rebuild.");
     }
     const actualSource = artifactSourceFingerprint(artifact.value);

@@ -6,52 +6,31 @@ import { SERVER_NAME, SERVER_VERSION } from "../core/runtime-constants.js";
 import { errorResult } from "../core/runtime-helpers.js";
 import {
   flushJobsState,
+  claimDetachedJob,
   jobs,
   loadJobsStateFromDisk,
   normalizeArtifactName,
   nowIso,
   rebuildArtifact,
-  refreshJobsStateFromDisk,
+  refreshJobStateFromDisk,
   updateJob,
 } from "../services/jobs.js";
 import { resolveDriverProfile } from "../workflows/profiles.js";
 import { createRuntimeToolRegistry } from "../mcp/runtime-registry.js";
 import { createMcpServer } from "../mcp/server.js";
 
-async function runWorkerRebuildArtifact(encoded) {
+export async function runWorkerRebuildArtifact(encoded) {
   if (!encoded) throw new Error("Missing worker payload");
   const payload = JSON.parse(Buffer.from(String(encoded), "base64").toString("utf-8"));
   const filename = payload.filename;
   const artifact = normalizeArtifactName(payload.artifact);
   const options = payload.options || {};
   const jobId = String(payload.jobId || "").trim();
+  if (!jobId) throw new Error("Detached worker payload is missing its persistent job ID");
 
-  await loadJobsStateFromDisk();
-  let job = jobId ? jobs.get(jobId) : null;
-  if (!job && jobId) {
-    const now = nowIso();
-    job = {
-      id: jobId,
-      type: "rebuild-artifact",
-      filename,
-      status: "queued",
-      phase: "queued",
-      message: "Worker recreated missing persistent job record",
-      createdAt: now,
-      createdMs: Date.now(),
-      updatedAt: now,
-      updatedMs: Date.now(),
-      metadata: { artifact, worker: true, detached: true, recreated: true },
-      log: [],
-    };
-    jobs.set(job.id, job);
-  }
+  let job = await claimDetachedJob(jobId, { pid: process.pid, artifact, filename });
 
   try {
-    if (job) {
-      updateJob(job, { status: "running", phase: `worker-${artifact}`, message: "Detached external worker started", startedAt: nowIso(), startedMs: Date.now() });
-      await flushJobsState();
-    }
     const result = await rebuildArtifact(filename, artifact, {
       ...options,
       onProgress: (event = {}) => {
@@ -76,7 +55,7 @@ async function runWorkerRebuildArtifact(encoded) {
         job.metadata = { ...(job.metadata || {}), stderrTail };
       },
     });
-    await refreshJobsStateFromDisk();
+    await refreshJobStateFromDisk(jobId);
     job = jobId ? jobs.get(jobId) : job;
     if (job?.status === "cancelled") return;
     if (job) {
@@ -84,7 +63,7 @@ async function runWorkerRebuildArtifact(encoded) {
       await flushJobsState();
     }
   } catch (error) {
-    await refreshJobsStateFromDisk();
+    await refreshJobStateFromDisk(jobId);
     job = jobId ? jobs.get(jobId) : job;
     if (job?.status === "cancelled") return;
     if (job) {

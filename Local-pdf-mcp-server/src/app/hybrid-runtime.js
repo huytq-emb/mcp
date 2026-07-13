@@ -5,7 +5,7 @@ import { PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
 import {
   atomicWriteJson,
-  getPdfSourceInfo,
+  getStablePdfSourceInfo,
   safeBitfieldsIndexPath,
   safeCautionsIndexPath,
   safePagesCachePath,
@@ -16,6 +16,7 @@ import {
   safeTablesPartialIndexPath,
   pathExists,
 } from "../core/runtime-helpers.js";
+import { assertSameContentSource } from "../artifacts/source-identity.js";
 import * as nodePdf from "../services/pdf.js";
 import * as nodeTables from "../domains/tables.js";
 import * as nodeManual from "../domains/manual-intelligence.js";
@@ -88,7 +89,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
   const { workerRoot, cancelPath } = await prepareWorkerPaths(requestId);
   options.onWorkerContext?.({ requestId, workerRoot, cancelPath, operation });
   const tempPath = path.join(workerRoot, `${kind}.json`);
-  const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const source = await getStablePdfSourceInfo(filename);
   try {
     const worker = await runPythonWorker({
       requestId,
@@ -105,6 +106,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
     });
     const descriptor = worker.artifacts.find((entry) => entry.kind === kind) || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", `Python worker did not return ${kind} artifact metadata`);
+    assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = await validateWorkerArtifact(descriptor, { workerRoot, filename, source });
     const workerValue = JSON.parse(await fs.readFile(validated.tempPath, "utf8"));
     workerValue.source = source;
@@ -185,13 +187,14 @@ export async function runStructuredBuildHybrid(filename, options = {}) {
     bitfields: safeBitfieldsIndexPath(filename), cautions: safeCautionsIndexPath(filename),
   };
   const outputs = Object.fromEntries(Object.keys(targetPaths).map((kind) => [`${kind}Path`, path.join(workerRoot, `${kind}.json`)]));
+  const source = await getStablePdfSourceInfo(filename);
   try {
     const worker = await runPythonWorker({
       requestId, operation: "structured.build", allowedRoots: allowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), pagesPath: safePagesCachePath(filename) },
       outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [] },
     }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr });
-    const source = await getPdfSourceInfo(filename, { includeHash: true });
+    assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = [];
     for (const descriptor of worker.artifacts) validated.push(await validateWorkerArtifact(descriptor, { workerRoot, filename, source }));
     if (validated.length !== 4) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", "structured.build must return four validated artifacts");

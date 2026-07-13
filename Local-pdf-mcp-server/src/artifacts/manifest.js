@@ -46,11 +46,25 @@ export function artifactDescendants(keys) {
   return [...descendants];
 }
 
-export function sourceFingerprint(source = {}) {
+export function metadataFingerprint(source = {}) {
   const size = Number(source.size || source.sourceSize || 0);
   const mtimeMs = Number(source.mtimeMs || source.sourceModifiedMs || 0);
+  return `size=${size};mtimeMs=${Number.isFinite(mtimeMs) ? Math.round(mtimeMs) : 0}`;
+}
+
+export function contentSourceFingerprint(source = {}) {
+  const size = Number(source.size || source.sourceSize || 0);
   const sha256 = String(source.sha256 || source.sourceSha256 || "").toLowerCase();
-  return `size=${size};mtimeMs=${Number.isFinite(mtimeMs) ? Math.round(mtimeMs) : 0}${sha256 ? `;sha256=${sha256}` : ""}`;
+  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Strong source identity requires SHA-256");
+  return `size=${size};sha256=${sha256}`;
+}
+
+export const contentFingerprint = contentSourceFingerprint;
+
+export function sourceFingerprint(source = {}) {
+  return source.sha256 || source.sourceSha256
+    ? contentSourceFingerprint(source)
+    : metadataFingerprint(source);
 }
 
 function normalizeArtifact(entry = {}) {
@@ -112,6 +126,8 @@ export function createArtifactManifest({
       mtime: source.mtime || source.modified || "",
       sha256: String(source.sha256 || source.sourceSha256 || ""),
       fingerprint: sourceFingerprint(source),
+      metadataFingerprint: metadataFingerprint(source),
+      contentFingerprint: source.sha256 || source.sourceSha256 ? contentSourceFingerprint(source) : "",
     },
     buildStatus,
     producer: producer || null,

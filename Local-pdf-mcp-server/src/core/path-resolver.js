@@ -1,4 +1,5 @@
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { DEFAULT_RUNTIME_CONFIG } from "./runtime-config.js";
 import { ensureDirectPdfFilename, ensureInsideRoot } from "./path-safety.js";
 
@@ -77,7 +78,24 @@ export function createPathResolver(config = DEFAULT_RUNTIME_CONFIG, pathImpl = p
   });
 }
 
+const pathResolverStorage = new AsyncLocalStorage();
+const resolverDependencies = new WeakMap();
 let activePathResolver = createPathResolver(DEFAULT_RUNTIME_CONFIG);
+
+export function registerPathResolverDependencies(resolver, dependencies = {}) {
+  if (!resolver?.root || !resolver?.pdf) throw new Error("A valid runtime path resolver is required");
+  resolverDependencies.set(resolver, {
+    fs: dependencies.fs,
+    clock: dependencies.clock,
+  });
+  return resolver;
+}
+
+export function withPathResolver(resolver, callback) {
+  if (!resolver?.root || !resolver?.pdf) throw new Error("A valid runtime path resolver is required");
+  if (typeof callback !== "function") throw new Error("withPathResolver requires a callback");
+  return pathResolverStorage.run(resolver, callback);
+}
 
 export function activatePathResolver(resolver) {
   if (!resolver?.root || !resolver?.pdf) throw new Error("A valid runtime path resolver is required");
@@ -86,6 +104,9 @@ export function activatePathResolver(resolver) {
 }
 
 export function getPathResolver() {
-  return activePathResolver;
+  return pathResolverStorage.getStore() || activePathResolver;
 }
 
+export function getPathResolverDependencies(resolver = getPathResolver()) {
+  return resolverDependencies.get(resolver) || {};
+}

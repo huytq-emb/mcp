@@ -1,4 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 const DEFAULT_PORTS = new Map();
+const runtimePortStorage = new AsyncLocalStorage();
 let activePorts = DEFAULT_PORTS;
 
 export function createRuntimePortRegistry() {
@@ -8,6 +11,12 @@ export function createRuntimePortRegistry() {
 export function activateRuntimePortRegistry(registry = DEFAULT_PORTS) {
   activePorts = registry;
   return activePorts;
+}
+
+export function withRuntimePortRegistry(registry, callback) {
+  if (!(registry instanceof Map)) throw new Error("A runtime port registry is required");
+  if (typeof callback !== "function") throw new Error("withRuntimePortRegistry requires a callback");
+  return runtimePortStorage.run(registry, callback);
 }
 
 export function bindRuntimePorts(bindings, registry = activePorts) {
@@ -21,7 +30,7 @@ export function bindRuntimePorts(bindings, registry = activePorts) {
 export function createRuntimePort(name) {
   const portName = String(name || "");
   return (...args) => {
-    const implementation = activePorts.get(portName);
+    const implementation = (runtimePortStorage.getStore() || activePorts).get(portName);
     if (typeof implementation !== "function") throw new Error(`Runtime port is not wired: ${portName}`);
     return implementation(...args);
   };

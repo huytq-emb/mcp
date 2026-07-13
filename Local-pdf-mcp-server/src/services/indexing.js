@@ -1,4 +1,4 @@
-import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
+import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { buildEvidenceGraph } from "./evidence-graph.js";
 import { stampCoreArtifactGenerations } from "../artifacts/generation.js";
-import { withSourceIdentityCache } from "../artifacts/source-identity.js";
+import { assertSameContentSource, withSourceIdentityCache } from "../artifacts/source-identity.js";
 
 
 const buildBitfieldsIndex = createRuntimePort("buildBitfieldsIndex");
@@ -1442,7 +1442,7 @@ export async function buildPdfIndex(filename, options = {}) {
     forceLock: Boolean(options.forceLock),
   }, async () => {
     await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
-    const strongSource = await getPdfSourceInfo(filename, { includeHash: true });
+    const strongSource = await getStablePdfSourceInfo(filename);
     await getFileStat(filename);
 
     const chunkSize = clampChunkSize(options.chunkSize);
@@ -1586,8 +1586,11 @@ export async function buildPdfIndex(filename, options = {}) {
   const evidenceGraph = await buildEvidenceGraph(filename);
   indexData.evidenceGraphEntityCount = evidenceGraph.entities.length;
 
+    if (onProgress) onProgress({ phase: "verify-source-stability", current: 0, total: 0, unit: "" });
+    const finalSource = await getStablePdfSourceInfo(filename);
+    assertSameContentSource(strongSource, finalSource, filename);
     if (onProgress) onProgress({ phase: "write-index", current: 0, total: 0, unit: "" });
-    await writeArtifactManifest(filename, { buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
+    await writeArtifactManifest(filename, { source: finalSource, buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
 
     return indexData;
   }));
@@ -1599,12 +1602,21 @@ export function isIndexUsable(indexData, pdfStat) {
   if (Number(indexData.chunkingVersion) !== 2) return false;
   if (!Array.isArray(indexData.chunks)) return false;
   if (Number(indexData.sourceSize) !== Number(pdfStat.size)) return false;
+  if (pdfStat.sha256) return isSamePdfSource(indexData.source, pdfStat);
 
   const indexedMtime = Number(indexData.sourceModifiedMs || 0);
   if (!Number.isFinite(indexedMtime) || indexedMtime <= 0) return false;
 
   // Some filesystems have coarse mtime resolution, so allow a small delta.
   return Math.abs(indexedMtime - Number(pdfStat.mtimeMs)) < 1500;
+}
+
+function isIndexStructurallyCompatible(indexData, pdfStat) {
+  return Boolean(indexData)
+    && indexData.schemaVersion === INDEX_SCHEMA_VERSION
+    && Number(indexData.chunkingVersion) === 2
+    && Array.isArray(indexData.chunks)
+    && Number(indexData.sourceSize) === Number(pdfStat.size);
 }
 
 export async function loadPdfIndex(filename, options = {}) {
@@ -1621,7 +1633,7 @@ export async function loadPdfIndex(filename, options = {}) {
   try {
     const indexData = await readJsonCached(indexPath);
 
-    if (isIndexUsable(indexData, pdfStat)) {
+    if (isIndexStructurallyCompatible(indexData, pdfStat)) {
       const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
       if (isSamePdfSource(indexData.source, currentSource)) return indexData;
       if (!indexData.source?.sha256) throw new Error(`Chunk index for ${filename} is a pre-hash artifact and is incompatible; rebuild the index.`);

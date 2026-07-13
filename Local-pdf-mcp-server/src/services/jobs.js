@@ -1,7 +1,7 @@
 import { atomicWriteJson, clampChunkOverlap, clampChunkSize, ensurePdfFilename, escapeRegExp, getPdfSourceInfo, pathExists, safeArtifactManifestPath, safeBitfieldsIndexPath, safeCautionsIndexPath, safeDriverPackJsonPath, safeDriverPackMarkdownPath, safeDriverPackPath, safeDriverTaskPlanJsonPath, safeDriverTaskPlanMarkdownPath, safeDriverTaskPlanPath, safeEvidenceGraphPath, safeFigureOcrIndexPath, safeFigureSemanticIndexPath, safeFiguresIndexPath, safeIndexLockPath, safeIndexPath, safeJobsStatePath, safeModuleProfileJsonPath, safePagesCachePath, safePagesPartialCachePath, safeRegistersIndexPath, safeSectionsIndexPath, safeSequencesIndexPath, safeTablesIndexPath, safeTablesPartialIndexPath, safeVisualEvidencePath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { BACKGROUND_JOB_START_DELAY_MS, BITFIELD_INDEX_SCHEMA_VERSION, CAUTION_INDEX_SCHEMA_VERSION, DRIVER_ARTIFACT_SCHEMA_VERSION, EVIDENCE_GRAPH_SCHEMA_VERSION, FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, FIGURE_SEMANTIC_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, JOBS_STATE_SCHEMA_VERSION, JOB_HISTORY_LIMIT, JOB_LOG_LIMIT, MAX_ACTIVE_JOBS, MODULE_PROFILE_SCHEMA_VERSION, PAGE_CACHE_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SEQUENCE_INDEX_SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, STATUS_FAST_READ_BYTES, STATUS_FULL_PARSE_MAX_BYTES, TABLE_INDEX_SCHEMA_VERSION, VISUAL_EVIDENCE_SCHEMA_VERSION } from "../core/runtime-constants.js";
-import { getPathResolver } from "../core/path-resolver.js";
+import { getPathResolver, getPathResolverDependencies } from "../core/path-resolver.js";
 import { spawn } from "../core/process-runner.js";
 import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -47,17 +47,19 @@ export let jobsStateWriteTimer = null;
 export let jobsStateWriteInProgress = false;
 export let jobsStateWritePending = false;
 const pendingJobWrites = new Set();
+const pendingJobWriteFailures = [];
 const jobWriteChains = new Map();
-let cachedJobStore = null;
-let cachedJobStoreRoot = "";
+const jobStoresByResolver = new WeakMap();
 
 export function getJobStore() {
   const paths = getPathResolver();
-  if (!cachedJobStore || cachedJobStoreRoot !== paths.root()) {
-    cachedJobStore = createJobStore({ paths });
-    cachedJobStoreRoot = paths.root();
+  let store = jobStoresByResolver.get(paths);
+  if (!store) {
+    const dependencies = getPathResolverDependencies(paths);
+    store = createJobStore({ paths, fs: dependencies.fs, clock: dependencies.clock });
+    jobStoresByResolver.set(paths, store);
   }
-  return cachedJobStore;
+  return store;
 }
 
 export function nowIso() {
@@ -119,7 +121,11 @@ export function jobsStatePayload() {
 export async function flushJobsState() {
   jobsStateWriteInProgress = true;
   try {
-    while (pendingJobWrites.size) await Promise.allSettled([...pendingJobWrites]);
+    while (pendingJobWrites.size) {
+      try { await Promise.all([...pendingJobWrites]); }
+      catch { /* Drain every queued write, then surface the first persistence failure below. */ }
+    }
+    if (pendingJobWriteFailures.length) throw pendingJobWriteFailures.shift();
   } finally {
     jobsStateWriteInProgress = false;
     jobsStateWritePending = false;
@@ -129,7 +135,7 @@ export async function flushJobsState() {
 function queueJobWrite(job) {
   const snapshot = normalizeJobForPersistence(job);
   const previous = jobWriteChains.get(snapshot.id) || Promise.resolve();
-  const operation = previous.then(async () => {
+  const operation = previous.catch(() => {}).then(async () => {
     const store = getJobStore();
     const current = await store.readJob(snapshot.id);
     if (!current) return store.createJob(snapshot);
@@ -139,18 +145,40 @@ function queueJobWrite(job) {
     if (!current || Number(persisted.revision || 0) >= Number(current.revision || 0)) jobs.set(snapshot.id, persisted);
     return persisted;
   }).catch((error) => {
-    if (error instanceof JobUpdateRejectedError && error.current) jobs.set(snapshot.id, error.current);
-    console.error(`[${SERVER_NAME}] ${error instanceof Error ? error.message : String(error)}`);
-    return error.current || null;
+    if (error instanceof JobUpdateRejectedError && error.current) {
+      jobs.set(snapshot.id, error.current);
+      return error.current;
+    }
+    pendingJobWriteFailures.push(error);
+    throw error;
   });
   jobWriteChains.set(snapshot.id, operation);
   pendingJobWrites.add(operation);
   jobsStateWritePending = true;
-  operation.finally(() => {
+  const cleanup = () => {
     pendingJobWrites.delete(operation);
     if (jobWriteChains.get(snapshot.id) === operation) jobWriteChains.delete(snapshot.id);
-  });
+  };
+  void operation.then(cleanup, cleanup);
+  void operation.catch(() => {});
   return operation;
+}
+
+export async function persistInitialJob(job) {
+  const snapshot = normalizeJobForPersistence(job);
+  if (!snapshot) throw new Error("Cannot persist a background job without an ID");
+  try {
+    const persisted = await getJobStore().createJob(snapshot);
+    jobs.set(snapshot.id, persisted);
+    return persisted;
+  } catch (error) {
+    jobs.delete(snapshot.id);
+    const reason = error instanceof Error ? error.message : String(error);
+    const wrapped = new Error(`Unable to persist initial background job ${snapshot.id}: ${reason}`, { cause: error });
+    wrapped.code = error?.code || "JOB_PERSISTENCE_FAILED";
+    wrapped.jobId = snapshot.id;
+    throw wrapped;
+  }
 }
 
 export function persistJobsStateSoon(job = null) {
@@ -198,15 +226,16 @@ export function updateJob(job, patch = {}) {
   return job;
 }
 
-export async function loadJobsStateFromDisk() {
+export async function loadJobsStateFromDisk(options = {}) {
   const store = getJobStore();
-  await fs.mkdir(getPathResolver().jobsDir(), { recursive: true });
+  const fsOps = store.fs || fs;
+  await fsOps.mkdir(getPathResolver().jobsDir(), { recursive: true });
   let loadedJobs = await store.listJobs();
   let legacySequence = 0;
   const legacyPath = getPathResolver().legacyJobsState();
   if (!loadedJobs.length && await pathExists(legacyPath)) {
     try {
-      const parsed = JSON.parse(await fs.readFile(legacyPath, "utf-8"));
+      const parsed = JSON.parse(await fsOps.readFile(legacyPath, "utf-8"));
       legacySequence = Number(parsed.jobSequence || 0);
       for (const legacyJob of parsed.jobs || []) {
         const normalized = normalizeJobForPersistence(legacyJob);
@@ -219,7 +248,7 @@ export async function loadJobsStateFromDisk() {
       console.error(`[${SERVER_NAME}] Unable to migrate legacy background jobs: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  loadedJobs = await store.recoverJobs();
+  if (options.recover !== false) loadedJobs = await store.recoverJobs({ queuedGraceMs: options.queuedGraceMs });
   let maxSequence = legacySequence;
 
   jobs.clear();
@@ -234,6 +263,39 @@ export async function loadJobsStateFromDisk() {
 
   jobSequence = Math.max(jobSequence, maxSequence);
   trimJobHistory();
+}
+
+export async function claimDetachedJob(jobId, options = {}) {
+  const claimed = await getJobStore().claimDetachedJob(jobId, options);
+  jobs.set(claimed.id, claimed);
+  jobSequence = Math.max(jobSequence, parseJobSequenceFromId(claimed.id));
+  return claimed;
+}
+
+async function persistDetachedPid(jobId, pid) {
+  const persisted = await getJobStore().recordDetachedPid(jobId, pid);
+  jobs.set(jobId, persisted);
+  return persisted;
+}
+
+async function persistJobFailure(jobId, error, phase) {
+  const store = getJobStore();
+  const current = await store.readJob(jobId);
+  if (!current || TERMINAL_JOB_STATES.has(current.status)) return current;
+  const updatedMs = Math.max(Date.now(), Number(current.updatedMs || 0) + 1);
+  const updatedAt = new Date(updatedMs).toISOString();
+  const failed = await store.updateJob(jobId, {
+    status: "failed",
+    phase,
+    message: phase === "worker-pid-persist-failed" ? "Failed to persist detached worker PID" : "Failed to spawn detached external worker",
+    finishedAt: updatedAt,
+    finishedMs: updatedMs,
+    updatedAt,
+    updatedMs,
+    error: error instanceof Error ? error.message : String(error),
+  }, { updatedMs });
+  jobs.set(jobId, failed);
+  return failed;
 }
 
 
@@ -253,6 +315,13 @@ export async function refreshJobsStateFromDisk() {
   }
   for (const id of [...jobs.keys()]) if (!loadedIds.has(id)) jobs.delete(id);
   jobSequence = Math.max(jobSequence, maxSequence);
+}
+
+export async function refreshJobStateFromDisk(jobId) {
+  const loaded = await getJobStore().readJob(jobId);
+  if (loaded) jobs.set(jobId, normalizeJobForPersistence(loaded));
+  else jobs.delete(jobId);
+  return loaded;
 }
 
 export function jobSnapshot(job) {
@@ -403,8 +472,8 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
     log: [],
   };
   jobs.set(job.id, job);
-  updateJob(job, { message: "Queued in detached external worker process", phase: "queued" });
-  await flushJobsState();
+  job.log.push({ at: job.updatedAt, phase: "queued", message: job.message });
+  const initialJob = await persistInitialJob(job);
 
   const workerArgs = {
     jobId: job.id,
@@ -427,7 +496,7 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
   // call that has not fully settled and cancel subsequent calls. The worker is
   // responsible for updating the persistent jobs state file by jobId.
   try {
-    const child = spawn(
+    const child = (options.spawn || spawn)(
       process.execPath,
       [getPathResolver().appEntry(), "--worker-rebuild-artifact", encoded],
       {
@@ -438,21 +507,30 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
         windowsHide: true,
       }
     );
-    updateJob(job, { metadata: { ...(job.metadata || {}), orchestratorPid: child.pid } });
-    await flushJobsState();
+    try {
+      const persisted = await persistDetachedPid(job.id, child.pid);
+      Object.assign(job, persisted);
+    } catch (error) {
+      try { child.kill?.(); } catch { /* Termination is best-effort after a correctness failure. */ }
+      try { await persistJobFailure(job.id, error, "worker-pid-persist-failed"); } catch { /* Preserve the PID persistence failure. */ }
+      const reason = error instanceof Error ? error.message : String(error);
+      const wrapped = new Error(`Detached worker ${job.id} was terminated because its PID could not be persisted: ${reason}`, { cause: error });
+      wrapped.code = "JOB_PID_PERSISTENCE_FAILED";
+      wrapped.jobId = job.id;
+      throw wrapped;
+    }
     child.unref();
   } catch (error) {
-    updateJob(job, {
-      status: "failed",
-      phase: "worker-spawn-failed",
-      message: "Failed to spawn detached external worker",
-      finishedAt: nowIso(),
-      finishedMs: Date.now(),
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (error?.code === "JOB_PID_PERSISTENCE_FAILED") throw error;
+    try { await persistJobFailure(job.id, error, "worker-spawn-failed"); } catch { /* Preserve the spawn failure. */ }
+    const reason = error instanceof Error ? error.message : String(error);
+    const wrapped = new Error(`Unable to start detached worker for job ${job.id}: ${reason}`, { cause: error });
+    wrapped.code = error?.code || "WORKER_SPAWN_FAILED";
+    wrapped.jobId = job.id;
+    throw wrapped;
   }
 
-  return job;
+  return jobs.get(initialJob.id) || job;
 }
 
 export function normalizeArtifactName(value) {
@@ -604,11 +682,13 @@ export async function readArtifactStatus(entry, filename) {
 }
 
 export async function buildArtifactManifest(filename, options = {}) {
-  let source = {};
-  try {
-    source = await getPdfSourceInfo(filename, { includeHash: true });
-  } catch {
-    source = {};
+  let source = options.source || {};
+  if (!options.source) {
+    try {
+      source = await getPdfSourceInfo(filename, { includeHash: true });
+    } catch {
+      source = {};
+    }
   }
 
   const artifacts = [];

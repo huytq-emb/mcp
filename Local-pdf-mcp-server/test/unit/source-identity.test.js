@@ -3,8 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { sourceFingerprint } from "../../src/artifacts/manifest.js";
-import { readSourceIdentity, requireStrongSourceIdentity } from "../../src/artifacts/source-identity.js";
+import { contentSourceFingerprint, metadataFingerprint, sourceFingerprint } from "../../src/artifacts/manifest.js";
+import { isSamePdfSource } from "../../src/core/runtime-helpers.js";
+import { assertSameContentSource, readSourceIdentity, readStableSourceIdentity, requireStrongSourceIdentity, SourceChangedError } from "../../src/artifacts/source-identity.js";
 
 test("same size and mtime with different PDF content has different SHA-256 identity", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-source-identity-"));
@@ -37,6 +38,10 @@ test("identical content keeps the same hash across timestamps", async () => {
     const first = await readSourceIdentity(original, { includeHash: true });
     const second = await readSourceIdentity(copy, { includeHash: true });
     assert.equal(first.sha256, second.sha256);
+    assert.equal(contentSourceFingerprint(first), contentSourceFingerprint(second));
+    assert.equal(sourceFingerprint(first), sourceFingerprint(second));
+    assert.equal(isSamePdfSource(first, second), true);
+    assert.notEqual(metadataFingerprint(first), metadataFingerprint(second));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
@@ -44,5 +49,37 @@ test("pre-hash source metadata reports an explicit rebuild migration", () => {
   assert.throws(() => requireStrongSourceIdentity({ size: 10, mtimeMs: 20 }, "Artifact pages"), /pre-hash artifact.*rebuild/i);
   const strong = { size: 10, mtimeMs: 20, sha256: "a".repeat(64) };
   assert.match(sourceFingerprint(strong), /;sha256=a{64}$/);
+  assert.equal(isSamePdfSource(strong, { ...strong, mtimeMs: 999 }), true);
+  assert.equal(isSamePdfSource(strong, { ...strong, sha256: "b".repeat(64) }), false);
+  assert.equal(isSamePdfSource(strong, { size: 10, mtimeMs: 20 }), false);
 });
 
+test("stable source identity rejects a PDF changed during streaming hash", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-source-changing-hash-"));
+  const filePath = path.join(root, "changing.pdf");
+  try {
+    await fs.writeFile(filePath, "before", "utf8");
+    await assert.rejects(readStableSourceIdentity(filePath, {
+      hashFile: async () => {
+        await fs.appendFile(filePath, "-after", "utf8");
+        return "a".repeat(64);
+      },
+    }), SourceChangedError);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("final build verification rejects content changed after the initial identity", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-source-changing-build-"));
+  const filePath = path.join(root, "changing.pdf");
+  try {
+    await fs.writeFile(filePath, "AAAA", "utf8");
+    const initial = await readStableSourceIdentity(filePath);
+    const originalTimes = await fs.stat(filePath);
+    await fs.writeFile(filePath, "BBBB", "utf8");
+    await fs.utimes(filePath, originalTimes.atime, originalTimes.mtime);
+    const final = await readStableSourceIdentity(filePath);
+    assert.equal(initial.size, final.size);
+    assert.ok(Math.abs(initial.mtimeMs - final.mtimeMs) < 2);
+    assert.throws(() => assertSameContentSource(initial, final, "changing.pdf"), /changed during indexing/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

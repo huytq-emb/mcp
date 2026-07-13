@@ -58,6 +58,45 @@ test("restart recovery preserves terminal jobs and interrupts only orphaned acti
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("detached worker atomically claims a queued job before the parent PID update", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-job-claim-"));
+  const paths = createPathResolver(createRuntimeConfig({ rootDir: root }));
+  let now = 10_000;
+  const store = createJobStore({ paths, clock: { now: () => now } });
+  try {
+    await store.createJob({ ...job("claim-race", "queued", 9_000, { artifact: "pages" }), createdMs: 8_000 });
+    now = 10_001;
+    const claimed = await store.claimDetachedJob("claim-race", { pid: 4321, artifact: "pages", filename: "claim-race.pdf" });
+    assert.equal(claimed.status, "running");
+    assert.equal(claimed.metadata.orchestratorPid, 4321);
+
+    now = 10_002;
+    const parentUpdate = await store.recordDetachedPid("claim-race", 4321);
+    assert.equal(parentUpdate.status, "running");
+    assert.equal(parentUpdate.phase, "worker-pages");
+    assert.equal(parentUpdate.metadata.orchestratorPid, 4321);
+    await assert.rejects(store.claimDetachedJob("claim-race", { pid: 4321, artifact: "pages" }), /only be claimed from queued state/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("recovery applies queued grace and rechecks live PIDs for active jobs", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-job-recovery-"));
+  const paths = createPathResolver(createRuntimeConfig({ rootDir: root }));
+  const now = 100_000;
+  const store = createJobStore({ paths, clock: { now: () => now } });
+  try {
+    await store.createJob({ ...job("queued-recent", "queued", 99_500), createdMs: 99_000 });
+    await store.createJob({ ...job("queued-old", "queued", 60_000), createdMs: 60_000 });
+    await store.createJob({ ...job("running-live", "running", 80_000, { workerPid: 77 }), createdMs: 70_000 });
+    await store.createJob({ ...job("running-dead", "running", 80_001, { orchestratorPid: 88, workerPid: 89 }), createdMs: 70_000 });
+    const recovered = await store.recoverJobs({ queuedGraceMs: 30_000, isProcessAlive: (pid) => pid === 77 });
+    assert.equal(recovered.find((entry) => entry.id === "queued-recent").status, "queued");
+    assert.equal(recovered.find((entry) => entry.id === "queued-old").phase, "interrupted");
+    assert.equal(recovered.find((entry) => entry.id === "running-live").status, "running");
+    assert.equal(recovered.find((entry) => entry.id === "running-dead").phase, "interrupted");
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("cleanup removes selected terminal jobs and protects active jobs by default", async () => {
   const { root, store } = await fixture();
   try {
@@ -68,4 +107,3 @@ test("cleanup removes selected terminal jobs and protects active jobs by default
     assert.deepEqual(await store.cleanupJobs({ statuses: ["running"], includeRunning: true }), ["running"]);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
-

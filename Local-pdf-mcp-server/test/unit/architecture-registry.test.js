@@ -119,7 +119,7 @@ test("worker CLI preserves the missing-payload failure contract", async () => {
   );
 });
 
-test("worker CLI handles rebuild payload failures without missing refresh import", async () => {
+test("worker CLI rejects payloads without a persistent job ID", async () => {
   const encoded = Buffer.from(JSON.stringify({
     filename: "",
     artifact: "pages",
@@ -128,7 +128,7 @@ test("worker CLI handles rebuild payload failures without missing refresh import
   await assert.rejects(
     execFileAsync(process.execPath, ["index.js", "--worker-rebuild-artifact", encoded], { cwd: process.cwd() }),
     (error) => error.code === 1 &&
-      /filename is required/.test(error.stderr) &&
+      /missing its persistent job ID/.test(error.stderr) &&
       !/refreshJobsStateFromDisk is not defined/.test(error.stderr),
   );
 });

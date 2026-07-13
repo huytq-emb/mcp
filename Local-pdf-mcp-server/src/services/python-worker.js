@@ -14,8 +14,9 @@ import {
   PYTHON_WORKER_PROTOCOL_VERSION,
 } from "../core/runtime-constants.js";
 import { ensureInsideRoot } from "../core/path-safety.js";
-import { replaceFileAtomic } from "../core/atomic-file.js";
-import { sha256File as hashSourceFile } from "../artifacts/source-identity.js";
+import { atomicWriteJson, replaceFileAtomic } from "../core/atomic-file.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { requireStrongSourceIdentity, sha256File as hashSourceFile } from "../artifacts/source-identity.js";
 
 const WORKER_ARTIFACT_CONTRACTS = Object.freeze({
   pages: { schemaVersion: 1, countKey: "pageCount" },
@@ -193,27 +194,6 @@ export async function sha256File(filePath) {
   return hashSourceFile(filePath);
 }
 
-async function readArtifactHeader(filePath, bytes = 512 * 1024) {
-  const handle = await fsp.open(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(bytes);
-    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
-function headNumber(head, key) {
-  const match = head.match(new RegExp(`"${key}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`));
-  return match ? Number(match[1]) : null;
-}
-
-function headString(head, key) {
-  const match = head.match(new RegExp(`"${key}"\\s*:\\s*"([^"\\n\\r]*)"`));
-  return match ? match[1] : "";
-}
-
 export async function validateWorkerArtifact(descriptor, options = {}) {
   const contract = WORKER_ARTIFACT_CONTRACTS[descriptor?.kind];
   if (!contract) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Unsupported worker artifact kind: ${descriptor?.kind || "missing"}`);
@@ -224,23 +204,39 @@ export async function validateWorkerArtifact(descriptor, options = {}) {
   if (Number(descriptor.sizeBytes) !== stat.size) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", "Worker artifact size mismatch");
   const digest = await sha256File(tempPath);
   if (digest !== descriptor.sha256) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", "Worker artifact SHA-256 mismatch");
-  const head = await readArtifactHeader(tempPath);
-  const schemaVersion = headNumber(head, "schemaVersion");
-  const filename = headString(head, "filename");
-  const count = headNumber(head, contract.countKey);
-  const sourceSize = headNumber(head, "size");
-  const sourceMtimeMs = headNumber(head, "mtimeMs");
+  let value;
+  try { value = JSON.parse(await fsp.readFile(tempPath, "utf8")); }
+  catch (error) { throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Worker artifact is not valid JSON: ${error.message}`); }
+  const schemaVersion = Number(value.schemaVersion);
+  const filename = String(value.filename || "");
+  const count = Number(value[contract.countKey]);
   if (schemaVersion !== contract.schemaVersion || Number(descriptor.schemaVersion) !== contract.schemaVersion) {
     throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Schema mismatch for ${descriptor.kind}`);
   }
   if (filename !== options.filename) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Filename mismatch for ${descriptor.kind}`);
   if (count !== Number(descriptor.count)) throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Count mismatch for ${descriptor.kind}`);
   if (options.source) {
-    if (sourceSize !== Number(options.source.size) || Math.abs(Number(sourceMtimeMs) - Number(options.source.mtimeMs)) > 1500) {
+    const expectedSource = requireStrongSourceIdentity(options.source, `Expected source for ${descriptor.kind}`);
+    const artifactSource = value.source || value;
+    if (artifactSource.sha256) {
+      try { requireStrongSourceIdentity(artifactSource, `Worker artifact ${descriptor.kind}`); }
+      catch (error) { throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", error.message); }
+      if (contentSourceFingerprint(artifactSource) !== contentSourceFingerprint(expectedSource)) {
+        throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Strong source identity mismatch for ${descriptor.kind}`);
+      }
+    } else if (Number(artifactSource.size) !== Number(expectedSource.size)
+      || Math.abs(Number(artifactSource.mtimeMs) - Number(expectedSource.mtimeMs)) > 1500) {
       throw new PythonWorkerError("ARTIFACT_VALIDATION_FAILED", `Source fingerprint mismatch for ${descriptor.kind}`);
     }
+    value.source = structuredClone(expectedSource);
+    const fingerprint = contentSourceFingerprint(expectedSource);
+    if (Object.hasOwn(value, "sourceFingerprint")) value.sourceFingerprint = fingerprint;
+    if (Object.hasOwn(value, "source_fingerprint")) value.source_fingerprint = fingerprint;
+    await atomicWriteJson(tempPath, value, { fs: fsp });
   }
-  return { ...descriptor, tempPath, sizeBytes: stat.size, sha256: digest, schemaVersion, count };
+  const finalStat = await fsp.stat(tempPath);
+  const finalDigest = await sha256File(tempPath);
+  return { ...descriptor, tempPath, sizeBytes: finalStat.size, sha256: finalDigest, schemaVersion, count };
 }
 
 export async function atomicPromoteWorkerArtifact(tempPath, targetPath) {
