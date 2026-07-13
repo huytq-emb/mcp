@@ -1018,13 +1018,49 @@ export async function cleanupBackgroundJobs(options = {}) {
   return removed;
 }
 
-export async function rewriteMainIndexCounts(filename, patch = {}) {
+export async function rewriteMainIndexCounts(filename, patch = {}, options = {}) {
   const indexPath = safeIndexPath(filename);
   if (!(await pathExists(indexPath))) return null;
-  const indexData = await loadPdfIndex(filename);
+  const indexData = options.indexData || await loadPdfIndex(filename);
   Object.assign(indexData, patch, { updatedAt: new Date().toISOString() });
   await atomicWriteJson(indexPath, indexData);
   return indexData;
+}
+
+const STANDALONE_TRANSACTIONAL_ARTIFACTS = new Set([
+  "pages", "sections", "tables", "registers", "bitfields", "cautions", "sequences", "figures", "evidence-graph",
+]);
+
+export async function invalidateCommittedGenerationForStandaloneRebuild(filename, artifact, options = {}) {
+  const normalized = normalizeArtifactName(artifact);
+  if (!STANDALONE_TRANSACTIONAL_ARTIFACTS.has(normalized)) return null;
+  const previous = await loadArtifactManifest(filename);
+  const stale = new Set([normalized, ...artifactDescendants(normalized), ...(previous?.staleArtifacts || [])]);
+  const source = previous?.source || await getPdfSourceInfo(filename, { includeHash: true });
+  const base = previous || createArtifactManifest({
+    filename,
+    serverVersion: SERVER_VERSION,
+    source,
+    artifacts: [],
+    buildStatus: "incomplete",
+  });
+  const artifacts = Object.fromEntries(Object.entries(base.artifacts || {}).map(([key, entry]) => [key, stale.has(key)
+    ? { ...entry, ok: false, status: "stale", staleReason: `standalone ${normalized} rebuild started` }
+    : entry]));
+  const blocked = {
+    ...base,
+    filename,
+    source,
+    buildStatus: "incomplete",
+    health: "fail",
+    staleArtifacts: [...stale],
+    artifacts,
+    missingRequired: [...new Set([...(base.missingRequired || []), ...[...stale].filter((key) => artifacts[key] && !artifacts[key].optional)])],
+    notes: [...(base.notes || []), `standalone ${normalized} rebuild invalidated the committed generation before replacing active artifacts`],
+  };
+  await atomicWriteJson(safeArtifactManifestPath(filename), blocked);
+  await options.afterManifestInvalidated?.({ filename, artifact: normalized, manifest: structuredClone(blocked) });
+  return blocked;
 }
 
 async function rebuildArtifactOperation(filename, artifact, options = {}) {
@@ -1042,21 +1078,29 @@ async function rebuildArtifactOperation(filename, artifact, options = {}) {
   }
   if (normalized === "pages") {
     if (onProgress) onProgress({ phase: "rebuild-pages", current: 0, total: 0, unit: "" });
+    await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options);
     const pageCache = await buildPagesCache(filename, { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine });
-    await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt pages cache"], rebuiltArtifacts: ["pages"], producer: pageCache.producer || null });
+    await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt pages cache; full generation remains invalidated"], rebuiltArtifacts: ["pages"], producer: pageCache.producer || null });
     return { artifact: normalized, rebuilt: ["pages"], counts: { pages: pageCache.pages.length } };
   }
   const pageCache = await getPagesCache(filename, { buildIfMissing: allowFullRebuild });
-  if (normalized === "sections") { const sections = await buildSectionsIndex(filename, pageCache); await rewriteMainIndexCounts(filename, { sectionCount: sections.sectionCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt sections index"], rebuiltArtifacts: ["sections"] }); return { artifact: normalized, rebuilt: ["sections"], counts: { sections: sections.sectionCount } }; }
   let indexData = null;
   try { indexData = await loadPdfIndex(filename); } catch (error) { if (!allowFullRebuild || isArtifactPublicationStateError(error)) throw error; indexData = await buildPdfIndex(filename, { forceLock, chunkSize, chunkOverlap, reusePageCache: true, onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine }); }
+  if (normalized === "sections") {
+    await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options);
+    const sections = await buildSectionsIndex(filename, pageCache);
+    await rewriteMainIndexCounts(filename, { sectionCount: sections.sectionCount }, { indexData });
+    await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt sections index; full generation remains invalidated"], rebuiltArtifacts: ["sections"] });
+    return { artifact: normalized, rebuilt: ["sections"], counts: { sections: sections.sectionCount } };
+  }
   const sectionsIndex = await getSectionsIndex(filename);
   const tablesIndex = await loadTablesIndex(filename);
   if (normalized === "tables") {
+    await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options);
     const tables = await buildTablesIndex(filename, indexData, pageCache, sectionsIndex, { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine });
     const rebuilt = ["tables"];
     const counts = { tables: tables.tableCount };
-    await rewriteMainIndexCounts(filename, { tableCount: tables.tableCount });
+    await rewriteMainIndexCounts(filename, { tableCount: tables.tableCount }, { indexData });
     if (options.cascadeDependents) {
       const registers = await buildRegistersIndex(filename, indexData, sectionsIndex, tables);
       const bitfields = await buildBitfieldsIndex(filename, indexData, registers, tables);
@@ -1064,18 +1108,18 @@ async function rebuildArtifactOperation(filename, artifact, options = {}) {
       const sequences = await buildSequencesIndex(filename, indexData, sectionsIndex, registers, { tablesIndex: tables, bitfieldsIndex: bitfields, cautionsIndex: cautions });
       Object.assign(counts, { registers: registers.registerCount, bitfields: bitfields.bitfieldCount, cautions: cautions.cautionCount, sequences: sequences.sequenceCount });
       rebuilt.push("registers", "bitfields", "cautions", "sequences");
-      await rewriteMainIndexCounts(filename, { registerCount: registers.registerCount, bitfieldCount: bitfields.bitfieldCount, cautionCount: cautions.cautionCount, sequenceCount: sequences.sequenceCount });
+      await rewriteMainIndexCounts(filename, { registerCount: registers.registerCount, bitfieldCount: bitfields.bitfieldCount, cautionCount: cautions.cautionCount, sequenceCount: sequences.sequenceCount }, { indexData });
     }
-    await writeArtifactManifest(filename, { buildStatus: options.cascadeDependents ? "ready" : "partial", notes: [options.cascadeDependents ? "rebuilt tables and dependent accuracy artifacts" : "rebuilt tables index; dependent artifacts require rebuild"], rebuiltArtifacts: rebuilt, producer: tables.producer || null });
+    await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: [options.cascadeDependents ? "rebuilt tables and selected dependents; full generation remains invalidated" : "rebuilt tables index; dependent artifacts require rebuild"], rebuiltArtifacts: rebuilt, producer: tables.producer || null });
     return { artifact: normalized, rebuilt, counts };
   }
-  if (normalized === "registers") { const registers = await buildRegistersIndex(filename, indexData, sectionsIndex, tablesIndex); await rewriteMainIndexCounts(filename, { registerCount: registers.registerCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt registers index"], rebuiltArtifacts: ["registers"] }); return { artifact: normalized, rebuilt: ["registers"], counts: { registers: registers.registerCount } }; }
+  if (normalized === "registers") { await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const registers = await buildRegistersIndex(filename, indexData, sectionsIndex, tablesIndex); await rewriteMainIndexCounts(filename, { registerCount: registers.registerCount }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt registers index; full generation remains invalidated"], rebuiltArtifacts: ["registers"] }); return { artifact: normalized, rebuilt: ["registers"], counts: { registers: registers.registerCount } }; }
   const registersIndex = await loadRegistersIndex(filename) || await buildRegistersIndex(filename, indexData, sectionsIndex, tablesIndex);
-  if (normalized === "bitfields") { const bitfields = await buildBitfieldsIndex(filename, indexData, registersIndex, tablesIndex); await rewriteMainIndexCounts(filename, { bitfieldCount: bitfields.bitfieldCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt bitfields index"], rebuiltArtifacts: ["bitfields"] }); return { artifact: normalized, rebuilt: ["bitfields"], counts: { bitfields: bitfields.bitfieldCount } }; }
-  if (normalized === "sequences") { const bitfieldsIndex = await getBitfieldsIndex(filename, { buildIfMissing: true }); const cautionsIndex = await loadCautionsIndex(filename); const sequences = await buildSequencesIndex(filename, indexData, sectionsIndex, registersIndex, { tablesIndex, bitfieldsIndex, cautionsIndex }); await rewriteMainIndexCounts(filename, { sequenceCount: sequences.sequenceCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt sequences index"], rebuiltArtifacts: ["sequences"] }); return { artifact: normalized, rebuilt: ["sequences"], counts: { sequences: sequences.sequenceCount } }; }
-  if (normalized === "cautions") { const cautions = await buildCautionsIndex(filename, indexData, sectionsIndex, registersIndex); await rewriteMainIndexCounts(filename, { cautionCount: cautions.cautionCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt cautions index"], rebuiltArtifacts: ["cautions"] }); return { artifact: normalized, rebuilt: ["cautions"], counts: { cautions: cautions.cautionCount } }; }
-  if (normalized === "figures") { const figures = await buildFiguresIndex(filename, pageCache, { force }); await rewriteMainIndexCounts(filename, { figureCount: figures.figureCount }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt figures index"], rebuiltArtifacts: ["figures"], producer: figures.producer || { engine: figures.generatedBy?.includes("python") ? "python" : "node", operation: "figures.extract" } }); return { artifact: normalized, rebuilt: ["figures"], counts: { figures: figures.figureCount } }; }
-  if (normalized === "evidence-graph") { const graph = await buildEvidenceGraph(filename); await rewriteMainIndexCounts(filename, { evidenceGraphEntityCount: graph.entities.length }); await writeArtifactManifest(filename, { buildStatus: "partial", notes: ["rebuilt normalized evidence graph"], rebuiltArtifacts: ["evidence-graph"] }); return { artifact: normalized, rebuilt: ["evidence-graph"], counts: { entities: graph.entities.length, relationships: graph.relationships.length, conflicts: graph.conflicts.length } }; }
+  if (normalized === "bitfields") { await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const bitfields = await buildBitfieldsIndex(filename, indexData, registersIndex, tablesIndex); await rewriteMainIndexCounts(filename, { bitfieldCount: bitfields.bitfieldCount }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt bitfields index; full generation remains invalidated"], rebuiltArtifacts: ["bitfields"] }); return { artifact: normalized, rebuilt: ["bitfields"], counts: { bitfields: bitfields.bitfieldCount } }; }
+  if (normalized === "sequences") { const bitfieldsIndex = await getBitfieldsIndex(filename, { buildIfMissing: true }); const cautionsIndex = await loadCautionsIndex(filename); await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const sequences = await buildSequencesIndex(filename, indexData, sectionsIndex, registersIndex, { tablesIndex, bitfieldsIndex, cautionsIndex }); await rewriteMainIndexCounts(filename, { sequenceCount: sequences.sequenceCount }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt sequences index; full generation remains invalidated"], rebuiltArtifacts: ["sequences"] }); return { artifact: normalized, rebuilt: ["sequences"], counts: { sequences: sequences.sequenceCount } }; }
+  if (normalized === "cautions") { await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const cautions = await buildCautionsIndex(filename, indexData, sectionsIndex, registersIndex); await rewriteMainIndexCounts(filename, { cautionCount: cautions.cautionCount }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt cautions index; full generation remains invalidated"], rebuiltArtifacts: ["cautions"] }); return { artifact: normalized, rebuilt: ["cautions"], counts: { cautions: cautions.cautionCount } }; }
+  if (normalized === "figures") { await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const figures = await buildFiguresIndex(filename, pageCache, { force }); await rewriteMainIndexCounts(filename, { figureCount: figures.figureCount }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt figures index; full generation remains invalidated"], rebuiltArtifacts: ["figures"], producer: figures.producer || { engine: figures.generatedBy?.includes("python") ? "python" : "node", operation: "figures.extract" } }); return { artifact: normalized, rebuilt: ["figures"], counts: { figures: figures.figureCount } }; }
+  if (normalized === "evidence-graph") { await invalidateCommittedGenerationForStandaloneRebuild(filename, normalized, options); const graph = await buildEvidenceGraph(filename); await rewriteMainIndexCounts(filename, { evidenceGraphEntityCount: graph.entities.length }, { indexData }); await writeArtifactManifest(filename, { buildStatus: "incomplete", notes: ["rebuilt normalized evidence graph; full generation remains invalidated"], rebuiltArtifacts: ["evidence-graph"] }); return { artifact: normalized, rebuilt: ["evidence-graph"], counts: { entities: graph.entities.length, relationships: graph.relationships.length, conflicts: graph.conflicts.length } }; }
   if (normalized === "figure_ocr") {
     const result = await buildFigureOcrWithPython(filename, { force, onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr });
     if (result.ok === false) {

@@ -4,10 +4,9 @@ import path from "node:path";
 import { FIGURE_INDEX_SCHEMA_VERSION, FIGURE_OCR_SCHEMA_VERSION, PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
 import { contentSourceFingerprint, sourceFingerprint } from "../artifacts/manifest.js";
-import { loadCommittedReusableCoreArtifact } from "../artifacts/generation.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import {
   atomicWriteJson,
-  assertArtifactPublicationReadable,
   compactText,
   ensureInsideRoot,
   ensurePdfFilename,
@@ -257,8 +256,14 @@ export async function loadFigureOcrIndex(filename) {
   return data;
 }
 
-export async function loadPythonFiguresIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadPythonFiguresIndex(filename, options = {}) {
+  const source = await getStablePdfSourceInfo(filename);
+  const committed = await loadCommittedCoreArtifact(filename, "figures", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(source),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const data = await loadJsonArtifact(filename, safeFiguresIndexPath(filename), FIGURE_INDEX_SCHEMA_VERSION);
   if (!data || !Array.isArray(data.figures)) return null;
   return data;
@@ -509,19 +514,15 @@ function buildFigureLookupArtifact(filename, index = {}, committed = {}) {
 }
 
 async function loadCommittedFiguresState(filename) {
-  const manifest = await assertArtifactPublicationReadable(filename);
-  if (!manifest || manifest.buildStatus !== "ready" || !manifest.generation) return { manifest, figures: null };
   const source = await getStablePdfSourceInfo(filename);
   const currentSourceFingerprint = contentSourceFingerprint(source);
-  const figures = await loadCommittedReusableCoreArtifact(filename, "figures", {
+  const snapshot = await loadCommittedCoreArtifact(filename, "figures", {
     expectedSourceFingerprint: currentSourceFingerprint,
+    allowMissing: true,
+    includeManifest: true,
   });
-  if (!figures) {
-    const error = new Error(`Committed figures generation for ${filename} is missing, stale, or incompatible; run index_pdf to publish a complete generation.`);
-    error.code = "ARTIFACT_GENERATION_INVALID";
-    throw error;
-  }
-  return { manifest, figures, source, sourceFingerprint: currentSourceFingerprint };
+  if (!snapshot) return { manifest: null, figures: null };
+  return { manifest: snapshot.manifest, figures: snapshot.artifact, source, sourceFingerprint: currentSourceFingerprint };
 }
 
 export async function loadFigureLookupIndex(filename, options = {}) {

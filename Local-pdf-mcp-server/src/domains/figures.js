@@ -1,11 +1,12 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath, safeTablesIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, atomicWriteJson, clampInteger, compactText, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, pathExists, readJsonCached, safeFiguresIndexPath, safePagesCachePath, safeTablesIndexPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_FIGURE_TOP_K, FIGURE_INDEX_SCHEMA_VERSION, MAX_FIGURE_TOP_K, SERVER_VERSION, MAX_RENDER_DPI, MIN_RENDER_DPI } from "../core/runtime-constants.js";
 import { buildFiguresWithPython, ensureFigureLookupIndex, loadFigureOcrIndex, renderFigureOnDemand, ocrFigureOnDemand } from "../services/ocr.js";
-import { sourceFingerprint } from "../artifacts/manifest.js";
+import { contentSourceFingerprint, sourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 
 
 const detectHeadings = createRuntimePort("detectHeadings");
@@ -516,8 +517,14 @@ export async function buildFiguresIndex(filename, pageCache = null, options = {}
   return result;
 }
 
-export async function loadFiguresIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadFiguresIndex(filename, options = {}) {
+  const source = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "figures", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(source),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const filePath = safeFiguresIndexPath(filename);
   if (!(await pathExists(filePath))) return null;
   try {
@@ -525,7 +532,6 @@ export async function loadFiguresIndex(filename) {
     if (data.schemaVersion !== FIGURE_INDEX_SCHEMA_VERSION) return null;
     if (data.filename !== filename) return null;
     if (!Array.isArray(data.figures)) return null;
-    const source = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(data.source, source)) return null;
     if (!(data.figures || [])[0]?.figure_id || !(data.figures || [])[0]?.image_access || (data.figures || []).some((fig) => fig.renderPath || fig.render_path || isLegacyRenderPath(fig.image_path || "") || (fig.image_path && !isCanonicalFigureImagePath(fig.image_path)))) {
       const normalized = await normalizeFigureManifest(filename, data);

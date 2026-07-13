@@ -2,16 +2,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { sourceFingerprint } from "../artifacts/manifest.js";
-import { CORE_GENERATION_ARTIFACTS, loadAndValidateCoreArtifactGenerations } from "../artifacts/generation.js";
 import {
-  assertArtifactPublicationReadable,
+  CORE_GENERATION_ARTIFACTS,
+  createGenerationChangedError,
+  createGenerationInvalidError,
+  loadAndValidateCoreArtifactGenerations,
+  loadReadyCommittedManifest,
+} from "../artifacts/generation.js";
+import { getPathResolver, getPathResolverDependencies } from "../core/path-resolver.js";
+import {
   atomicWriteJson,
   canonicalSymbol,
   getPdfSourceInfo,
   pathExists,
   readJsonCached,
   safeBitfieldsIndexPath,
-  safeArtifactManifestPath,
   safeCautionsIndexPath,
   safeEvidenceGraphPath,
   safeFiguresIndexPath,
@@ -36,15 +41,31 @@ const GRAPH_ARTIFACTS = Object.freeze({
 });
 const validatedGraphCache = new Map();
 
-async function evidenceGraphCacheSignature(filename, graphPath, currentSourceFingerprint) {
+const GRAPH_RESOLVER_METHODS = Object.freeze({
+  pages: "pages",
+  "chunk-index": "chunkIndex",
+  sections: "sections",
+  registers: "registers",
+  bitfields: "bitfields",
+  sequences: "sequences",
+  cautions: "cautions",
+  tables: "tables",
+  figures: "figures",
+});
+
+function graphCacheKey(filename, resolver = getPathResolver()) {
+  return `${resolver.indexDir()}::${filename}`;
+}
+
+async function evidenceGraphCacheSignature(filename, graphPath, currentSourceFingerprint, fsOps = fs, resolver = getPathResolver()) {
   const files = [
     graphPath,
-    safeArtifactManifestPath(filename),
-    ...Object.values(GRAPH_ARTIFACTS).map((pathForArtifact) => pathForArtifact(filename)),
+    resolver.manifest(filename),
+    ...Object.values(GRAPH_RESOLVER_METHODS).map((method) => resolver[method](filename)),
   ];
   const signatures = await Promise.all(files.map(async (filePath) => {
     try {
-      const stat = await fs.stat(filePath);
+      const stat = await fsOps.stat(filePath);
       return `${path.resolve(filePath)}:${stat.size}:${stat.mtimeMs}`;
     } catch {
       return `${path.resolve(filePath)}:missing`;
@@ -431,23 +452,6 @@ function buildEntityReverseMaps(chunks, entities) {
   return { chunkEntityIds, entityChunkIds, pageEntityIds, symbolEntityIds };
 }
 
-async function validateManifestFreshness(filename, currentSourceFingerprint) {
-  const manifestPath = safeArtifactManifestPath(filename);
-  if (!(await pathExists(manifestPath))) return;
-  let manifest;
-  try { manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")); }
-  catch (error) { throw new Error(`Artifact manifest is unreadable: ${error instanceof Error ? error.message : String(error)}`); }
-  if (manifest.filename !== filename || manifest.source?.fingerprint !== currentSourceFingerprint) {
-    throw new Error("Artifact manifest has a stale source fingerprint. Rebuild the full index before using the evidence graph.");
-  }
-  if (["incomplete", "promotion_failed", "failed"].includes(String(manifest.buildStatus || ""))) {
-    throw new Error(`Artifact generation is ${manifest.buildStatus}; the evidence graph is not committed and cannot be read.`);
-  }
-  const stale = new Set(manifest.staleArtifacts || []);
-  const invalid = Object.keys(GRAPH_ARTIFACTS).filter((key) => stale.has(key) || ["stale", "incompatible", "broken", "missing", "error"].includes(manifest.artifacts?.[key]?.status));
-  if (invalid.length) throw new Error(`Artifact manifest marks graph dependencies stale: ${invalid.join(", ")}. Rebuild the full index before using the evidence graph.`);
-}
-
 export function validateEvidenceGraph(graph = {}) {
   const errors = [];
   if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION) errors.push(`schemaVersion must be ${EVIDENCE_GRAPH_SCHEMA_VERSION}`);
@@ -473,7 +477,8 @@ export function validateEvidenceGraph(graph = {}) {
 }
 
 export async function buildEvidenceGraph(filename) {
-  validatedGraphCache.delete(filename);
+  const resolver = getPathResolver();
+  validatedGraphCache.delete(graphCacheKey(filename, resolver));
   const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
   const artifactValues = await loadAndValidateCoreArtifactGenerations(filename, {
@@ -800,47 +805,135 @@ export async function buildEvidenceGraph(filename) {
   const graphPath = safeEvidenceGraphPath(filename);
   await fs.mkdir(path.dirname(graphPath), { recursive: true });
   await atomicWriteJson(graphPath, graph);
-  const cacheSignature = await evidenceGraphCacheSignature(filename, graphPath, currentSourceFingerprint);
-  validatedGraphCache.set(filename, { signature: cacheSignature, graph });
+  const cacheSignature = await evidenceGraphCacheSignature(filename, graphPath, currentSourceFingerprint, fs, resolver);
+  validatedGraphCache.set(graphCacheKey(filename, resolver), { signature: cacheSignature, graph });
   return graph;
 }
 
-export async function loadEvidenceGraph(filename, { buildIfMissing = false } = {}) {
-  await assertArtifactPublicationReadable(filename);
-  const filePath = safeEvidenceGraphPath(filename);
-  if (!(await pathExists(filePath))) {
-    if (buildIfMissing) return buildEvidenceGraph(filename);
-    throw new Error(`Evidence graph not found for ${filename}. Run index_pdf first or rebuild the evidence graph.`);
-  }
+export async function loadEvidenceGraph(filename, options = {}) {
+  const { buildIfMissing = false } = options;
+  const resolver = options.resolver || getPathResolver();
+  const fsOps = options.fs || getPathResolverDependencies(resolver).fs || fs;
+  const filePath = resolver.evidenceGraph(filename);
   const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
-  const cacheSignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint);
-  const cached = validatedGraphCache.get(filename);
-  if (cached?.signature === cacheSignature) return cached.graph;
-  const graph = await readJsonCached(filePath);
-  await validateManifestFreshness(filename, currentSourceFingerprint);
-  if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== filename || graph.sourceFingerprint !== currentSourceFingerprint) {
-    if (buildIfMissing) return buildEvidenceGraph(filename);
-    throw new Error(`Incompatible evidence graph for ${filename}; full index rebuild required.`);
-  }
-  try {
-    const artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
-      sourceFingerprint: currentSourceFingerprint,
-      keys: Object.keys(GRAPH_ARTIFACTS),
+  const cacheKey = graphCacheKey(filename, resolver);
+  const maxAttempts = Math.max(1, Math.min(5, Number(options.maxAttempts || 2)));
+  let previousStableMismatch = "";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const manifestBefore = await loadReadyCommittedManifest(filename, {
+      ...options,
+      fs: fsOps,
+      expectedSourceFingerprint: currentSourceFingerprint,
+      allowMissing: true,
     });
-    for (const key of Object.keys(GRAPH_ARTIFACTS)) {
-      if (graph.artifactGenerations?.[key]?.generationId !== artifacts[key].generation?.generationId) {
-        throw new Error(`Evidence graph has a stale ${key} dependency generation.`);
+    if (!manifestBefore) {
+      let graphExists = true;
+      try { await fsOps.access(filePath); }
+      catch (error) {
+        if (error?.code === "ENOENT") graphExists = false;
+        else throw error;
       }
+      if (!graphExists) {
+        if (buildIfMissing) return buildEvidenceGraph(filename);
+        throw new Error(`Evidence graph not found for ${filename}. Run index_pdf first or rebuild the evidence graph.`);
+      }
+      const legacySignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint, fsOps, resolver);
+      const legacyCached = validatedGraphCache.get(cacheKey);
+      if (legacyCached?.signature === legacySignature) return legacyCached.graph;
+      const graph = JSON.parse(await fsOps.readFile(filePath, "utf8"));
+      if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== filename || graph.sourceFingerprint !== currentSourceFingerprint) {
+        if (buildIfMissing) return buildEvidenceGraph(filename);
+        throw new Error(`Incompatible evidence graph for ${filename}; full index rebuild required.`);
+      }
+      const validation = validateEvidenceGraph(graph);
+      if (!validation.ok) throw new Error(`Evidence graph is invalid: ${validation.errors.join("; ")}`);
+      const artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
+        sourceFingerprint: currentSourceFingerprint,
+        keys: Object.keys(GRAPH_ARTIFACTS),
+        fs: fsOps,
+        resolver,
+      });
+      for (const key of Object.keys(GRAPH_ARTIFACTS)) {
+        if (graph.artifactGenerations?.[key]?.generationId !== artifacts[key].generation?.generationId) {
+          throw new Error(`Evidence graph has a stale ${key} dependency generation.`);
+        }
+      }
+      validatedGraphCache.set(cacheKey, { signature: legacySignature, graph });
+      return graph;
     }
-  } catch (error) {
-    if (buildIfMissing) return buildEvidenceGraph(filename);
-    throw new Error(`Evidence graph is stale or incompatible for ${filename}: ${error instanceof Error ? error.message : String(error)}`);
+    await options.onReadStep?.({ step: "manifest-before", attempt, filename, key: "evidence-graph", manifest: structuredClone(manifestBefore) });
+
+    let graph = null;
+    let artifacts = null;
+    let validationError = null;
+    try {
+      graph = JSON.parse(await fsOps.readFile(filePath, "utf8"));
+      if (graph.artifactComplete !== true) throw new Error("evidence graph is not marked complete");
+      if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== filename || graph.sourceFingerprint !== currentSourceFingerprint) {
+        throw new Error("evidence graph schema, filename, or source fingerprint is incompatible");
+      }
+      if (!manifestBefore.generation.evidenceGraphGeneration || graph.generation?.generationId !== manifestBefore.generation.evidenceGraphGeneration) {
+        throw new Error("evidence graph generation does not match the ready manifest");
+      }
+      artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
+        sourceFingerprint: currentSourceFingerprint,
+        keys: Object.keys(GRAPH_ARTIFACTS),
+        fs: fsOps,
+        resolver,
+      });
+      for (const key of Object.keys(GRAPH_ARTIFACTS)) {
+        const artifactGenerationId = artifacts[key].generation?.generationId;
+        if (
+          graph.artifactGenerations?.[key]?.generationId !== artifactGenerationId
+          || manifestBefore.generation.artifactGenerations?.[key] !== artifactGenerationId
+        ) throw new Error(`evidence graph has a stale ${key} dependency generation`);
+      }
+      const validation = validateEvidenceGraph(graph);
+      if (!validation.ok) throw new Error(`evidence graph validation failed: ${validation.errors.join("; ")}`);
+    } catch (error) {
+      if (["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE", "ENOSPC", "EROFS"].includes(String(error?.code || error?.cause?.code || ""))) throw error;
+      validationError = error;
+    }
+    await options.onReadStep?.({ step: "artifact", attempt, filename, key: "evidence-graph", artifact: graph ? structuredClone(graph) : null, error: validationError });
+
+    const manifestAfter = await loadReadyCommittedManifest(filename, {
+      ...options,
+      fs: fsOps,
+      expectedSourceFingerprint: currentSourceFingerprint,
+      allowMissing: true,
+    });
+    if (!manifestAfter) throw createGenerationChangedError(filename, "The ready manifest disappeared while reading the evidence graph.");
+    await options.onReadStep?.({ step: "manifest-after", attempt, filename, key: "evidence-graph", manifest: structuredClone(manifestAfter) });
+    if (
+      manifestAfter.generation.buildId !== manifestBefore.generation.buildId
+      || manifestAfter.generation.sourceFingerprint !== manifestBefore.generation.sourceFingerprint
+    ) {
+      if (attempt >= maxAttempts) throw createGenerationChangedError(filename, `Observed build ${manifestBefore.generation.buildId}, then ${manifestAfter.generation.buildId}.`);
+      continue;
+    }
+    const afterBindingMismatch = graph && (
+      manifestAfter.generation.evidenceGraphGeneration !== graph.generation?.generationId
+      || Object.keys(GRAPH_ARTIFACTS).some((key) => (
+        manifestAfter.generation.artifactGenerations?.[key] !== artifacts?.[key]?.generation?.generationId
+      ))
+    );
+    if (!validationError && afterBindingMismatch) {
+      validationError = new Error("evidence graph or dependency generation does not match the final ready manifest snapshot");
+    }
+    if (validationError) {
+      const signature = `${manifestBefore.generation.buildId}:evidence-graph:${manifestBefore.generation.evidenceGraphGeneration || "missing"}`;
+      if (signature === previousStableMismatch) {
+        throw createGenerationInvalidError(filename, `Manifest build ${manifestBefore.generation.buildId} does not match the evidence graph.`, validationError);
+      }
+      previousStableMismatch = signature;
+      if (attempt >= maxAttempts) throw createGenerationChangedError(filename, "The evidence graph did not remain bound to the ready manifest.");
+      continue;
+    }
+    return graph;
   }
-  const validation = validateEvidenceGraph(graph);
-  if (!validation.ok) throw new Error(`Evidence graph is invalid: ${validation.errors.join("; ")}`);
-  validatedGraphCache.set(filename, { signature: cacheSignature, graph });
-  return graph;
+  throw createGenerationChangedError(filename);
 }
 
 export function getEvidenceGraphEntity(graph, entityId) {

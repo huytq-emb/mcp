@@ -296,7 +296,7 @@ test("evidence graphs reject old chunking and mixed dependency generations", asy
   }
 });
 
-test("loadEvidenceGraph rebuilds compatible graph metadata but rejects a stale manifest", async () => {
+test("loadEvidenceGraph rebuilds compatible legacy graph metadata but rejects an invalid commit manifest", async () => {
   await setup();
   try {
     const graph = await buildEvidenceGraph(filename);
@@ -307,7 +307,7 @@ test("loadEvidenceGraph rebuilds compatible graph metadata but rejects a stale m
     assert.equal(rebuilt.schemaVersion, graph.schemaVersion);
 
     await atomicWriteJson(safeArtifactManifestPath(filename), { filename, source: { fingerprint: graph.sourceFingerprint }, staleArtifacts: ["registers"], artifacts: {} });
-    await assert.rejects(() => loadEvidenceGraph(filename), /manifest marks graph dependencies stale/i);
+    await assert.rejects(() => loadEvidenceGraph(filename), (error) => error?.code === "ARTIFACT_GENERATION_INVALID");
   } finally {
     await cleanup();
   }

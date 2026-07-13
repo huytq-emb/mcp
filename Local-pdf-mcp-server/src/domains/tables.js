@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import {
-  assertArtifactPublicationReadable,
   atomicWriteJson,
   getPdfSourceInfo,
   isSamePdfSource,
@@ -18,6 +17,8 @@ import {
   TABLE_INDEX_SCHEMA_VERSION,
 } from "../core/runtime-constants.js";
 import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { isCompatibleBuildCheckpoint } from "../artifacts/source-identity.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { coordinateItemsToRows, extractTablesFromCoordinateRows } from "./manual-intelligence.js";
@@ -316,14 +317,19 @@ export async function buildTablesIndex(filename, indexData, pageCache, sectionsI
   return index;
 }
 
-export async function loadTablesIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadTablesIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "tables", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const tablesPath = safeTablesIndexPath(filename);
   if (!(await pathExists(tablesPath))) return null;
   try {
     const index = await readJsonCached(tablesPath);
     if (index.schemaVersion !== TABLE_INDEX_SCHEMA_VERSION || index.filename !== filename || !Array.isArray(index.tables)) return null;
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
     return index;
   } catch {

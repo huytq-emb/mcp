@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { replaceFileAtomic, atomicWriteJson } from "../core/atomic-file.js";
-import { getPathResolver, getPathResolverDependencies, withPathResolver } from "../core/path-resolver.js";
+import { getPathResolver, getPathResolverDependencies, registerPathResolverDependencies, withPathResolver } from "../core/path-resolver.js";
 import { EVIDENCE_GRAPH_SCHEMA_VERSION } from "../core/runtime-constants.js";
 import { loadAndValidateCoreArtifactGenerations, loadCommittedReusableCoreArtifact } from "../artifacts/generation.js";
 import { ARTIFACT_MANIFEST_SCHEMA_VERSION, contentSourceFingerprint } from "../artifacts/manifest.js";
@@ -96,6 +96,7 @@ export async function createStagedArtifactBuild(filename, options = {}) {
   const activePaths = Object.fromEntries(Object.entries(ARTIFACT_METHODS).map(([key, method]) => [key, resolver[method](filename)]));
   const stageDir = path.join(resolver.indexDir(), ".builds", buildId);
   const stagedResolver = createStagedResolver(resolver, stageDir, buildId);
+  registerPathResolverDependencies(stagedResolver, { fs: fsOps, clock: dependencies.clock });
   const stagedPaths = Object.fromEntries(Object.entries(ARTIFACT_METHODS).map(([key, method]) => [key, stagedResolver[method](filename)]));
   await fsOps.mkdir(stageDir, { recursive: true });
   return {
@@ -111,15 +112,17 @@ export async function createStagedArtifactBuild(filename, options = {}) {
   };
 }
 
-export async function seedStagedPagesCache(build) {
+export async function seedStagedPagesCache(build, options = {}) {
   const sourceFingerprint = contentSourceFingerprint(build.source);
   const reusable = await withPathResolver(build.activeResolver, () => loadCommittedReusableCoreArtifact(
     build.filename,
     "pages",
-    { expectedSourceFingerprint: sourceFingerprint },
+    { expectedSourceFingerprint: sourceFingerprint, fs: build.fs },
   ));
   if (!reusable) return false;
-  await build.fs.copyFile(build.activePaths.pages, build.stagedPaths.pages);
+  const stagedValue = structuredClone(reusable);
+  await options.afterReusableArtifactValidated?.({ artifact: structuredClone(reusable), build });
+  await atomicWriteJson(build.stagedPaths.pages, stagedValue, { fs: build.fs });
   return true;
 }
 
@@ -163,6 +166,7 @@ export async function validateCompleteStagedGeneration(build, { source } = {}) {
     const artifacts = await loadAndValidateCoreArtifactGenerations(build.filename, {
       sourceFingerprint: expectedSourceFingerprint,
       keys: FULL_BUILD_ARTIFACT_KEYS.filter((key) => key !== "evidence-graph"),
+      fs: build.fs,
     });
     const graph = JSON.parse(await build.fs.readFile(build.stagedPaths["evidence-graph"], "utf8"));
     if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== build.filename) throw new Error("Staged evidence graph has an incompatible schema or filename");

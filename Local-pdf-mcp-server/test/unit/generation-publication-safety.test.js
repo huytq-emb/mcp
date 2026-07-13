@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
 import { withPathResolver } from "../../src/core/path-resolver.js";
+import { bindRuntimePorts, withRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 import {
   atomicWriteJson,
   safeArtifactManifestPath,
@@ -12,6 +13,8 @@ import {
 import { contentSourceFingerprint } from "../../src/artifacts/manifest.js";
 import {
   CORE_GENERATION_ARTIFACTS,
+  loadCommittedCoreArtifact,
+  loadCommittedReusableCoreArtifact,
   loadAndValidateCoreArtifactGenerations,
   stampCoreArtifactGenerations,
 } from "../../src/artifacts/generation.js";
@@ -26,7 +29,7 @@ import {
   validateCompleteStagedGeneration,
 } from "../../src/services/artifact-build-transaction.js";
 import { buildEvidenceGraph, loadEvidenceGraph } from "../../src/services/evidence-graph.js";
-import { writeArtifactManifest } from "../../src/services/jobs.js";
+import { rebuildArtifact, writeArtifactManifest } from "../../src/services/jobs.js";
 import { ensureFigureLookupIndex, loadFigureLookupIndex, loadPythonFiguresIndex, resolveFigureTarget } from "../../src/services/ocr.js";
 import { loadPagesCache } from "../../src/services/pdf.js";
 import { loadPdfIndex, loadRegistersIndex, loadSectionsIndex } from "../../src/services/indexing.js";
@@ -121,8 +124,37 @@ async function createCompleteBuild(value, { bbox, pageText = "page A", buildId }
 }
 
 async function cleanup(value) {
-  if (value.build) await discardStagedGeneration(value.build).catch(() => {});
+  for (const build of new Set([value.build, value.buildA, value.buildB].filter(Boolean))) {
+    await discardStagedGeneration(build).catch(() => {});
+  }
   await fs.rm(value.root, { recursive: true, force: true });
+}
+
+async function stagedSnapshot(build) {
+  return new Map(await Promise.all([...FULL_BUILD_ARTIFACT_KEYS, "manifest"].map(async (key) => [
+    key,
+    await fs.readFile(build.stagedPaths[key]),
+  ])));
+}
+
+async function installSnapshot(build, snapshot, { incompleteFirst = false } = {}) {
+  if (incompleteFirst) {
+    const ready = JSON.parse(snapshot.get("manifest").toString("utf8"));
+    await fs.writeFile(build.activePaths.manifest, JSON.stringify({ ...ready, buildStatus: "incomplete", health: "fail" }));
+  }
+  for (const key of FULL_BUILD_ARTIFACT_KEYS) await fs.writeFile(build.activePaths[key], snapshot.get(key));
+  await fs.writeFile(build.activePaths.manifest, snapshot.get("manifest"));
+}
+
+async function twoGenerationFixture() {
+  const value = await createRoot();
+  const buildA = await createCompleteBuild(value, { pageText: "generation A", bbox: [1, 2, 30, 40], buildId: "read-a" });
+  const snapshotA = await stagedSnapshot(buildA);
+  await promoteStagedGeneration(buildA);
+  await discardStagedGeneration(buildA);
+  const buildB = await createCompleteBuild(value, { pageText: "generation B", bbox: [5, 6, 70, 80], buildId: "read-b" });
+  const snapshotB = await stagedSnapshot(buildB);
+  return { ...value, buildA, buildB, snapshotA, snapshotB };
 }
 
 test("pages reuse accepts only the ready committed generation and ignores mtime-only source changes", async () => {
@@ -348,5 +380,275 @@ test("all transactional artifact loaders surface incomplete publication state", 
         loader.name,
       ));
     }
+  } finally { await cleanup(value); }
+});
+
+test("generation-consistent readers retry across successful publication for every transactional loader", async () => {
+  const value = await twoGenerationFixture();
+  try {
+    const manifestB = JSON.parse(value.snapshotB.get("manifest").toString("utf8"));
+    const loaders = [
+      ["pages", loadPagesCache],
+      ["chunk-index", loadPdfIndex],
+      ["sections", loadSectionsIndex],
+      ["tables", loadTablesIndex],
+      ["registers", loadRegistersIndex],
+      ["bitfields", loadBitfieldsIndex],
+      ["cautions", loadCautionsIndex],
+      ["sequences", loadSequencesIndex],
+      ["figures", loadFiguresIndex],
+      ["evidence-graph", loadEvidenceGraph],
+    ];
+    for (const [key, loader] of loaders) {
+      await installSnapshot(value.buildA, value.snapshotA);
+      let published = false;
+      const artifact = await withPathResolver(value.context.paths, () => loader(value.filename, {
+        maxAttempts: 2,
+        onReadStep: async ({ step, attempt }) => {
+          if (!published && attempt === 1 && step === "manifest-before") {
+            published = true;
+            await installSnapshot(value.buildB, value.snapshotB, { incompleteFirst: true });
+          }
+        },
+      }));
+      const expectedGenerationId = key === "evidence-graph"
+        ? manifestB.generation.evidenceGraphGeneration
+        : manifestB.generation.artifactGenerations[key];
+      assert.equal(artifact.generation.generationId, expectedGenerationId, key);
+    }
+  } finally { await cleanup(value); }
+});
+
+test("committed reader never returns transient pages from a failed promotion rollback", async () => {
+  const value = await twoGenerationFixture();
+  try {
+    const manifestB = JSON.parse(value.snapshotB.get("manifest").toString("utf8"));
+    let replaced = false;
+    let rolledBack = false;
+    const pages = await withPathResolver(value.context.paths, () => loadCommittedCoreArtifact(value.filename, "pages", {
+      expectedSourceFingerprint: contentSourceFingerprint(value.source),
+      maxAttempts: 2,
+      onReadStep: async ({ step, attempt }) => {
+        if (attempt === 1 && step === "manifest-before" && !replaced) {
+          replaced = true;
+          await fs.writeFile(value.buildA.activePaths.manifest, JSON.stringify({ ...manifestB, buildStatus: "incomplete", health: "fail" }));
+          await fs.writeFile(value.buildA.activePaths.pages, value.snapshotB.get("pages"));
+        } else if (attempt === 1 && step === "artifact" && !rolledBack) {
+          rolledBack = true;
+          await fs.writeFile(value.buildA.activePaths.pages, value.snapshotA.get("pages"));
+          await fs.writeFile(value.buildA.activePaths.manifest, value.snapshotA.get("manifest"));
+        }
+      },
+    }));
+    assert.equal(pages.pages[0].text, "generation A");
+    assert.equal(pages.generation.generationId, JSON.parse(value.snapshotA.get("manifest")).generation.artifactGenerations.pages);
+  } finally { await cleanup(value); }
+});
+
+test("reader retries when the ready manifest changes after artifact bytes are read", async () => {
+  const value = await twoGenerationFixture();
+  try {
+    let published = false;
+    const pages = await withPathResolver(value.context.paths, () => loadCommittedCoreArtifact(value.filename, "pages", {
+      expectedSourceFingerprint: contentSourceFingerprint(value.source),
+      maxAttempts: 2,
+      onReadStep: async ({ step, attempt }) => {
+        if (!published && attempt === 1 && step === "artifact") {
+          published = true;
+          await installSnapshot(value.buildB, value.snapshotB, { incompleteFirst: true });
+        }
+      },
+    }));
+    assert.equal(pages.pages[0].text, "generation B");
+  } finally { await cleanup(value); }
+});
+
+test("continuous committed publication retries are bounded", async () => {
+  const value = await twoGenerationFixture();
+  try {
+    let useB = true;
+    let attempts = 0;
+    await assert.rejects(withPathResolver(value.context.paths, () => loadCommittedCoreArtifact(value.filename, "pages", {
+      expectedSourceFingerprint: contentSourceFingerprint(value.source),
+      maxAttempts: 2,
+      onReadStep: async ({ step }) => {
+        if (step !== "manifest-before") return;
+        attempts += 1;
+        await installSnapshot(value.buildA, useB ? value.snapshotB : value.snapshotA, { incompleteFirst: true });
+        useB = !useB;
+      },
+    })), (error) => error?.code === "ARTIFACT_GENERATION_CHANGED");
+    assert.equal(attempts, 2);
+  } finally { await cleanup(value); }
+});
+
+test("staged pages are written from validated bytes rather than recopied from the active path", async () => {
+  const value = await createReadyPagesFixture();
+  try {
+    const activePages = JSON.parse(await fs.readFile(value.build.activePaths.pages, "utf8"));
+    const tampered = { ...activePages, pages: [{ page: 1, text: "standalone replacement X" }] };
+    assert.equal(await seedStagedPagesCache(value.build, {
+      afterReusableArtifactValidated: async () => fs.writeFile(value.build.activePaths.pages, JSON.stringify(tampered)),
+    }), true);
+    const stagedPages = JSON.parse(await fs.readFile(value.build.stagedPaths.pages, "utf8"));
+    assert.equal(stagedPages.pages[0].text, "page A");
+    assert.equal(JSON.parse(await fs.readFile(value.build.activePaths.pages, "utf8")).pages[0].text, "standalone replacement X");
+    for (const key of Object.keys(CORE_GENERATION_ARTIFACTS).filter((key) => key !== "pages")) {
+      await fs.copyFile(value.build.activePaths[key], value.build.stagedPaths[key]);
+    }
+    await withPathResolver(value.build.resolver, () => stampCoreArtifactGenerations(value.filename, {
+      source: value.source,
+      chunkingVersion: 2,
+      fs: value.build.fs,
+    }));
+    const restamped = JSON.parse(await fs.readFile(value.build.stagedPaths.pages, "utf8"));
+    assert.equal(restamped.pages[0].text, "page A");
+  } finally { await cleanup(value); }
+});
+
+test("generation validation and page staging consistently use the injected filesystem", async () => {
+  const value = await createReadyPagesFixture();
+  try {
+    const manifestPath = value.context.paths.manifest(value.filename);
+    const pagesPath = value.context.paths.pages(value.filename);
+    const virtualFiles = new Map([
+      [manifestPath, await fs.readFile(manifestPath)],
+      [pagesPath, await fs.readFile(pagesPath)],
+    ]);
+    await fs.rm(manifestPath, { force: true });
+    await fs.rm(pagesPath, { force: true });
+    const calls = [];
+    const virtualFs = {
+      access: async (filePath) => { calls.push(["access", String(filePath)]); if (!virtualFiles.has(String(filePath))) throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+      readFile: async (filePath, encoding) => {
+        calls.push(["readFile", String(filePath)]);
+        const data = virtualFiles.get(String(filePath));
+        if (!data) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        return encoding ? data.toString(encoding) : Buffer.from(data);
+      },
+    };
+    const reusable = await withPathResolver(value.context.paths, () => loadCommittedReusableCoreArtifact(value.filename, "pages", {
+      expectedSourceFingerprint: contentSourceFingerprint(value.source),
+      fs: virtualFs,
+      resolver: value.context.paths,
+    }));
+    assert.equal(reusable.pages[0].text, "page A");
+    assert.ok(calls.some(([operation, filePath]) => operation === "access" && filePath === pagesPath));
+    assert.ok(calls.filter(([operation]) => operation === "readFile").length >= 3);
+
+    for (const [code, failingOperation] of [["EACCES", "access"], ["EIO", "manifest"], ["ENOSPC", "artifact"]]) {
+      const failingFs = {
+        access: async () => { if (failingOperation === "access") throw Object.assign(new Error(code), { code }); },
+        readFile: async (filePath, encoding) => {
+          if (failingOperation === "manifest" && String(filePath) === manifestPath) throw Object.assign(new Error(code), { code });
+          if (failingOperation === "artifact" && String(filePath) === pagesPath) throw Object.assign(new Error(code), { code });
+          const data = virtualFiles.get(String(filePath));
+          return encoding ? data.toString(encoding) : Buffer.from(data);
+        },
+      };
+      await assert.rejects(withPathResolver(value.context.paths, () => loadCommittedReusableCoreArtifact(value.filename, "pages", {
+        expectedSourceFingerprint: contentSourceFingerprint(value.source),
+        fs: failingFs,
+        resolver: value.context.paths,
+      })), (error) => error?.code === code, code);
+    }
+
+    const incompatibleFiles = new Map(virtualFiles);
+    const incompatibleManifest = JSON.parse(incompatibleFiles.get(manifestPath).toString("utf8"));
+    incompatibleManifest.generation.artifactGenerations.pages = "0".repeat(64);
+    incompatibleFiles.set(manifestPath, Buffer.from(JSON.stringify(incompatibleManifest)));
+    const incompatibleFs = {
+      access: async () => {},
+      readFile: async (filePath, encoding) => {
+        const data = incompatibleFiles.get(String(filePath));
+        return encoding ? data.toString(encoding) : Buffer.from(data);
+      },
+    };
+    assert.equal(await withPathResolver(value.context.paths, () => loadCommittedReusableCoreArtifact(value.filename, "pages", {
+      expectedSourceFingerprint: contentSourceFingerprint(value.source),
+      fs: incompatibleFs,
+      resolver: value.context.paths,
+    })), null);
+  } finally { await cleanup(value); }
+
+  const stagedValue = await createReadyPagesFixture();
+  try {
+    await discardStagedGeneration(stagedValue.build);
+    const calls = [];
+    const proxyFs = new Proxy(fs, {
+      get(target, property) {
+        const value = target[property];
+        if (typeof value !== "function") return value;
+        return async (...args) => {
+          calls.push(String(property));
+          return value(...args);
+        };
+      },
+    });
+    const build = await withPathResolver(stagedValue.context.paths, () => createStagedArtifactBuild(stagedValue.filename, {
+      source: stagedValue.source,
+      buildId: "injected-page-stage",
+      fs: proxyFs,
+    }));
+    stagedValue.build = build;
+    assert.equal(await seedStagedPagesCache(build), true);
+    assert.ok(calls.includes("access"));
+    assert.ok(calls.includes("readFile"));
+    assert.ok(calls.includes("open") || calls.includes("writeFile"));
+    assert.ok(calls.includes("rename"));
+    assert.equal(calls.includes("copyFile"), false);
+  } finally { await cleanup(stagedValue); }
+});
+
+test("standalone pages rebuild invalidates the ready generation before replacing bytes", async () => {
+  const value = await createRoot();
+  try {
+    const buildA = await createCompleteBuild(value, { pageText: "generation A", buildId: "standalone-a" });
+    await promoteStagedGeneration(buildA);
+    await discardStagedGeneration(buildA);
+    const registry = value.context.runtimePorts;
+    bindRuntimePorts({
+      buildPagesCache: async () => {
+        const pages = {
+          schemaVersion: 1,
+          filename: value.filename,
+          source: value.source,
+          pageCount: 1,
+          pages: [{ page: 1, text: "standalone pages X" }],
+        };
+        await atomicWriteJson(value.context.paths.pages(value.filename), pages);
+        return pages;
+      },
+    }, registry);
+    let releaseInvalidation;
+    let observedInvalidation;
+    const invalidated = new Promise((resolve) => { observedInvalidation = resolve; });
+    const pause = new Promise((resolve) => { releaseInvalidation = resolve; });
+    const rebuild = withPathResolver(value.context.paths, () => withRuntimePortRegistry(
+      registry,
+      () => rebuildArtifact(value.filename, "pages", {
+        afterManifestInvalidated: async () => {
+          observedInvalidation();
+          await pause;
+        },
+      }),
+    ));
+    await invalidated;
+    await withPathResolver(value.context.paths, () => assert.rejects(
+      loadPagesCache(value.filename),
+      (error) => error?.code === "ARTIFACT_GENERATION_INCOMPLETE",
+    ));
+    releaseInvalidation();
+    await rebuild;
+    const blockedManifest = JSON.parse(await fs.readFile(value.context.paths.manifest(value.filename), "utf8"));
+    assert.equal(blockedManifest.buildStatus, "incomplete");
+    assert.equal(blockedManifest.staleArtifacts.includes("chunk-index"), true);
+    assert.equal(JSON.parse(await fs.readFile(value.context.paths.pages(value.filename), "utf8")).pages[0].text, "standalone pages X");
+
+    const buildB = await createCompleteBuild(value, { pageText: "generation B", buildId: "standalone-b" });
+    await promoteStagedGeneration(buildB);
+    await discardStagedGeneration(buildB);
+    const committed = await withPathResolver(value.context.paths, () => loadPagesCache(value.filename));
+    assert.equal(committed.pages[0].text, "generation B");
   } finally { await cleanup(value); }
 });

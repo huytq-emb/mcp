@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import { atomicWriteJson as atomicWriteJsonWithFs } from "../core/atomic-file.js";
+import { getPathResolver, getPathResolverDependencies } from "../core/path-resolver.js";
 import { ARTIFACT_DEPENDENCIES, ARTIFACT_MANIFEST_SCHEMA_VERSION, contentSourceFingerprint } from "./manifest.js";
 import { requireStrongSourceIdentity } from "./source-identity.js";
 import {
@@ -15,18 +17,52 @@ import {
   TABLE_INDEX_SCHEMA_VERSION,
 } from "../core/runtime-constants.js";
 import {
-  atomicWriteJson,
   safeBitfieldsIndexPath,
   safeCautionsIndexPath,
   safeFiguresIndexPath,
   safeIndexPath,
   safePagesCachePath,
-  safeArtifactManifestPath,
   safeRegistersIndexPath,
   safeSectionsIndexPath,
   safeSequencesIndexPath,
   safeTablesIndexPath,
 } from "../core/runtime-helpers.js";
+
+const GENERATION_FILESYSTEM_ERROR_CODES = new Set(["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE", "ENOSPC", "EROFS"]);
+
+function generationFs(options = {}) {
+  const resolver = options.resolver || getPathResolver();
+  return options.fs || getPathResolverDependencies(resolver).fs || fs;
+}
+
+function generationError(code, message, cause = null) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.code = code;
+  return error;
+}
+
+export function createGenerationChangedError(filename, detail = "") {
+  return generationError(
+    "ARTIFACT_GENERATION_CHANGED",
+    `Artifact generation changed while reading ${filename}. Retry after the active index publication completes.${detail ? ` ${detail}` : ""}`,
+  );
+}
+
+export function isGenerationChangedError(error) {
+  return error?.code === "ARTIFACT_GENERATION_CHANGED";
+}
+
+export function createGenerationInvalidError(filename, detail, cause = null) {
+  return generationError(
+    "ARTIFACT_GENERATION_INVALID",
+    `Committed artifact generation for ${filename} is invalid. ${detail}`,
+    cause,
+  );
+}
+
+function isGenerationFilesystemError(error) {
+  return GENERATION_FILESYSTEM_ERROR_CODES.has(String(error?.code || error?.cause?.code || ""));
+}
 export const CORE_GENERATION_ARTIFACTS = Object.freeze({
   pages: safePagesCachePath,
   "chunk-index": safeIndexPath,
@@ -37,6 +73,18 @@ export const CORE_GENERATION_ARTIFACTS = Object.freeze({
   cautions: safeCautionsIndexPath,
   sequences: safeSequencesIndexPath,
   figures: safeFiguresIndexPath,
+});
+
+const CORE_GENERATION_RESOLVER_METHODS = Object.freeze({
+  pages: "pages",
+  "chunk-index": "chunkIndex",
+  sections: "sections",
+  tables: "tables",
+  registers: "registers",
+  bitfields: "bitfields",
+  cautions: "cautions",
+  sequences: "sequences",
+  figures: "figures",
 });
 
 function stable(value) {
@@ -119,12 +167,14 @@ function validateArtifactShape(key, value) {
   }
 }
 
-async function loadArtifact(filename, key) {
+export async function loadArtifact(filename, key, options = {}) {
   const pathFor = CORE_GENERATION_ARTIFACTS[key];
   if (!pathFor) throw new Error(`Unsupported generation artifact: ${key}`);
-  const filePath = pathFor(filename);
+  const resolver = options.resolver || getPathResolver();
+  const filePath = resolver[CORE_GENERATION_RESOLVER_METHODS[key]](filename);
+  const fsOps = generationFs(options);
   let value;
-  try { value = JSON.parse(await fs.readFile(filePath, "utf8")); }
+  try { value = JSON.parse(await fsOps.readFile(filePath, "utf8")); }
   catch (error) {
     const wrapped = new Error(`Required artifact ${key} is unavailable: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     if (error?.code) wrapped.code = error.code;
@@ -135,9 +185,14 @@ async function loadArtifact(filename, key) {
   return { key, filePath, value };
 }
 
-export async function stampCoreArtifactGenerations(filename, { source = null, chunkingVersion = 2 } = {}) {
+export async function stampCoreArtifactGenerations(filename, options = {}) {
+  const { source = null, chunkingVersion = 2 } = options;
+  const fsOps = generationFs(options);
   const loaded = {};
-  for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) loaded[key] = await loadArtifact(filename, key);
+  for (const key of Object.keys(CORE_GENERATION_ARTIFACTS)) {
+    loaded[key] = await loadArtifact(filename, key, { ...options, fs: fsOps });
+    if (loaded[key].value.artifactComplete !== true) loaded[key].value = { ...loaded[key].value, artifactComplete: true };
+  }
   const currentSource = source || loaded["chunk-index"].value.source || loaded["chunk-index"].value;
   requireStrongSourceIdentity(currentSource, `Source for ${filename}`);
   const currentSourceFingerprint = contentSourceFingerprint(currentSource);
@@ -161,16 +216,30 @@ export async function stampCoreArtifactGenerations(filename, { source = null, ch
       dependencyFingerprints: dependencies,
       chunkingVersion: key === "chunk-index" ? Number(artifact.value.chunkingVersion || chunkingVersion) : chunkingVersion,
     };
-    await atomicWriteJson(artifact.filePath, artifact.value);
+    await atomicWriteJsonWithFs(artifact.filePath, artifact.value, { fs: fsOps });
   }
   return Object.fromEntries(Object.entries(loaded).map(([key, artifact]) => [key, artifact.value.generation]));
 }
 
-export async function loadAndValidateCoreArtifactGenerations(filename, { sourceFingerprint: expectedSourceFingerprint, requireChunkingVersion = 2, keys = Object.keys(CORE_GENERATION_ARTIFACTS) } = {}) {
+export async function loadAndValidateCoreArtifactGenerations(filename, options = {}) {
+  const {
+    sourceFingerprint: expectedSourceFingerprint,
+    requireChunkingVersion = 2,
+    keys = Object.keys(CORE_GENERATION_ARTIFACTS),
+  } = options;
+  const fsOps = generationFs(options);
   const requested = new Set(keys);
-  for (const key of keys) for (const dependency of dependencyKeys(key)) requested.add(dependency);
+  const dependencyQueue = [...keys];
+  while (dependencyQueue.length) {
+    const current = dependencyQueue.shift();
+    for (const dependency of dependencyKeys(current)) {
+      if (requested.has(dependency)) continue;
+      requested.add(dependency);
+      dependencyQueue.push(dependency);
+    }
+  }
   const loaded = {};
-  for (const key of requested) loaded[key] = await loadArtifact(filename, key);
+  for (const key of requested) loaded[key] = await loadArtifact(filename, key, { ...options, fs: fsOps });
   for (const [key, artifact] of Object.entries(loaded)) {
     if (!expectedSourceFingerprint) throw new Error("A current PDF source fingerprint is required to validate index artifacts.");
     requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
@@ -180,6 +249,9 @@ export async function loadAndValidateCoreArtifactGenerations(filename, { sourceF
     const actualSource = artifactSourceFingerprint(artifact.value);
     if (actualSource !== expectedSourceFingerprint) throw new Error(`Artifact ${key} has a stale PDF source fingerprint (artifact=${actualSource}; current=${expectedSourceFingerprint}). Rebuild the index before using the evidence graph.`);
     const generation = artifact.value.generation;
+    if (artifact.value.artifactComplete !== true) {
+      throw new Error(`Artifact ${key} is not marked complete. Rebuild the full index before reading it.`);
+    }
     if (!generation?.generationId || generation.sourceFingerprint !== expectedSourceFingerprint) {
       throw new Error(`Artifact ${key} has no compatible generation metadata. This is a pre-EvidenceBundle-v2 index; run index_pdf to rebuild it.`);
     }
@@ -208,54 +280,140 @@ export async function loadAndValidateCoreArtifactGenerations(filename, { sourceF
   return Object.fromEntries(Object.entries(loaded).map(([key, artifact]) => [key, artifact.value]));
 }
 
-function isOrdinaryReuseRejection(error) {
-  return !["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE", "ENOSPC", "EROFS"].includes(String(error?.code || error?.cause?.code || ""));
-}
-
-/**
- * Load an active core artifact only when the ready manifest commits the exact
- * generation represented by its bytes. Ordinary cache incompatibility is a
- * miss; filesystem failures which would make a rebuild unsafe still surface.
- */
-export async function loadCommittedReusableCoreArtifact(filename, key, { expectedSourceFingerprint } = {}) {
-  const pathFor = CORE_GENERATION_ARTIFACTS[key];
-  if (!pathFor) throw new Error(`Unsupported generation artifact: ${key}`);
-
+export async function loadReadyCommittedManifest(filename, options = {}) {
+  const fsOps = generationFs(options);
   let manifest;
   try {
-    manifest = JSON.parse(await fs.readFile(safeArtifactManifestPath(filename), "utf8"));
+    const resolver = options.resolver || getPathResolver();
+    manifest = JSON.parse(await fsOps.readFile(resolver.manifest(filename), "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
-    throw error;
+    if (error?.code === "ENOENT" && options.allowMissing === true) return null;
+    if (isGenerationFilesystemError(error)) throw error;
+    throw createGenerationInvalidError(filename, `The ready manifest is unavailable or unreadable: ${error instanceof Error ? error.message : String(error)}`, error);
   }
 
+  if (manifest.schemaVersion !== ARTIFACT_MANIFEST_SCHEMA_VERSION) {
+    throw createGenerationInvalidError(filename, `Manifest schemaVersion=${manifest.schemaVersion ?? "missing"}; expected ${ARTIFACT_MANIFEST_SCHEMA_VERSION}.`);
+  }
+  if (manifest.filename !== filename) {
+    throw createGenerationInvalidError(filename, `The ready manifest belongs to ${manifest.filename || "an unknown file"}.`);
+  }
+  if (manifest.buildStatus !== "ready" || manifest.health === "fail") {
+    const error = generationError(
+      "ARTIFACT_GENERATION_INCOMPLETE",
+      `Artifact generation for ${filename} is ${manifest.buildStatus || "not ready"}; readers must wait for or start a successful full rebuild.`,
+    );
+    error.manifest = manifest;
+    throw error;
+  }
   try {
-    if (manifest.schemaVersion !== ARTIFACT_MANIFEST_SCHEMA_VERSION) return null;
-    if (manifest.filename !== filename || manifest.buildStatus !== "ready" || manifest.health === "fail") return null;
-    if (!manifest.generation || typeof manifest.generation !== "object" || !manifest.generation.buildId) return null;
     requireStrongSourceIdentity(manifest.source, `Committed manifest for ${filename}`);
-    const manifestSourceFingerprint = contentSourceFingerprint(manifest.source);
-    if (!expectedSourceFingerprint || manifestSourceFingerprint !== expectedSourceFingerprint) return null;
-    if (manifest.source.fingerprint !== expectedSourceFingerprint || manifest.generation.sourceFingerprint !== expectedSourceFingerprint) return null;
-    if (!manifest.artifacts?.[key]?.ok || manifest.artifacts[key].status !== "ok") return null;
-    const committedGenerationId = manifest.generation.artifactGenerations?.[key];
-    if (!committedGenerationId) return null;
+    const sourceFingerprint = contentSourceFingerprint(manifest.source);
+    if (manifest.source.fingerprint !== sourceFingerprint) throw new Error("manifest source fingerprint does not match its SHA-256 identity");
+    if (!manifest.generation?.buildId) throw new Error("generation buildId is missing");
+    if (manifest.generation.sourceFingerprint !== sourceFingerprint) throw new Error("generation source fingerprint does not match the manifest source");
+    if (!manifest.generation.artifactGenerations || typeof manifest.generation.artifactGenerations !== "object" || Array.isArray(manifest.generation.artifactGenerations)) {
+      throw new Error("artifact generation map is missing");
+    }
+    if (options.expectedSourceFingerprint && options.expectedSourceFingerprint !== sourceFingerprint) {
+      throw new Error(`current PDF source fingerprint differs (manifest=${sourceFingerprint}; current=${options.expectedSourceFingerprint})`);
+    }
+  } catch (error) {
+    throw createGenerationInvalidError(filename, error instanceof Error ? error.message : String(error), error);
+  }
+  return manifest;
+}
 
-    // Probe separately so permission and device failures are not hidden by the
-    // validation layer's human-readable compatibility error.
-    try { await fs.access(pathFor(filename)); }
-    catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+async function loadCommittedCoreArtifactAttempt(filename, key, options, attempt) {
+  const manifestBefore = await loadReadyCommittedManifest(filename, options);
+  if (!manifestBefore) return null;
+  await options.onReadStep?.({ step: "manifest-before", attempt, filename, key, manifest: structuredClone(manifestBefore) });
 
-    const artifacts = await loadAndValidateCoreArtifactGenerations(filename, {
-      sourceFingerprint: expectedSourceFingerprint,
+  let artifact = null;
+  let validatedArtifacts = null;
+  let validationError = null;
+  try {
+    validatedArtifacts = await loadAndValidateCoreArtifactGenerations(filename, {
+      ...options,
+      sourceFingerprint: manifestBefore.generation.sourceFingerprint,
       keys: [key],
     });
-    const artifact = artifacts[key];
-    if (artifact?.artifactComplete !== true) return null;
-    if (artifact.generation?.generationId !== committedGenerationId) return null;
-    return artifact;
+    artifact = validatedArtifacts[key];
   } catch (error) {
-    if (isOrdinaryReuseRejection(error)) return null;
+    if (isGenerationFilesystemError(error)) throw error;
+    validationError = error;
+  }
+  await options.onReadStep?.({ step: "artifact", attempt, filename, key, artifact: artifact ? structuredClone(artifact) : null, error: validationError });
+
+  const manifestAfter = await loadReadyCommittedManifest(filename, { ...options, allowMissing: true });
+  if (!manifestAfter) throw createGenerationChangedError(filename, "The ready manifest disappeared during the read.");
+  await options.onReadStep?.({ step: "manifest-after", attempt, filename, key, manifest: structuredClone(manifestAfter) });
+  if (
+    manifestAfter.generation.buildId !== manifestBefore.generation.buildId
+    || manifestAfter.generation.sourceFingerprint !== manifestBefore.generation.sourceFingerprint
+  ) {
+    throw createGenerationChangedError(filename, `Observed build ${manifestBefore.generation.buildId}, then ${manifestAfter.generation.buildId}.`);
+  }
+
+  const expectedGenerationId = manifestBefore.generation.artifactGenerations?.[key];
+  const afterGenerationId = manifestAfter.generation.artifactGenerations?.[key];
+  const dependencyMismatch = validatedArtifacts && Object.entries(validatedArtifacts).some(([artifactKey, value]) => {
+    const generationId = value.generation?.generationId;
+    return !generationId
+      || manifestBefore.generation.artifactGenerations?.[artifactKey] !== generationId
+      || manifestAfter.generation.artifactGenerations?.[artifactKey] !== generationId;
+  });
+  if (validationError || dependencyMismatch || !expectedGenerationId || expectedGenerationId !== afterGenerationId || artifact?.generation?.generationId !== expectedGenerationId) {
+    const error = createGenerationChangedError(filename, `Artifact ${key} did not remain bound to committed build ${manifestBefore.generation.buildId}.`);
+    error.stableMismatchSignature = `${manifestBefore.generation.buildId}:${key}:${expectedGenerationId || "missing"}`;
+    error.validationError = validationError;
+    throw error;
+  }
+  return { artifact, manifest: manifestAfter };
+}
+
+export async function loadCommittedCoreArtifact(filename, key, options = {}) {
+  if (!Object.hasOwn(CORE_GENERATION_ARTIFACTS, key)) throw new Error(`Unsupported generation artifact: ${key}`);
+  const maxAttempts = Math.max(1, Math.min(5, Number(options.maxAttempts || 2)));
+  let previousStableMismatch = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const snapshot = await loadCommittedCoreArtifactAttempt(filename, key, options, attempt);
+      if (!snapshot) return null;
+      return options.includeManifest === true ? snapshot : snapshot.artifact;
+    } catch (error) {
+      if (!isGenerationChangedError(error)) throw error;
+      if (error.stableMismatchSignature && error.stableMismatchSignature === previousStableMismatch) {
+        throw createGenerationInvalidError(
+          filename,
+          `Manifest build ${error.stableMismatchSignature.split(":")[0]} does not match artifact ${key}. Run index_pdf to publish a complete generation.`,
+          error.validationError || error,
+        );
+      }
+      previousStableMismatch = error.stableMismatchSignature || "";
+      if (attempt >= maxAttempts) throw error;
+    }
+  }
+  throw createGenerationChangedError(filename);
+}
+
+/** Return a committed core artifact for reuse, or null for ordinary incompatibility. */
+export async function loadCommittedReusableCoreArtifact(filename, key, options = {}) {
+  const fsOps = generationFs(options);
+  const pathFor = CORE_GENERATION_ARTIFACTS[key];
+  if (!pathFor) throw new Error(`Unsupported generation artifact: ${key}`);
+  const resolver = options.resolver || getPathResolver();
+  try {
+    await fsOps.access(resolver[CORE_GENERATION_RESOLVER_METHODS[key]](filename));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    return await loadCommittedCoreArtifact(filename, key, { ...options, fs: fsOps, allowMissing: true });
+  } catch (error) {
+    if (isGenerationFilesystemError(error)) throw error;
+    if (["ARTIFACT_GENERATION_INCOMPLETE", "ARTIFACT_GENERATION_CHANGED", "ARTIFACT_GENERATION_INVALID"].includes(error?.code)) return null;
     throw error;
   }
 }

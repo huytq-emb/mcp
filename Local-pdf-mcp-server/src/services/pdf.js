@@ -1,4 +1,6 @@
-import { assertArtifactPublicationReadable, atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
+import { atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { MAX_TEXT_ITEM_GAP_SPACES, PAGE_CACHE_SCHEMA_VERSION } from "../core/runtime-constants.js";
 import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
@@ -162,8 +164,14 @@ export async function buildPagesCache(filename, options = {}) {
   return cacheData;
 }
 
-export async function loadPagesCache(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadPagesCache(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "pages", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const cachePath = safePagesCachePath(filename);
 
   if (!(await pathExists(cachePath))) {
@@ -184,8 +192,6 @@ export async function loadPagesCache(filename) {
     if (!Array.isArray(cacheData.pages)) {
       return null;
     }
-
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
 
     if (!isSamePdfSource(cacheData.source, currentSource)) {
       return null;

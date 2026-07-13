@@ -1,5 +1,7 @@
-import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
+import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver, withPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
@@ -637,8 +639,14 @@ export async function buildSectionsIndex(filename, pageCache = null) {
   return indexData;
 }
 
-export async function loadSectionsIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadSectionsIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "sections", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const sectionsPath = safeSectionsIndexPath(filename);
 
   if (!(await pathExists(sectionsPath))) {
@@ -652,7 +660,6 @@ export async function loadSectionsIndex(filename) {
     if (indexData.filename !== filename) return null;
     if (!Array.isArray(indexData.sections)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(indexData.source, currentSource)) return null;
 
     return indexData;
@@ -1153,8 +1160,14 @@ export async function buildRegistersIndex(filename, indexData = null, sectionsIn
   return registerIndexData;
 }
 
-export async function loadRegistersIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadRegistersIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "registers", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const registersPath = safeRegistersIndexPath(filename);
 
   if (!(await pathExists(registersPath))) {
@@ -1168,7 +1181,6 @@ export async function loadRegistersIndex(filename) {
     if (indexData.filename !== filename) return null;
     if (!Array.isArray(indexData.registers)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(indexData.source, currentSource)) return null;
 
     return indexData;
@@ -1660,8 +1672,14 @@ function isIndexStructurallyCompatible(indexData, pdfStat) {
 }
 
 export async function loadPdfIndex(filename, options = {}) {
-  await assertArtifactPublicationReadable(filename);
   const indexPath = safeIndexPath(filename);
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "chunk-index", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const pdfStat = await getFileStat(filename);
 
   if (!(await pathExists(indexPath))) {
@@ -1675,7 +1693,6 @@ export async function loadPdfIndex(filename, options = {}) {
     const indexData = await readJsonCached(indexPath);
 
     if (isIndexStructurallyCompatible(indexData, pdfStat)) {
-      const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
       if (isSamePdfSource(indexData.source, currentSource)) return indexData;
       if (!indexData.source?.sha256) throw new Error(`Chunk index for ${filename} is a pre-hash artifact and is incompatible; rebuild the index.`);
     }

@@ -1,8 +1,10 @@
-import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampTopK, escapeRegExp, evidenceFromChunk, getPdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeBitfieldsIndexPath, safeFigureOcrIndexPath } from "../core/runtime-helpers.js";
 import { withVisualSemanticGuard } from "../core/visual-guard.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, HYBRID_BM25_B, HYBRID_BM25_K1, HYBRID_BM25_WEIGHT, HYBRID_CANDIDATE_LIMIT, HYBRID_MIN_SCORE, HYBRID_PROXIMITY_WEIGHT, HYBRID_PROXIMITY_WINDOW, MAX_BITFIELD_TABLE_ROWS, MAX_HYBRID_TOP_K, MAX_PREVIEW_CHARS, MAX_TOP_K, SERVER_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import fs from "node:fs/promises";
 import { isLikelyBitfieldName, parseBitfieldSemantics, resolveBitfieldRegisterMapping } from "../bitfields/semantics.js";
 import { buildBitfieldConflicts, findBitfieldOverlaps, findRegisterEntry, validateBitfieldEntry } from "../bitfields/validation.js";
@@ -1917,8 +1919,14 @@ export async function buildBitfieldsIndex(filename, indexData = null, registersI
   return index;
 }
 
-export async function loadBitfieldsIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadBitfieldsIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "bitfields", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const bitfieldsPath = safeBitfieldsIndexPath(filename);
 
   if (!(await pathExists(bitfieldsPath))) return null;
@@ -1929,7 +1937,6 @@ export async function loadBitfieldsIndex(filename) {
     if (index.filename !== filename) return null;
     if (!Array.isArray(index.bitfields)) return null;
 
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
 
     return index;

@@ -1,4 +1,6 @@
-import { appendEvidenceContract, assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeSequencesIndexPath } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, atomicWriteJson, canonicalSymbol, clampBitfieldListTopK, clampInteger, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, isSamePdfSource, makeEvidence, makeEvidenceContract, makeInference, makeNeedsVerification, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeSequencesIndexPath } from "../core/runtime-helpers.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_CAUTION_TOP_K, DEFAULT_DRIVER_PACK_REGISTERS, DEFAULT_DRIVER_PACK_SUMMARIES, DEFAULT_DRIVER_TASK_REGISTERS, DEFAULT_PAGE_RANGE, DEFAULT_REGISTER_SUMMARY_CHUNKS, DEFAULT_SEQUENCE_INDEX_TOPICS, DEFAULT_SEQUENCE_LIST_TOP_K, DEFAULT_SEQUENCE_TOP_K, DEFAULT_TABLE_PAGE_RANGE, DEFAULT_TOP_K, MAX_BITFIELD_TABLE_ROWS, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_TOP_K, MAX_DRIVER_PACK_REGISTERS, MAX_DRIVER_PACK_SUMMARIES, MAX_DRIVER_TASK_REGISTERS, MAX_EXTRACTED_TABLES, MAX_PREVIEW_CHARS, MAX_REGISTER_SUMMARY_BITFIELDS, MAX_REGISTER_SUMMARY_CHUNKS, MAX_SEQUENCE_EVIDENCE_LINES, MAX_SEQUENCE_INDEX_RESULTS_PER_TOPIC, MAX_SEQUENCE_LIST_TOP_K, MAX_SEQUENCE_TOP_K, MAX_TABLE_COLUMNS, MAX_TABLE_PAGE_RANGE, MAX_TABLE_ROWS_PER_TABLE, MAX_TOP_K, SEQUENCE_INDEX_SCHEMA_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
@@ -936,8 +938,14 @@ export async function buildSequencesIndex(filename, indexData = null, sectionsIn
   return index;
 }
 
-export async function loadSequencesIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadSequencesIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "sequences", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const sequencesPath = safeSequencesIndexPath(filename);
   if (!(await pathExists(sequencesPath))) return null;
 
@@ -946,7 +954,6 @@ export async function loadSequencesIndex(filename) {
     if (index.schemaVersion !== SEQUENCE_INDEX_SCHEMA_VERSION) return null;
     if (index.filename !== filename) return null;
     if (!Array.isArray(index.sequences)) return null;
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
     return index;
   } catch {

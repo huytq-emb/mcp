@@ -1,4 +1,6 @@
-import { assertArtifactPublicationReadable, atomicWriteJson, canonicalSymbol, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeCautionsIndexPath } from "../core/runtime-helpers.js";
+import { atomicWriteJson, canonicalSymbol, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeCautionsIndexPath } from "../core/runtime-helpers.js";
+import { contentSourceFingerprint } from "../artifacts/manifest.js";
+import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { CAUTION_INDEX_SCHEMA_VERSION, DEFAULT_CAUTION_INDEX_TOPICS, DEFAULT_CAUTION_LIST_TOP_K, DEFAULT_PAGE_RANGE, MAX_CAUTION_EVIDENCE_LINES, MAX_CAUTION_INDEX_RESULTS_PER_TOPIC, MAX_CAUTION_LIST_TOP_K } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
@@ -293,8 +295,14 @@ export function riskForCautionType(type) {
   }
 }
 
-export async function loadCautionsIndex(filename) {
-  await assertArtifactPublicationReadable(filename);
+export async function loadCautionsIndex(filename, options = {}) {
+  const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+  const committed = await loadCommittedCoreArtifact(filename, "cautions", {
+    ...(options.committedRead || options),
+    expectedSourceFingerprint: contentSourceFingerprint(currentSource),
+    allowMissing: true,
+  });
+  if (committed) return committed;
   const cautionsPath = safeCautionsIndexPath(filename);
   if (!(await pathExists(cautionsPath))) return null;
 
@@ -303,7 +311,6 @@ export async function loadCautionsIndex(filename) {
     if (index.schemaVersion !== CAUTION_INDEX_SCHEMA_VERSION) return null;
     if (index.filename !== filename) return null;
     if (!Array.isArray(index.cautions)) return null;
-    const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
     if (!isSamePdfSource(index.source, currentSource)) return null;
     return index;
   } catch {
