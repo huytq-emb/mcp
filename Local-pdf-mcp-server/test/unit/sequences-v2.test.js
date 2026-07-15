@@ -28,12 +28,15 @@ test("sequence v2 expands ordered writes embedded in one manual sentence", () =>
 
 test("watchdog refresh semantic anchor outranks generic reset sequence text", () => {
   const anchored = sequenceSemanticAnchorScore({ text: "5.4.3.3 Refresh Operation. Write to the WDT Refresh Register (WDTRR) in the order of values from 00h to FFh." }, "watchdog refresh");
+  const dedicated = sequenceSemanticAnchorScore({ text: "5.4.3.3 Refresh Operation\nWrite to the WDT Refresh Register (WDTRR) in the order of values from 00h to FFh." }, "watchdog refresh");
+  const crossReference = sequenceSemanticAnchorScore({ text: "For details, see 5.4.3.3 Refresh Operation. The counter is refreshed by writing 00h and then writing FFh to WDTRR." }, "watchdog refresh");
   const generic = sequenceSemanticAnchorScore({ text: "The reset sequence by the WDT is as follows." }, "watchdog refresh");
-  assert.ok(anchored >= 600);
+  assert.ok(dedicated > crossReference);
+  assert.ok(anchored >= 200);
   assert.equal(generic, 0);
   const selected = selectCoherentSequenceChunks([
     ...Array.from({ length: 6 }, (_, index) => ({ id: `reset-${index}`, page: 580 + (index % 2), score: 250, semanticAnchorScore: 0 })),
-    { id: "refresh", page: 1016, score: 700, semanticAnchorScore: anchored },
+    { id: "refresh", page: 1016, score: 700, semanticAnchorScore: dedicated },
   ]);
   assert.deepEqual(selected.map((chunk) => chunk.id), ["refresh"]);
 });

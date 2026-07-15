@@ -11,7 +11,7 @@ import { DEFAULT_GOLDEN_PROFILE } from "../../eval/golden.js";
 import { formatEvalCases, formatEvalReport, getFileStat, listPdfFiles, loadEvalCases, maybeWriteEvalReport, runEvalSuite } from "../../eval/runtime.js";
 import { doctorPdfs, formatDoctorReport, maybeWriteDoctorReports } from "../../services/doctor.js";
 import { buildPdfIndex, isIndexUsable, loadRegistersIndex, loadSectionsIndex } from "../../services/indexing.js";
-import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, getJobsMap, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, recoverJob, recoverJobs, refreshJobStateFromDisk, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob } from "../../services/jobs.js";
+import { advisoryHealthFromArtifactStatus, cancelBackgroundJob, cleanupBackgroundJobs, compactIndexStatus, coreHealthFromArtifactStatus, formatIndexStatus, formatJobStatus, formatJobsList, getIndexStatus, getJobsMap, normalizeArtifactName, nowIso, pdfInfoArtifactBlock, rebuildArtifact, recoverJob, recoverJobs, refreshJobStateFromDisk, refreshJobsStateFromDisk, startIndexPdfJob, startRebuildArtifactJob } from "../../services/jobs.js";
 import { cleanupCache, cleanupFigureCache, formatOcrHealthReport, getCacheStatus, getFigureCacheStatus, getOcrHealth } from "../../services/ocr.js";
 import { getHybridRuntimeStatus } from "../../services/python-worker.js";
 import { loadPagesCache } from "../../services/pdf.js";
@@ -70,9 +70,10 @@ async function handle_mcp_control(args = {}, meta = {}) {
       }
       if (action === "index_status_lite") {
         const filename = args.filename.trim();
-        const status = getIndexStatusUltraMinimal(filename);
-        if (Boolean(args.json)) return textResult(JSON.stringify(status, null, 2));
-        return textResult(formatIndexStatusUltraMinimal(status));
+        await refreshJobsStateFromDisk();
+        const status = await getIndexStatus(filename, { probePdf: false });
+        if (Boolean(args.json)) return jsonResult(compactIndexStatus(status));
+        return textResult(formatIndexStatus(status));
       }
       if (action === "ocr_health") {
         const status = await getOcrHealth({ force: true });
@@ -693,6 +694,7 @@ async function handle_index_pdf(args = {}, meta = {}) {
       chunkOverlap,
       forceLock,
       reusePageCache: true,
+      signal: meta.signal,
     });
   
     const pagesCachePath = safePagesCachePath(filename);

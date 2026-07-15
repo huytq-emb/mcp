@@ -4,9 +4,15 @@ import {
   buildBoundedQueryGraphContext,
   chunkEvidence,
   conflictVerificationActions,
+  entityEvidence,
+  exactGraphMatches,
   factsForEvidencePage,
   paginateEvidenceItems,
+  prioritizeRequestedEntityTypes,
+  projectedCautionRows,
+  projectedSequenceRows,
   reciprocalRankFuse,
+  shouldUseInProcessLexicalFusion,
   symbolVariantMatches,
   taskQuestions,
 } from "../../src/workflows/evidence-orchestrator.js";
@@ -105,6 +111,146 @@ test("bounded graph context enforces entity and relationship caps for ranked evi
     assert.ok(context.relationships.length <= maxRelationships);
     assert.deepEqual(context.relationships.map((relationship) => relationship.id), context.relationships.map((relationship) => relationship.id).filter((id, index, ids) => ids.indexOf(id) === index));
   }
+});
+
+test("repeated graph-context queries reuse one derived adjacency index", () => {
+  const base = sequenceContextGraph();
+  let entityIterations = 0;
+  let relationshipIterations = 0;
+  const observe = (values, increment) => new Proxy(values, {
+    get(target, property, receiver) {
+      if (property === Symbol.iterator) increment();
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const graph = {
+    ...base,
+    entities: observe(base.entities, () => { entityIterations += 1; }),
+    relationships: observe(base.relationships, () => { relationshipIterations += 1; }),
+  };
+  const evidence = [{ entityId: "step:1" }];
+  const first = buildBoundedQueryGraphContext(graph, evidence);
+  const second = buildBoundedQueryGraphContext(graph, evidence);
+  assert.deepEqual(second, first);
+  assert.equal(entityIterations, 1);
+  assert.equal(relationshipIterations, 1);
+});
+
+test("identical exact graph queries scan entity candidates once", () => {
+  const values = Array.from({ length: 2_000 }, (_, index) => ({
+    id: `register:${index}`,
+    type: "register",
+    canonicalName: index === 1999 ? "DMAC_DCTRL" : `OTHER_${index}`,
+    aliases: index === 1999 ? ["DCTRL"] : [],
+    properties: {},
+    confidence: "high",
+  }));
+  let iterations = 0;
+  const graph = {
+    entities: new Proxy(values, {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) iterations += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+  };
+  const first = exactGraphMatches(graph, "DMAC_DCTRL");
+  const second = exactGraphMatches(graph, "DMAC_DCTRL");
+  assert.equal(second, first);
+  assert.equal(iterations, 1);
+  assert.equal(second[0].entity.id, "register:1999");
+});
+
+test("exact graph retrieval is type-aware, searches structured evidence, and keeps qualified symbols indivisible", () => {
+  const graph = { entities: [
+    { id: "section:false-positive", type: "section", canonicalName: "DMAC status list 123", aliases: [], properties: { kind: "register chapter", number: "123" }, confidence: "high" },
+    { id: "bitfield:module-name", type: "bitfield", canonicalName: "GBETH", aliases: [], properties: { register: "GLOBAL", bitRange: "42" }, confidence: "high" },
+    { id: "bitfield:reserved", type: "bitfield", canonicalName: "RESERVED", aliases: [], properties: { register: "DMACm_DCTRL", bitRange: "31:8" }, confidence: "high" },
+    { id: "caution:reserved", type: "caution", canonicalName: "DMA reserved bits", aliases: [], properties: { type: "reserved-bit", evidenceLines: ["DMA software must not modify reserved bits."] }, confidence: "high" },
+    { id: "register:gbeth", type: "register", canonicalName: "ETHA_MACC", aliases: [], properties: { descriptions: ["GBETH Gigabit Ethernet MAC control block"] }, confidence: "high" },
+    { id: "register:wdtrr", type: "register", canonicalName: "WDTm_WDTRR", aliases: ["WDTRR"], properties: {}, confidence: "high" },
+    { id: "sequence:refresh", type: "sequence", canonicalName: "watchdog refresh", aliases: [], properties: { stepSummaries: ["WDTm_WDTRR 00h", "WDTm_WDTRR FFh"] }, confidence: "high" },
+  ] };
+
+  assert.deepEqual(exactGraphMatches(graph, "Find the nonexistent DMAC_ZZZ_NEVER_EXISTS_123 register."), []);
+  assert.deepEqual(exactGraphMatches(graph, "Find the nonexistent GBETH_ZZZ_NEVER_EXISTS_123 register."), []);
+  assert.equal(exactGraphMatches(graph, "What DMA reserved-bit cautions apply?")[0].entity.id, "caution:reserved");
+  assert.equal(exactGraphMatches(graph, "Find GBETH, the Gigabit Ethernet block.")[0].entity.id, "register:gbeth");
+  assert.equal(exactGraphMatches(graph, "Which value is written first to WDTm_WDTRR?").some((item) => item.entity.id === "sequence:refresh"), true);
+});
+
+test("requested entity types are promoted while retaining one exact hardware-symbol anchor", () => {
+  const items = [
+    { entity: { id: "register:dctrl", type: "register" }, retrievalReasons: ["exact symbol DMACM_DCTRL"] },
+    { entity: { id: "section:dma", type: "section" }, retrievalReasons: ["lexical entity term dma"] },
+    { entity: { id: "table:dctrl", type: "table" }, retrievalReasons: ["same-page neighborhood of ranked evidence"] },
+  ];
+  assert.deepEqual(prioritizeRequestedEntityTypes(items, "Locate the DMACm_DCTRL register table.").map((item) => item.entity.id), [
+    "register:dctrl",
+    "table:dctrl",
+    "section:dma",
+  ]);
+});
+
+test("section caution projection stays candidate-level and preserves source provenance", () => {
+  const section = {
+    id: "section:pfc-protection",
+    type: "section",
+    canonicalName: "Before changing GPIO multiplexed pin functions, write protection must be disabled",
+    sourceLocations: [{ page: 239, chunkIds: ["manual.pdf:p239:c4"], sectionPath: ["PFC"], boundingBox: [], sourceArtifact: "sections.json", extractionMethod: "section-index", verificationStatus: "candidate" }],
+    properties: {},
+  };
+  const rows = projectedCautionRows([{ entity: section, retrievalReasons: ["lexical entity term gpio", "lexical entity term multiplexed"] }], "What cautions apply before changing GPIO multiplexed pin functions?");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].entity.type, "caution");
+  assert.equal(rows[0].entity.verificationStatus, "candidate");
+  assert.equal(rows[0].evidence.kind, "caution");
+  assert.equal(rows[0].evidence.page, 239);
+  assert.equal(rows[0].evidence.sourceArtifact, "sections.json");
+  assert.equal(rows[0].evidence.extractionMethod, "section-caution-semantic-projection");
+});
+
+test("entity evidence prefers corroborated locations when extraction scores are nearly tied", () => {
+  const entity = {
+    id: "register:wdtcr",
+    type: "register",
+    canonicalName: "WDTm_WDTCR",
+    properties: {},
+    sourceLocations: [
+      { page: 1005, chunkIds: ["manual.pdf:p1005:c0"], sourceScore: 382 },
+      { page: 1007, chunkIds: Array.from({ length: 8 }, (_, index) => `manual.pdf:p1007:c${index}`), sourceScore: 381 },
+      { page: 27, chunkIds: Array.from({ length: 12 }, (_, index) => `manual.pdf:p27:c${index}`), sourceScore: 25 },
+    ],
+  };
+  assert.equal(entityEvidence(entity).page, 1007);
+});
+
+test("section sequence projection remains an explicitly candidate locator", () => {
+  const section = {
+    id: "section:dma-start",
+    type: "section",
+    canonicalName: "Before enabling DMA, write the channel settings in this order",
+    sourceLocations: [{ page: 819, chunkIds: [], sectionPath: ["DMAC"], boundingBox: [], sourceArtifact: "sections.json", extractionMethod: "section-index", verificationStatus: "candidate" }],
+    properties: {},
+  };
+  const rows = projectedSequenceRows([{ entity: section, retrievalReasons: ["lexical entity term dma", "lexical entity term order"] }], "What is the DMA enable sequence?");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].entity.type, "sequence");
+  assert.equal(rows[0].entity.verificationStatus, "candidate");
+  assert.equal(rows[0].evidence.extractionMethod, "section-sequence-semantic-projection");
+});
+
+test("large graph lexical fusion guard is explicit and configurable", () => {
+  assert.deepEqual(shouldUseInProcessLexicalFusion({ entityCount: 10, relationshipCount: 20 }, 75_000), {
+    enabled: true,
+    graphItems: 30,
+    limit: 75_000,
+  });
+  assert.deepEqual(shouldUseInProcessLexicalFusion({ entityCount: 47_013, relationshipCount: 101_973 }, 75_000), {
+    enabled: false,
+    graphItems: 148_986,
+    limit: 75_000,
+  });
 });
 
 test("conflict verification actions are typed and omit conflicts without pages", () => {

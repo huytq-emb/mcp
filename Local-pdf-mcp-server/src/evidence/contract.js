@@ -74,7 +74,7 @@ export const EVIDENCE_BUNDLE_V2_SCHEMA = Object.freeze({
       type: "object", additionalProperties: false,
       required: ["page", "chunkIds", "sectionPath", "boundingBox", "sourceArtifact", "extractionMethod", "verificationStatus"],
       properties: {
-        page: { type: ["integer", "null"], minimum: 1 }, chunkIds: { type: "array", items: { type: "string" } }, sectionPath: { type: "array", items: { type: "string" } }, boundingBox: { type: "array" }, sourceArtifact: { type: "string" }, extractionMethod: { type: "string" }, verificationStatus: { $ref: "#/$defs/verificationStatus" }, sourceScore: { type: "number" },
+        page: { type: ["integer", "null"], minimum: 1 }, chunkIds: { type: "array", items: { type: "string" } }, sectionPath: { type: "array", items: { type: "string" } }, boundingBox: { type: "array" }, sourceArtifact: { type: "string" }, extractionMethod: { type: "string" }, verificationStatus: { $ref: "#/$defs/verificationStatus" }, sourceScore: { type: "number" }, resolutionStatus: { type: "string", enum: ["merged-sparse-alias"] },
       },
     },
     entity: {

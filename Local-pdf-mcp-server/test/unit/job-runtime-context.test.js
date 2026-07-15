@@ -68,8 +68,11 @@ test("runtime job maps, IDs, refresh, active limits, list/status, and cleanup ar
     await withPathResolver(value.contextA.paths, () => refreshJobsStateFromDisk());
     assert.equal(getJobsMap(value.contextB.paths).has("b-only-2"), true);
 
-    getJobsMap(value.contextA.paths).set("active-a-1", persistedJob("active-a-1", "a.pdf", "running"));
-    getJobsMap(value.contextA.paths).set("active-a-2", persistedJob("active-a-2", "a.pdf", "queued"));
+    await withPathResolver(value.contextA.paths, async () => {
+      await getJobStore().createJob(persistedJob("active-a-1", "a.pdf", "running", 20, { orchestratorPid: process.pid }));
+      await getJobStore().createJob(persistedJob("active-a-2", "a.pdf", "queued", 21, { orchestratorPid: process.pid }));
+      await refreshJobsStateFromDisk();
+    });
     assert.equal(await withPathResolver(value.contextA.paths, () => activeJobCount()), 2);
     assert.equal(await withPathResolver(value.contextB.paths, () => activeJobCount()), 0);
     await withPathResolver(value.contextA.paths, () => assert.rejects(startExternalRebuildArtifactJob("a.pdf", "pages", { spawn: () => assert.fail("must not spawn") }), /Too many active jobs/));
@@ -92,6 +95,49 @@ test("runtime job maps, IDs, refresh, active limits, list/status, and cleanup ar
     await withPathResolver(value.contextA.paths, () => cleanupBackgroundJobs({ statuses: ["done"] }));
     assert.equal(await withPathResolver(value.contextA.paths, () => getJobStore().readJob(sameId)), null);
     assert.equal((await withPathResolver(value.contextB.paths, () => getJobStore().readJob(sameId))).filename, "b.pdf");
+  } finally { await cleanup(value); }
+});
+
+test("duplicate detached rebuild requests reuse the active same-manual artifact job", async () => {
+  const value = await contexts();
+  let spawns = 0;
+  const spawn = () => {
+    spawns += 1;
+    return { pid: process.pid, unref() {}, kill() { return true; } };
+  };
+  try {
+    const [first, second] = await withPathResolver(value.contextA.paths, async () => {
+      const firstJob = await startExternalRebuildArtifactJob("duplicate.pdf", "pages", { spawn });
+      const secondJob = await startExternalRebuildArtifactJob("duplicate.pdf", "pages", { spawn });
+      return [firstJob, secondJob];
+    });
+    assert.equal(second.id, first.id);
+    assert.equal(spawns, 1);
+    assert.equal(getJobsMap(value.contextA.paths).size, 1);
+  } finally { await cleanup(value); }
+});
+
+test("starting a detached rebuild recovers orphaned active jobs before enforcing the limit", async () => {
+  const value = await contexts();
+  let spawns = 0;
+  try {
+    const started = await withPathResolver(value.contextA.paths, async () => {
+      const store = getJobStore();
+      for (const id of ["orphan-one", "orphan-two"]) {
+        await store.createJob(persistedJob(id, `${id}.pdf`, "running", 20, { orchestratorPid: 2_147_483_647 }));
+      }
+      await refreshJobsStateFromDisk();
+      return startExternalRebuildArtifactJob("new.pdf", "pages", {
+        spawn: () => {
+          spawns += 1;
+          return { pid: process.pid, unref() {}, kill() { return true; } };
+        },
+      });
+    });
+    assert.equal(started.filename, "new.pdf");
+    assert.equal(spawns, 1);
+    assert.equal((await withPathResolver(value.contextA.paths, () => getJobStore().readJob("orphan-one"))).status, "failed");
+    assert.equal((await withPathResolver(value.contextA.paths, () => getJobStore().readJob("orphan-two"))).status, "failed");
   } finally { await cleanup(value); }
 });
 
@@ -199,5 +245,36 @@ test("persistence failures aggregate once, drain, isolate by context, and stale 
       await flushJobsState();
       assert.equal(getJobsMap().get("stale-current").status, "cancelled");
     });
+  } finally { await cleanup(value); }
+});
+
+test("high-frequency progress updates are coalesced while completion remains durable", async () => {
+  let incomingWrites = 0;
+  const trackingFs = new Proxy(fs, {
+    get(target, property) {
+      if (property === "open") return async (filePath, ...args) => {
+        if (String(filePath).includes(".json.incoming-")) incomingWrites += 1;
+        return target.open(filePath, ...args);
+      };
+      return target[property];
+    },
+  });
+  const value = await contexts({ fs: trackingFs, clock: { now: () => 10_000 } }, {});
+  try {
+    await withPathResolver(value.contextA.paths, async () => {
+      const stored = await getJobStore().createJob({ ...persistedJob("progress-job", "progress.pdf", "running", 9_000), createdMs: 8_000 });
+      getJobsMap().set(stored.id, stored);
+      for (let current = 1; current <= 100; current += 1) {
+        updateJob(stored, { phase: "extract", progress: { current, total: 100, unit: "pages", percent: current }, message: "extract" });
+      }
+      await flushJobsState();
+      const completed = await getJobStore().readJob(stored.id);
+      assert.equal(completed.progress.current, 100);
+      assert.equal(completed.progress.percent, 100);
+      updateJob(stored, { phase: "bitfields", progress: { current: 0, total: 0, unit: "", percent: null }, message: "bitfields" });
+      await flushJobsState();
+      assert.equal((await getJobStore().readJob(stored.id)).phase, "bitfields");
+    });
+    assert.equal(incomingWrites <= 4, true, `expected at most 4 job writes, saw ${incomingWrites}`);
   } finally { await cleanup(value); }
 });

@@ -122,6 +122,20 @@ Rules:
 - Use `mcp_control` for job polling and cleanup.
 - Use `doctor` and `mcp_control(action="index_status_lite", filename="...")` after rebuild completes.
 
+`index_status_lite` is lightweight rather than status-free: it reads bounded
+artifact metadata, validates the ready manifest and current PDF source
+fingerprint, and reports related jobs. Use `doctor` for the broader diagnostic
+report and the all-manual integration runner for complete real-manual coverage.
+
+```powershell
+npm.cmd run test:manuals -- --require-manuals --write
+```
+
+The runner recursively inventories `documents/`, uses background jobs above
+350 pages, exercises EvidenceBundle v2 and applicable advanced/figure tools,
+records latency/RSS/cache data, and fails instead of silently skipping an
+unaddressable nested path or duplicate basename.
+
 ## Anti-patterns
 
 Avoid or forbid these patterns:

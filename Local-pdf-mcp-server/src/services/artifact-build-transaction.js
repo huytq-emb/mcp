@@ -135,6 +135,25 @@ export async function finalizeStagedGeneration(build, { source } = {}) {
   assertSameContentSource(build.source, finalSource, build.filename);
   const graph = JSON.parse(await build.fs.readFile(build.stagedPaths["evidence-graph"], "utf8"));
   graph.artifacts = activeArtifactPathsForGraph(build, graph);
+  const activePathByStagedPath = new Map(Object.keys(build.stagedPaths).map((key) => [
+    path.resolve(build.stagedPaths[key]),
+    build.activePaths[key],
+  ]));
+  const activePathByBuildArtifactBasename = new Map(Object.keys(build.stagedPaths)
+    .filter((key) => build.activePaths[key])
+    .map((key) => [path.basename(build.stagedPaths[key]).toLowerCase(), build.activePaths[key]]));
+  for (const graphEntity of graph.entities || []) {
+    for (const location of graphEntity.sourceLocations || []) {
+      const sourceArtifact = String(location.sourceArtifact || "");
+      const resolvedSourceArtifact = sourceArtifact ? path.resolve(sourceArtifact) : "";
+      const isHistoricalStagedArtifact = resolvedSourceArtifact.includes(`${path.sep}.builds${path.sep}`);
+      const activePath = sourceArtifact
+        ? activePathByStagedPath.get(resolvedSourceArtifact)
+          || (isHistoricalStagedArtifact ? activePathByBuildArtifactBasename.get(path.basename(resolvedSourceArtifact).toLowerCase()) : null)
+        : null;
+      if (activePath) location.sourceArtifact = activePath;
+    }
+  }
   await atomicWriteJson(build.stagedPaths["evidence-graph"], graph, { fs: build.fs });
 
   const manifest = JSON.parse(await build.fs.readFile(build.stagedPaths.manifest, "utf8"));

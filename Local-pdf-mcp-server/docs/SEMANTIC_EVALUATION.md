@@ -16,7 +16,25 @@ Run the real-manual gate with a local copy of the verified RZ/G3E manual with:
 npm run test:semantic:integration -- --require-manuals --write
 ```
 
+The semantic datasets are intentionally verified against their named manual.
+For runtime, provenance, pagination, deterministic ordering, advanced-tool,
+figure-metadata, latency, cache, and RSS coverage across every locally present
+PDF, run the separate recursive matrix:
+
+```text
+npm run test:manuals -- --require-manuals --write
+```
+
+This matrix does not invent golden semantic expectations for an unverified
+manual. Its per-manual semantic result means EvidenceBundle v2 runtime and
+contract validation; verified semantic correctness remains the responsibility
+of the named golden datasets.
+
 Without `--require-manuals`, unavailable proprietary manuals are explicitly reported as skipped. They are never counted as successful semantic queries. Golden Recall@5, Recall@10, and MRR use retrieval evidence order (`retrieval.rank`) only; verified facts are used only for verification and property checks. Runtime reports record p50/p95 latency, indexing duration, and sampled peak RSS (`rssBeforeMb`, `rssAfterMb`, and `peakRssMb`).
+
+Add `--trace-memory` to `test:manuals` when diagnosing heap growth. It records
+and prints per-tool heap/RSS before, after, and sampled peak values; it does not
+change indexing or retrieval behavior.
 
 ## Measured improvement
 

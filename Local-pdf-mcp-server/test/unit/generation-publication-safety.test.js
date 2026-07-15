@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,9 @@ import {
 import { contentSourceFingerprint } from "../../src/artifacts/manifest.js";
 import {
   CORE_GENERATION_ARTIFACTS,
+  artifactContentFingerprint,
+  clearCommittedArtifactCache,
+  getCommittedArtifactCacheStats,
   loadCommittedCoreArtifact,
   loadCommittedReusableCoreArtifact,
   loadAndValidateCoreArtifactGenerations,
@@ -28,7 +32,7 @@ import {
   seedStagedPagesCache,
   validateCompleteStagedGeneration,
 } from "../../src/services/artifact-build-transaction.js";
-import { buildEvidenceGraph, loadEvidenceGraph } from "../../src/services/evidence-graph.js";
+import { buildEvidenceGraph, clearEvidenceGraphCache, getEvidenceGraphCacheStats, loadEvidenceGraph } from "../../src/services/evidence-graph.js";
 import { rebuildArtifact, writeArtifactManifest } from "../../src/services/jobs.js";
 import { ensureFigureLookupIndex, loadFigureLookupIndex, loadPythonFiguresIndex, resolveFigureTarget } from "../../src/services/ocr.js";
 import { loadPagesCache } from "../../src/services/pdf.js";
@@ -38,6 +42,31 @@ import { loadBitfieldsIndex } from "../../src/services/search.js";
 import { loadCautionsIndex } from "../../src/domains/cautions.js";
 import { loadSequencesIndex } from "../../src/domains/sequences.js";
 import { loadFiguresIndex } from "../../src/domains/figures.js";
+
+test("streaming artifact fingerprints preserve the canonical generation digest", () => {
+  const value = {
+    z: [{ beta: 2, alpha: "text" }, null, true],
+    a: { nested: { y: 2, x: 1 } },
+    generation: { generationId: "ignored" },
+    generatedAt: "ignored",
+    createdAt: "ignored",
+    updatedAt: "ignored",
+  };
+  const reference = structuredClone(value);
+  delete reference.generation;
+  delete reference.generatedAt;
+  delete reference.createdAt;
+  delete reference.updatedAt;
+  const stable = (input) => Array.isArray(input)
+    ? input.map(stable)
+    : input && typeof input === "object"
+      ? Object.fromEntries(Object.keys(input).sort().map((key) => [key, stable(input[key])]))
+      : input;
+  const expected = crypto.createHash("sha256").update(JSON.stringify(stable(reference))).digest("hex");
+  assert.equal(artifactContentFingerprint(value), expected);
+  value.a.nested.x = 3;
+  assert.notEqual(artifactContentFingerprint(value), expected);
+});
 
 function coreArtifacts(filename, source, { pageText = "page A", bbox = [1, 2, 30, 40] } = {}) {
   const base = { filename, source };
@@ -417,6 +446,45 @@ test("generation-consistent readers retry across successful publication for ever
       assert.equal(artifact.generation.generationId, expectedGenerationId, key);
     }
   } finally { await cleanup(value); }
+});
+
+test("ready committed evidence graphs are reused without retaining an unbounded cache", async () => {
+  const value = await twoGenerationFixture();
+  clearEvidenceGraphCache();
+  try {
+    await installSnapshot(value.buildB, value.snapshotB);
+    const first = await withPathResolver(value.context.paths, () => loadEvidenceGraph(value.filename));
+    const second = await withPathResolver(value.context.paths, () => loadEvidenceGraph(value.filename));
+    assert.equal(second, first);
+    const stats = getEvidenceGraphCacheStats();
+    assert.equal(stats.entries, 1);
+    assert.equal(stats.bytes, (await fs.stat(value.context.paths.evidenceGraph(value.filename))).size);
+    assert.ok(stats.maxEntries >= 1);
+    assert.ok(stats.maxBytes > 0);
+  } finally {
+    clearEvidenceGraphCache();
+    await cleanup(value);
+  }
+});
+
+test("an active chunk index is not evicted by a lower-priority artifact", async () => {
+  const value = await twoGenerationFixture();
+  const previousLimit = process.env.RENESAS_MCP_ARTIFACT_CACHE_MAX_BYTES;
+  process.env.RENESAS_MCP_ARTIFACT_CACHE_MAX_BYTES = "1";
+  clearCommittedArtifactCache();
+  try {
+    await installSnapshot(value.buildB, value.snapshotB);
+    const first = await withPathResolver(value.context.paths, () => loadPdfIndex(value.filename));
+    await withPathResolver(value.context.paths, () => loadSectionsIndex(value.filename));
+    const second = await withPathResolver(value.context.paths, () => loadPdfIndex(value.filename));
+    assert.equal(second, first);
+    assert.equal(getCommittedArtifactCacheStats().entries, 1);
+  } finally {
+    clearCommittedArtifactCache();
+    if (previousLimit === undefined) delete process.env.RENESAS_MCP_ARTIFACT_CACHE_MAX_BYTES;
+    else process.env.RENESAS_MCP_ARTIFACT_CACHE_MAX_BYTES = previousLimit;
+    await cleanup(value);
+  }
 });
 
 test("committed reader never returns transient pages from a failed promotion rollback", async () => {

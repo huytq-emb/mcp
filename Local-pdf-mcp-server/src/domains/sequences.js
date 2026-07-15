@@ -693,7 +693,8 @@ export function sequenceSemanticAnchorScore(chunk, topic) {
   const text = String(chunk?.text || "");
   const normalizedTopic = normalizeForSearch(topic);
   let score = 0;
-  if (/watchdog refresh/.test(normalizedTopic) && /\bRefresh Operation\b/i.test(text) && /\bWDTRR\b/.test(text)) score += 420;
+  const dedicatedRefreshHeading = /(?:^|\n)\s*(?:\d+(?:\.\d+)+\s+)?Refresh Operation\s*(?:\n|$)/im.test(text);
+  if (/watchdog refresh/.test(normalizedTopic) && dedicatedRefreshHeading && /\bWDTRR\b/.test(text)) score += 620;
   if (extractOrderedWritePair(text)) score += /refresh|write|procedure|sequence/.test(normalizedTopic) ? 260 : 80;
   return score;
 }

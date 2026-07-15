@@ -43,9 +43,9 @@ async function prepareWorkerPaths(requestId) {
   return { workerRoot, cancelPath: path.join(workerRoot, "cancel.requested") };
 }
 
-function allowedRoots() {
+export function pythonWorkerAllowedRoots() {
   const paths = getPathResolver();
-  return [paths.documentsDir(), paths.indexDir()];
+  return [...new Set([paths.documentsDir(), paths.indexDir(), paths.pythonWorkerTempDir()].map((value) => path.resolve(value)))];
 }
 
 function engineMode(options = {}) {
@@ -95,7 +95,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
     const worker = await runPythonWorker({
       requestId,
       operation,
-      allowedRoots: allowedRoots(),
+      allowedRoots: pythonWorkerAllowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), ...(requestOptions.inputs || {}) },
       outputs: { artifactPath: tempPath, [`${kind}Path`]: tempPath, cancelPath, ...(requestOptions.outputs || {}) },
       options: { ...(requestOptions.options || {}), buildId },
@@ -104,6 +104,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
       onProgress: options.onProgress,
       onSpawn: options.onWorkerSpawn,
       onStderr: options.onWorkerStderr,
+      signal: options.signal,
     });
     const descriptor = worker.artifacts.find((entry) => entry.kind === kind) || worker.result?.artifact;
     if (!descriptor) throw new PythonWorkerError("PROTOCOL_ERROR", `Python worker did not return ${kind} artifact metadata`);
@@ -123,9 +124,9 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
 export async function getPdfPageCountHybrid(filename, options = {}) {
   return runWithNodeFallback("pdf.inspect", options, async () => {
     const worker = await runPythonWorker({
-      operation: "pdf.inspect", allowedRoots: allowedRoots(),
+      operation: "pdf.inspect", allowedRoots: pythonWorkerAllowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: {},
-    }, { timeoutMs: 30_000 });
+    }, { timeoutMs: 30_000, signal: options.signal });
     return { value: Number(worker.result?.pageCount || 0), worker };
   }, () => nodePdf.getPdfPageCount(filename));
 }
@@ -133,10 +134,10 @@ export async function getPdfPageCountHybrid(filename, options = {}) {
 export async function extractPdfPagesHybrid(filename, options = {}) {
   return runWithNodeFallback("pages.extract", options, async () => {
     const worker = await runPythonWorker({
-      operation: "pages.extract", allowedRoots: allowedRoots(),
+      operation: "pages.extract", allowedRoots: pythonWorkerAllowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {},
       options: { startPage: options.startPage, endPage: options.endPage },
-    }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress });
+    }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress, signal: options.signal });
     return { value: { filename, ...worker.result }, worker };
   }, () => nodePdf.extractPdfPages(filename, options));
 }
@@ -172,9 +173,9 @@ export async function extractTablesFromPagesHybrid(filename, options = {}) {
     const endPage = Number(options.endPage || startPage);
     const candidatePages = Array.from({ length: Math.max(0, endPage - startPage + 1) }, (_, index) => startPage + index);
     const worker = await runPythonWorker({
-      operation: "tables.extract", allowedRoots: allowedRoots(),
+      operation: "tables.extract", allowedRoots: pythonWorkerAllowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: { candidatePages },
-    }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress });
+    }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress, signal: options.signal });
     return { value: { filename, pageCount: worker.result.pageCount, startPage, endPage, tables: worker.result.tables || [], source: "python-pymupdf-coordinate" }, worker };
   }, () => nodeManual.extractTablesFromPagesNode(filename, options));
 }
@@ -192,10 +193,10 @@ export async function runStructuredBuildHybrid(filename, options = {}) {
   const buildId = String(options.buildId || getArtifactBuildId() || `structured-${source.sha256}`);
   try {
     const worker = await runPythonWorker({
-      requestId, operation: "structured.build", allowedRoots: allowedRoots(),
+      requestId, operation: "structured.build", allowedRoots: pythonWorkerAllowedRoots(),
       inputs: { filename, pdfPath: safePdfPath(filename), pagesPath: safePagesCachePath(filename) },
       outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [], buildId },
-    }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr });
+    }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr, signal: options.signal });
     assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);
     const validated = [];
     for (const descriptor of worker.artifacts) validated.push(await validateWorkerArtifact(descriptor, { workerRoot, filename, source }));

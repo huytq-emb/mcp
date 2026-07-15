@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "node:fs/promises";
 
 export function ensureDirectPdfFilename(filename) {
   if (!filename || typeof filename !== "string") {
@@ -32,6 +33,22 @@ export function ensureInsideRoot(candidatePath, rootDir, what = "path") {
   }
 
   throw new Error(`Invalid ${what} path`);
+}
+
+export async function ensureRegularFileInsideRoot(candidatePath, rootDir, what = "file", fsOps = fs) {
+  const lexicalPath = ensureInsideRoot(candidatePath, rootDir, what);
+  const entry = await fsOps.lstat(lexicalPath);
+  if (entry.isSymbolicLink()) {
+    throw new Error(`Invalid ${what} path: symbolic links and reparse points are not allowed`);
+  }
+  if (!entry.isFile()) throw new Error(`Invalid ${what} path: expected a regular file`);
+
+  const [realRoot, realCandidate] = await Promise.all([
+    fsOps.realpath(rootDir),
+    fsOps.realpath(lexicalPath),
+  ]);
+  ensureInsideRoot(realCandidate, realRoot, what);
+  return lexicalPath;
 }
 
 export function safeArtifactPath(rootDir, filename, suffix, what = "artifact") {

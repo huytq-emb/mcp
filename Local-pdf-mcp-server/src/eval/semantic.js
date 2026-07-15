@@ -304,8 +304,11 @@ export function evaluateCoverageExpectation(queryCase = {}, result = {}) {
     const sequence = matchingEntity(bundle, { kind: "sequence", entityId: expectation.entityId, canonicalName: expectation.canonicalName });
     passed = Boolean(sequence) && (!expectation.orderedSteps?.length || sequenceStepsInOrder(bundle, sequence, expectation.orderedSteps));
   } else if (type === "caution") {
-    const target = bestActual(actuals, { kind: expectation.relatedEntityType, entityId: expectation.relatedEntityId, canonicalName: expectation.relatedCanonicalName });
-    passed = Boolean(target) ? cautionMatches(bundle, { ...expectation, caution: expectation.caution || { canonicalName: expectation.canonicalName }, entityId: target.id }, target) : entities.some((entity) => entity.type === "caution");
+    const hasRelatedTarget = Boolean(expectation.relatedEntityType || expectation.relatedEntityId || expectation.relatedCanonicalName);
+    const target = hasRelatedTarget ? bestActual(actuals, { kind: expectation.relatedEntityType, entityId: expectation.relatedEntityId, canonicalName: expectation.relatedCanonicalName }) : null;
+    passed = hasRelatedTarget
+      ? Boolean(target) && cautionMatches(bundle, { ...expectation, caution: expectation.caution || { canonicalName: expectation.canonicalName }, entityId: target.id }, target)
+      : entities.some((entity) => entity.type === "caution");
   } else {
     passed = actuals.some((item) => matchingTypes(item) && expectedMatches(item, expectation) && pageAllowed(item.page));
   }

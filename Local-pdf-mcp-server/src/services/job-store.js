@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { atomicWriteJson } from "../core/atomic-file.js";
 
 export const TERMINAL_JOB_STATES = new Set(["done", "failed", "cancelled"]);
@@ -33,7 +34,7 @@ function appendLog(job, entry) {
 }
 
 export class JobStore {
-  constructor({ paths, fs: fsOps = fs, clock = { now: () => Date.now() }, lockRetries = 80, lockBackoffMs = 10, lockStaleMs = 30_000 } = {}) {
+  constructor({ paths, fs: fsOps = fs, clock = { now: () => Date.now() }, lockRetries = 80, lockBackoffMs = 10, lockStaleMs = 30_000, readRetries = 20, readBackoffMs = 5 } = {}) {
     if (!paths?.jobsDir || !paths?.job || !paths?.jobLock) throw new Error("JobStore requires a runtime path resolver");
     this.paths = paths;
     this.fs = fsOps;
@@ -41,6 +42,8 @@ export class JobStore {
     this.lockRetries = lockRetries;
     this.lockBackoffMs = lockBackoffMs;
     this.lockStaleMs = lockStaleMs;
+    this.readRetries = readRetries;
+    this.readBackoffMs = readBackoffMs;
   }
 
   async #clearStaleLock(lockPath) {
@@ -53,10 +56,15 @@ export class JobStore {
     } catch {
       try { createdMs = Number((await this.fs.stat(lockPath)).mtimeMs || 0); } catch { return; }
     }
-    if (!createdMs || this.clock.now() - createdMs <= this.lockStaleMs) return;
-    let alive = false;
-    if (pid > 0) { try { process.kill(pid, 0); alive = true; } catch { alive = false; } }
-    if (!alive) await this.fs.rm(lockPath, { force: true }).catch(() => {});
+    if (pid > 0) {
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch { alive = false; }
+      if (!alive) await this.fs.rm(lockPath, { force: true }).catch(() => {});
+      return;
+    }
+    if (createdMs && this.clock.now() - createdMs > this.lockStaleMs) {
+      await this.fs.rm(lockPath, { force: true }).catch(() => {});
+    }
   }
 
   async #withLock(jobId, callback) {
@@ -95,13 +103,42 @@ export class JobStore {
     });
   }
 
-  async readJob(jobId) {
-    try {
-      return normalizedJob(JSON.parse(await this.fs.readFile(this.paths.job(jobId), "utf8")));
-    } catch (error) {
-      if (error?.code === "ENOENT") return null;
-      throw new Error(`Unable to read job ${jobId}: ${error instanceof Error ? error.message : String(error)}`);
+  async #transientJobEntries(jobId) {
+    let entries = [];
+    try { entries = await this.fs.readdir(this.paths.jobsDir(), { withFileTypes: true }); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    const prefix = `${jobId}.json.`;
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && /\.(?:incoming|backup|failed)-/.test(entry.name))
+      .map((entry) => entry.name);
+  }
+
+  async #readTransientJob(jobId, names) {
+    const candidates = [];
+    for (const name of names) {
+      try {
+        const parsed = normalizedJob(JSON.parse(await this.fs.readFile(path.join(this.paths.jobsDir(), name), "utf8")));
+        if (parsed.id === jobId) candidates.push(parsed);
+      } catch { /* an incoming snapshot may not be complete yet */ }
     }
+    return candidates.sort((left, right) => Number(right.revision || 0) - Number(left.revision || 0) || Number(right.updatedMs || 0) - Number(left.updatedMs || 0))[0] || null;
+  }
+
+  async readJob(jobId) {
+    let transientNames = [];
+    for (let attempt = 0; attempt <= this.readRetries; attempt += 1) {
+      try {
+        return normalizedJob(JSON.parse(await this.fs.readFile(this.paths.job(jobId), "utf8")));
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          throw new Error(`Unable to read job ${jobId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        transientNames = await this.#transientJobEntries(jobId);
+        if (!transientNames.length) return null;
+        if (attempt < this.readRetries) await new Promise((resolve) => setTimeout(resolve, this.readBackoffMs));
+      }
+    }
+    return this.#readTransientJob(jobId, transientNames);
   }
 
   async updateJob(jobId, patch = {}, options = {}) {
@@ -200,11 +237,16 @@ export class JobStore {
     await this.fs.mkdir(this.paths.jobsDir(), { recursive: true });
     const entries = await this.fs.readdir(this.paths.jobsDir(), { withFileTypes: true });
     const jobs = [];
+    const ids = new Set();
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const id = entry.name.slice(0, -5);
-      jobs.push(await this.readJob(id));
+      if (!entry.isFile()) continue;
+      if (entry.name.endsWith(".json")) ids.add(entry.name.slice(0, -5));
+      else {
+        const match = entry.name.match(/^(.*)\.json\.(?:incoming|backup|failed)-/);
+        if (match) ids.add(match[1]);
+      }
     }
+    for (const id of ids) jobs.push(await this.readJob(id));
     return jobs.filter(Boolean).sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0));
   }
 
@@ -237,6 +279,12 @@ export class JobStore {
       try { process.kill(pid, 0); return true; } catch { return false; }
     });
     const queuedGraceMs = Math.max(0, Number(options.queuedGraceMs ?? DEFAULT_QUEUED_JOB_GRACE_MS));
+    const observed = await this.readJob(jobId);
+    if (!observed || (observed.status !== "queued" && observed.status !== "running")) return observed;
+    const observedPids = [observed.metadata?.orchestratorPid, observed.metadata?.workerPid].map(Number).filter((pid) => pid > 0);
+    if (observedPids.some((pid) => isProcessAlive(pid))) return observed;
+    const observedAgeMs = this.clock.now() - Number(observed.createdMs || 0);
+    if (observed.status === "queued" && observedAgeMs < queuedGraceMs) return observed;
     return this.#withLock(jobId, async () => {
       const current = await this.readJob(jobId);
       if (!current || (current.status !== "queued" && current.status !== "running")) return current;

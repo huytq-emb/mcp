@@ -115,6 +115,11 @@ test("normalized evidence graph links entities and preserves conflicts", async (
     assert.equal(conflictBundle.recommendedNextActions.some((action) => action.tool === "read_pdf_pages" && action.arguments.start_page === 1 && action.arguments.end_page === 1), true);
     const aliasBundle = await queryManualEvidenceBundle({ filename, query: "DCTRL", topK: 5 });
     assert.equal(aliasBundle.evidence.some((item) => item.entityId === loadedRegister.id && item.retrieval.sourceChannels.includes("exact")), true);
+    const tableBundle = await queryManualEvidenceBundle({ filename, query: "Locate the DMAC_DCTRL register table", topK: 5 });
+    assert.equal(tableBundle.evidence.some((item) => item.kind === "table"), true, JSON.stringify(tableBundle.evidence));
+    const negativeBundle = await queryManualEvidenceBundle({ filename, query: "Find the nonexistent DMAC_ZZZ_NEVER_EXISTS_123 register", topK: 5 });
+    assert.deepEqual(negativeBundle.evidence, []);
+    assert.equal(negativeBundle.gaps.some((gap) => /No result matched/i.test(gap.reason)), true);
     const entityBundle = await getManualEntityBundle({ filename, entityId: "dctrl" });
     assert.equal(entityBundle.entities.some((entity) => entity.id === loadedRegister.id), true);
     assert.equal(entityBundle.relationships.every((relation) => entityBundle.entities.some((entity) => entity.id === relation.from) && entityBundle.entities.some((entity) => entity.id === relation.to)), true);

@@ -17,6 +17,7 @@ import { ensureInsideRoot } from "../core/path-safety.js";
 import { atomicWriteJson, replaceFileAtomic } from "../core/atomic-file.js";
 import { contentSourceFingerprint } from "../artifacts/manifest.js";
 import { requireStrongSourceIdentity, sha256File as hashSourceFile } from "../artifacts/source-identity.js";
+import { requestCancelledError, throwIfAborted } from "../core/cancellation.js";
 
 const WORKER_ARTIFACT_CONTRACTS = Object.freeze({
   pages: { schemaVersion: 1, countKey: "pageCount" },
@@ -98,6 +99,8 @@ function appendBounded(current, value, limit) {
 }
 
 export async function runPythonWorker(request, options = {}) {
+  const signal = options.signal;
+  throwIfAborted(signal);
   const rootDir = path.resolve(options.rootDir || getPathResolver().root());
   const interpreter = options.interpreter || resolvePythonInterpreter({ rootDir, env: options.env, pythonPath: options.pythonPath });
   if (!interpreter.available) throw new PythonWorkerError("PYTHON_UNAVAILABLE", interpreter.reason || "Python interpreter unavailable", { interpreter });
@@ -135,6 +138,22 @@ export async function runPythonWorker(request, options = {}) {
   let settled = false;
   let timedOut = false;
   let oversizedLine = false;
+  let cancelled = false;
+  let cancellationKillTimer = null;
+  let cancellationWrite = Promise.resolve();
+
+  const onAbort = () => {
+    cancelled = true;
+    const cancelPath = String(request.outputs?.cancelPath || "").trim();
+    if (cancelPath) cancellationWrite = fsp.writeFile(cancelPath, `${signal.reason || "MCP request cancelled by client"}\n`, "utf8").catch(() => {});
+    if (!settled) {
+      child.kill();
+      cancellationKillTimer = setTimeout(() => { if (!settled) child.kill("SIGKILL"); }, PYTHON_WORKER_CANCEL_GRACE_MS);
+      cancellationKillTimer.unref?.();
+    }
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
 
   child.stderr.on("data", (chunk) => {
     stderr = appendBounded(stderr, chunk.toString("utf8"), PYTHON_WORKER_MAX_STDERR_BYTES);
@@ -180,9 +199,15 @@ export async function runPythonWorker(request, options = {}) {
   }).finally(() => {
     settled = true;
     clearTimeout(timer);
+    if (cancellationKillTimer) clearTimeout(cancellationKillTimer);
+    signal?.removeEventListener("abort", onAbort);
     lines.close();
   });
 
+  if (cancelled) {
+    await cancellationWrite;
+    throw requestCancelledError(signal?.reason);
+  }
   if (timedOut) throw new PythonWorkerError("WORKER_TIMEOUT", `Python worker exceeded ${timeoutMs} ms`, { stderr, exit });
   if (oversizedLine) throw new PythonWorkerError("PROTOCOL_ERROR", "Python worker stdout line exceeded limit", { stderr, exit });
   if (errorEvent) throw new PythonWorkerError(errorEvent.code || "EXTRACTION_FAILED", errorEvent.message || "Python worker failed", { stderr, exit, event: errorEvent });

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isLikelyBitfieldName,
   parseBitfieldSemantics,
+  parseCoordinateBitfieldRow,
   resolveBitfieldRegisterMapping,
 } from "../../src/bitfields/semantics.js";
 
@@ -13,6 +14,19 @@ test("bitfield semantics parse physical and field-local ranges", () => {
   assert.equal(parsed.bitRange, "31:28");
   assert.equal(parsed.access, "R/W");
   assert.equal(parsed.reset, "0");
+});
+
+test("coordinate bitfield rows recover physical ranges when stitched layout roles are wrong", () => {
+  const row = {
+    text: "31 to 28 | LWCA[3:0] | 0h | RW | Link Writeback CACHE",
+    cells: ["31 to 28", "LWCA[3:0]", "", "", "0h", "", "RW", "Link Writeback CACHE"],
+  };
+  const parsed = parseCoordinateBitfieldRow(row, { bit: "LWCA[3:0]", description: "0h" });
+  assert.equal(parsed.bitfield, "LWCA");
+  assert.equal(parsed.semantics.bitPositionRange, "31:28");
+  assert.equal(parsed.semantics.fieldBitRange, "3:0");
+  assert.equal(parsed.semantics.access, "R/W");
+  assert.equal(parsed.semantics.reset, "0");
 });
 
 test("bitfield semantics parse single-bit rows", () => {

@@ -7,6 +7,7 @@ import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
 import fs from "node:fs/promises";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { isCompatibleBuildCheckpoint } from "../artifacts/source-identity.js";
+import { throwIfAborted } from "../core/cancellation.js";
 
 
 // -----------------------------------------------------------------------------
@@ -15,6 +16,7 @@ import { isCompatibleBuildCheckpoint } from "../artifacts/source-identity.js";
 
 export async function loadPdfDocument(filename) {
   const filePath = safePdfPath(filename);
+  await getPdfSourceInfo(filename);
   const data = await fs.readFile(filePath);
 
   const loadingTask = pdfjsLib.getDocument({
@@ -35,7 +37,9 @@ export async function getPdfPageCount(filename) {
 }
 
 export async function extractPdfPages(filename, options = {}) {
+  throwIfAborted(options.signal);
   const pdf = await loadPdfDocument(filename);
+  throwIfAborted(options.signal);
   const pageCount = pdf.numPages;
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
 
@@ -45,6 +49,7 @@ export async function extractPdfPages(filename, options = {}) {
   const pages = [];
 
   for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+    throwIfAborted(options.signal);
     if (onProgress && (pageNumber === startPage || pageNumber === endPage || pageNumber % 10 === 0)) {
       onProgress({ phase: "extract-pages", current: pageNumber - startPage + 1, total: endPage - startPage + 1, unit: "pages" });
     }
@@ -71,6 +76,7 @@ export async function extractPdfPages(filename, options = {}) {
 }
 
 export async function buildPagesCache(filename, options = {}) {
+  throwIfAborted(options.signal);
   await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
   const source = await getPdfSourceInfo(filename, { includeHash: true });
@@ -97,6 +103,7 @@ export async function buildPagesCache(filename, options = {}) {
   }
 
   const pdf = await loadPdfDocument(filename);
+  throwIfAborted(options.signal);
   const pageCount = pdf.numPages;
   const pages = [];
   const seenPages = new Set();
@@ -114,6 +121,7 @@ export async function buildPagesCache(filename, options = {}) {
   }
 
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    throwIfAborted(options.signal);
     if (seenPages.has(pageNumber)) continue;
 
     if (onProgress && (pageNumber === 1 || pageNumber === pageCount || pageNumber % 10 === 0)) {
@@ -147,6 +155,7 @@ export async function buildPagesCache(filename, options = {}) {
   }
 
   pages.sort((a, b) => a.page - b.page);
+  throwIfAborted(options.signal);
 
   const cacheData = {
     schemaVersion: PAGE_CACHE_SCHEMA_VERSION,

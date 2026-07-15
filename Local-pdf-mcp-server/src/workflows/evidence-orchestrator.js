@@ -1,5 +1,5 @@
 import { canonicalSymbol, normalizeForSearch } from "../core/runtime-helpers.js";
-import { getEvidenceGraphEntity, loadEvidenceGraph } from "../services/evidence-graph.js";
+import { getEvidenceGraphEntity, getEvidenceGraphRuntimeIndex, loadEvidenceGraph } from "../services/evidence-graph.js";
 import { hybridSearchPdf } from "../services/search.js";
 import { SERVER_VERSION } from "../core/runtime-constants.js";
 import { createEvidenceBundleV2 } from "../evidence/contract.js";
@@ -10,6 +10,9 @@ const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 40;
 const MAX_QUERY_CONTEXT_ENTITIES = 100;
 const MAX_QUERY_CONTEXT_RELATIONSHIPS = 200;
+const EXACT_GRAPH_QUERY_CACHE_ENTRIES = 64;
+const exactGraphMatchCache = new WeakMap();
+const DEFAULT_MAX_IN_PROCESS_FUSION_GRAPH_ITEMS = 75_000;
 const QUERY_CONTEXT_RELATIONSHIP_TYPES = new Set([
   "register-has-bitfield",
   "register-has-caution",
@@ -21,7 +24,12 @@ const QUERY_CONTEXT_RELATIONSHIP_TYPES = new Set([
   "entity-is-mentioned-on-page",
   "table-describes-register",
 ]);
-const GENERIC_QUERY_TERMS = new Set(["a", "access", "address", "an", "and", "apply", "are", "be", "bit", "bits", "by", "clear", "description", "details", "does", "driver", "each", "field", "find", "for", "from", "how", "in", "initial", "is", "it", "linux", "locate", "manual", "must", "of", "on", "or", "offset", "page", "register", "reset", "size", "status", "that", "the", "their", "them", "these", "they", "this", "those", "to", "used", "value", "we", "what", "when", "where", "which", "with", "you", "your"]);
+const GENERIC_QUERY_TERMS = new Set(["a", "access", "address", "an", "and", "apply", "are", "be", "bit", "bitfield", "bits", "by", "caution", "description", "details", "does", "driver", "each", "field", "figure", "find", "for", "from", "how", "in", "initial", "is", "it", "its", "linux", "locate", "manual", "must", "of", "on", "or", "our", "offset", "page", "register", "reset", "sequence", "size", "status", "table", "that", "the", "their", "them", "these", "they", "this", "those", "to", "used", "value", "we", "what", "when", "where", "which", "with", "you", "your"]);
+const GENERIC_MODULE_SYMBOLS = new Set(["ADC", "CAN", "CPU", "DMA", "DMAC", "ETH", "ETHERNET", "GBETH", "GPIO", "GPT", "ICU", "IRQ", "MAC", "PCI", "PCIE", "PFC", "PHY", "PWM", "USB", "USB2", "USB3", "WDT"]);
+const GENERIC_MODULE_TERMS = new Set(["adc", "can", "dma", "dmac", "ethernet", "gbeth", "gpio", "gpt", "pfc", "pwm", "timer", "usb", "usb2", "usb3", "watchdog", "wdt"]);
+const GENERIC_ENTITY_PHRASES = new Set(["bitfield table", "caution", "clock", "figure", "initialization", "interrupt", "register table", "reset", "section", "sequence", "table"]);
+const CAUTION_SECTION_PATTERN = /\b(?:after changing|before changing|caution|do not|invalid|must not|out of order|prohibit(?:ed)?|reserved|restriction|requires? manipulation|write[ -]?protect(?:ed|ion)?)\b/i;
+const SEQUENCE_SECTION_PATTERN = /\b(?:after|before|clear|disable|enable|initiali[sz](?:e|ation)?|operation|order|procedure|sequence|setting|start|stop|write)\b/i;
 
 function clampTopK(value) {
   const numeric = Number(value ?? DEFAULT_TOP_K);
@@ -31,6 +39,14 @@ function clampTopK(value) {
 
 function unique(values) {
   return [...new Set((values || []).filter(Boolean))];
+}
+
+export function shouldUseInProcessLexicalFusion(graph, limit = process.env.RENESAS_MCP_MAX_FUSION_GRAPH_ITEMS) {
+  const configured = Number(limit ?? DEFAULT_MAX_IN_PROCESS_FUSION_GRAPH_ITEMS);
+  const boundedLimit = Number.isFinite(configured) && configured >= 0 ? Math.floor(configured) : DEFAULT_MAX_IN_PROCESS_FUSION_GRAPH_ITEMS;
+  const graphItems = Number(graph?.entityCount ?? graph?.entities?.length ?? 0)
+    + Number(graph?.relationshipCount ?? graph?.relationships?.length ?? 0);
+  return { enabled: graphItems <= boundedLimit, graphItems, limit: boundedLimit };
 }
 
 // Conflicts retain their human-readable verification hints for compatibility,
@@ -48,7 +64,9 @@ function confidenceRank(value) {
 }
 
 function normalizedTokens(value) {
-  return unique(normalizeForSearch(value).split(/\s+/).filter((token) => token.length >= 2));
+  return unique(normalizeForSearch(value).split(/\s+/)
+    .map((token) => token.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ""))
+    .filter((token) => token.length >= 2));
 }
 
 function symbolTokens(value) {
@@ -57,9 +75,31 @@ function symbolTokens(value) {
 
 function hardwareSymbolTokens(value) {
   return unique((String(value || "").match(/[A-Za-z][A-Za-z0-9_]*/g) || [])
-    .filter((token) => token.length >= 2 && (token.includes("_") || /\d/.test(token) || (token.length >= 3 && token === token.toUpperCase())))
+    .filter((token) => token.length >= 2 && (token.includes("_") || /\d/.test(token) || token === token.toUpperCase()))
     .map(canonicalSymbol)
     .filter(Boolean));
+}
+
+function strictHardwareSymbolTokens(value) {
+  return hardwareSymbolTokens(value).filter((symbol) => !GENERIC_MODULE_SYMBOLS.has(symbol));
+}
+
+export function queryLexicalTerms(value) {
+  // A qualified hardware symbol is one indivisible lookup key. Its pieces
+  // must not independently satisfy an unrelated entity (for example a
+  // section containing "DMAC" and page-like number "123").
+  const qualifiedSymbolParts = new Set((String(value || "").match(/[A-Za-z][A-Za-z0-9_]*_[A-Za-z0-9_]+/g) || [])
+    .flatMap((symbol) => normalizeForSearch(symbol).split(/\s+/))
+    .filter(Boolean));
+  const normalizedTerm = (term) => ({
+    cautions: "caution", changed: "chang", changing: "chang", cleared: "clear", clearing: "clear", completes: "complete", locked: "lock",
+    multiplexed: "multiplex", multiplexing: "multiplex", registers: "register", restrictions: "restriction", stopped: "stop", stopping: "stop", written: "write",
+  }[term] || term);
+  const terms = normalizedTokens(value).map(normalizedTerm)
+    .filter((term) => !GENERIC_QUERY_TERMS.has(term) && !qualifiedSymbolParts.has(term));
+  if (terms.includes("watchdog")) terms.push("wdt");
+  if (terms.includes("dma")) terms.push("dmac");
+  return unique(terms);
 }
 
 function entityText(entity) {
@@ -68,11 +108,15 @@ function entityText(entity) {
     ? [properties.descriptions, properties.offsets, properties.resetValues, properties.accessSizes]
     : entity.type === "bitfield"
       ? [properties.register, properties.bitRange, properties.access, properties.reset]
+      : entity.type === "sequence"
+        ? [properties.kind, properties.stepSummaries, properties.steps?.map((step) => [step.register, step.bitfield, step.value, step.condition, step.summary].filter(Boolean).join(" "))]
       : entity.type === "sequence-step"
         ? [properties.register, properties.bitfield, properties.value, properties.condition]
         : entity.type === "caution"
-          ? [properties.type, properties.riskForDriver]
-          : [properties.kind, properties.number];
+          ? [properties.type, properties.riskForDriver, properties.evidenceLines]
+          : entity.type === "table"
+            ? [properties.kind, properties.number, properties.caption, properties.title, properties.headerText, properties.columnRoles]
+            : [properties.kind, properties.number];
   return normalizeForSearch([
     entity.canonicalName,
     entity.displayName,
@@ -82,45 +126,84 @@ function entityText(entity) {
   ].join(" "));
 }
 
-function preferredEntityTypes(query) {
+function primaryEntityTypes(query) {
   const text = normalizeForSearch(query);
   const types = new Set();
+  const tableIntent = /\b(table)\b/.test(text);
+  const figureIntent = /\b(figure|diagram|waveform|visual)\b/.test(text);
+  const sequenceIntent = /\b(sequence|procedure|order|first|next|then|completes?)\b/.test(text)
+    || (/\bhow\b/.test(text) && /\b(initialize|initialization|start|stop|stopped|clear|cleared|refresh|enable|enabled|disable|disabled)\b/.test(text));
+  const cautionIntent = /\b(caution|cautions|restriction|restrictions|prohibited|must not|avoid|before changing|after changing|locked|out of order|happens if)\b/.test(text)
+    || (!sequenceIntent && /\bwrite protection\b/.test(text));
+  const bitfieldIntent = /\b(bit|bits|field|fields|bitfield|bitfields)\b/.test(text);
+  if (cautionIntent) types.add("caution");
+  if (tableIntent) types.add("table");
+  if (figureIntent) types.add("figure");
+  if (sequenceIntent) { types.add("sequence"); types.add("sequence-step"); }
+  if (!cautionIntent && bitfieldIntent) types.add("bitfield");
+  if (!cautionIntent && !tableIntent && !figureIntent && !sequenceIntent && !bitfieldIntent && /\b(register|offset|reset|access|control)\b/.test(text)) types.add("register");
+  if (!tableIntent && !figureIntent && /\b(where|chapter|page|pages|documents?)\b/.test(text)) types.add("section");
+  return types;
+}
+
+export function preferredEntityTypes(query, options = {}) {
+  const text = normalizeForSearch(query);
+  const types = new Set();
+  const sequenceIntent = /\b(sequence|procedure|order|first|next|then|completes?)\b/.test(text) || (/\bhow\b/.test(text) && /\b(initialize|initialization|start|stop|stopped|clear|cleared|refresh|enable|enabled|disable|disabled)\b/.test(text));
   if (/\b(register|offset|reset|access|control)\b/.test(text)) types.add("register");
-  if (/\b(bit|field|bitfield)\b/.test(text)) types.add("bitfield");
-  if (/\b(sequence|procedure|order|initialize|initialization|start|stop|refresh|enable|disable)\b/.test(text)) { types.add("sequence"); types.add("sequence-step"); }
-  if (/\b(caution|restriction|prohibited|reserved|must not|avoid)\b/.test(text)) types.add("caution");
+  if (/\b(bit|bits|field|fields|bitfield|bitfields)\b/.test(text)) types.add("bitfield");
+  if (sequenceIntent) { types.add("sequence"); types.add("sequence-step"); }
+  if (/\b(caution|cautions|restriction|restrictions|prohibited|reserved|must not|avoid|before changing|after changing|locked|out of order|happens if)\b/.test(text) || (!sequenceIntent && /\bwrite protection\b/.test(text))) types.add("caution");
   if (/\b(table)\b/.test(text)) types.add("table");
   if (/\b(figure|diagram|waveform|visual)\b/.test(text)) types.add("figure");
-  if (!types.size && /\b(where|locate|chapter|described)\b/.test(text)) types.add("section");
+  const symbols = hardwareSymbolTokens(query);
+  const contextSymbols = hardwareSymbolTokens(options.register || options.moduleContext || "");
+  const hasRegisterContext = contextSymbols.length > 0 || symbols.some((symbol) => symbol.includes("_"));
+  if (hasRegisterContext && strictHardwareSymbolTokens(query).some((symbol) => symbol.length <= 4)) types.add("bitfield");
+  if (/\b(where|chapter|page|pages|documents?|described)\b/.test(text)) types.add("section");
+  const hasModuleContext = symbols.some((symbol) => GENERIC_MODULE_SYMBOLS.has(symbol)) || queryLexicalTerms(query).some((term) => GENERIC_MODULE_TERMS.has(term));
+  if (hasModuleContext && !["bitfield", "caution", "figure", "sequence", "sequence-step", "table"].some((type) => types.has(type))) types.add("register");
   return types;
+}
+
+function entityTypeBoost(entityType, query, options = {}) {
+  if (primaryEntityTypes(query).has(entityType)) return 140;
+  return preferredEntityTypes(query, options).has(entityType) ? 60 : 0;
 }
 
 export function symbolVariantMatches(alias, symbol, entityType) {
   if (!alias || !symbol || symbol.length < 3) return false;
   const parts = alias.split("_").filter((part) => part.length >= 3);
   if (parts.includes(symbol)) return true;
+  if (GENERIC_MODULE_SYMBOLS.has(symbol) && parts.some((part) => part === symbol || new RegExp(`^${symbol}\\d+$`).test(part))) return true;
   const symbolParts = symbol.split("_").filter((part) => part.length >= 3);
   if (symbolParts.length > 1 && symbolParts.every((part) => parts.includes(part))) return true;
   return ["section", "sequence", "sequence-step", "caution", "table", "figure"].includes(entityType) && alias.includes(symbol);
 }
 
-function entityQueryRelevance(entity, query) {
+function entityQueryRelevance(entity, query, options = {}) {
   const aliases = unique([entity.canonicalName, entity.displayName, ...(entity.aliases || [])]).map(canonicalSymbol).filter(Boolean);
   const symbols = hardwareSymbolTokens(query);
-  const terms = normalizedTokens(query).filter((term) => !GENERIC_QUERY_TERMS.has(term));
+  const strictSymbols = strictHardwareSymbolTokens(query);
+  const terms = queryLexicalTerms(query);
   const text = entityText(entity);
   let score = 0;
-  let exactSymbolMatched = false;
+  let strictAliasMatched = false;
   for (const symbol of symbols) {
-    if (aliases.includes(symbol)) { score += 120; exactSymbolMatched = true; }
-    else if (aliases.some((alias) => symbolVariantMatches(alias, symbol, entity.type))) score += 60;
+    if (aliases.includes(symbol)) {
+      score += 120;
+      if (strictSymbols.includes(symbol)) strictAliasMatched = true;
+    } else if (aliases.some((alias) => symbolVariantMatches(alias, symbol, entity.type))) {
+      score += 60;
+      if (strictSymbols.includes(symbol)) strictAliasMatched = true;
+    } else if (strictSymbols.includes(symbol) && text.includes(normalizeForSearch(symbol))) score += 45;
   }
   for (const term of terms) if (text.includes(term)) score += term.length > 4 ? 12 : 5;
-  const preferredTypes = preferredEntityTypes(query);
+  const preferredTypes = preferredEntityTypes(query, options);
   const locatorOnly = preferredTypes.size === 1 && preferredTypes.has("section");
   if (locatorOnly && entity.type !== "section") return 0;
-  if (preferredTypes.size && !preferredTypes.has(entity.type) && !exactSymbolMatched) return 0;
-  if (score > 0 && preferredTypes.has(entity.type)) score += 60;
+  if (preferredTypes.size && !preferredTypes.has(entity.type) && !strictAliasMatched) return 0;
+  if (score > 0) score += entityTypeBoost(entity.type, query, options);
   return score;
 }
 
@@ -138,7 +221,10 @@ export function entityEvidence(entity, { reason = "graph entity match", rank = 0
   if ((requestedPage !== null || requestedChunkId) && !selectorMatches.length) return null;
   const location = selectedLocation || [...(selectorMatches.length ? selectorMatches : locations)].sort((left, right) => {
     const score = (candidate) => (candidate.chunkIds || []).some((id) => String(id).includes(`:p${candidate.page}:`)) ? 100 : 0;
-    return Number(right.sourceScore || 0) - Number(left.sourceScore || 0) || score(right) - score(left) || Number(left.page || Number.MAX_SAFE_INTEGER) - Number(right.page || Number.MAX_SAFE_INTEGER);
+    const sourceScoreDelta = Number(right.sourceScore || 0) - Number(left.sourceScore || 0);
+    if (Math.abs(sourceScoreDelta) > 10) return sourceScoreDelta;
+    const chunkCountDelta = Math.min(16, (right.chunkIds || []).length) - Math.min(16, (left.chunkIds || []).length);
+    return chunkCountDelta || sourceScoreDelta || score(right) - score(left) || Number(left.page || Number.MAX_SAFE_INTEGER) - Number(right.page || Number.MAX_SAFE_INTEGER);
   })[0] || {};
   const statement = entity.type === "bitfield"
     ? `${entity.properties?.register || ""}.${entity.canonicalName} ${entity.properties?.bitRange || ""}`.trim()
@@ -203,7 +289,7 @@ function entitiesForChunk(graph, chunk) {
 }
 
 function lexicalEntityRows(graph, lexicalResults, query) {
-  const byId = new Map((graph.entities || []).map((entity) => [entity.id, entity]));
+  const { entitiesById: byId } = getEvidenceGraphRuntimeIndex(graph);
   return lexicalResults.flatMap((chunk) => {
     const baseEvidence = chunkEvidence(chunk, { reasons: chunk.hybridReasons || ["hybrid lexical match"], query });
     if (baseEvidence.kind === "figure-ocr-locator" && !baseEvidence.figureId) return [];
@@ -248,35 +334,63 @@ export function reciprocalRankFuse(channels) {
   });
 }
 
-function exactGraphMatches(graph, query, options = {}) {
+export function exactGraphMatches(graph, query, options = {}) {
+  const cacheKey = JSON.stringify({
+    query: String(query || ""),
+    register: String(options.register || ""),
+    moduleContext: String(options.moduleContext || ""),
+  });
+  let cache = exactGraphMatchCache.get(graph);
+  if (!cache) {
+    cache = new Map();
+    exactGraphMatchCache.set(graph, cache);
+  }
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    cache.delete(cacheKey);
+    cache.set(cacheKey, cached);
+    return cached;
+  }
   const symbols = hardwareSymbolTokens(query);
-  const terms = normalizedTokens(query);
+  const strictSymbols = strictHardwareSymbolTokens(query);
+  const terms = queryLexicalTerms(query);
   const contextSymbols = hardwareSymbolTokens(options.register || options.moduleContext || "");
   const longContext = [...symbols, ...contextSymbols].some((token) => token.length > 3);
-  const preferredTypes = preferredEntityTypes(query);
+  const preferredTypes = preferredEntityTypes(query, options);
   const normalizedQuery = normalizeForSearch(query);
-  return (graph.entities || []).filter((entity) => !["document", "page"].includes(entity.type)).map((entity) => {
+  const qualifiedSymbolPhrases = (String(query || "").match(/[A-Za-z][A-Za-z0-9_]*_[A-Za-z0-9_]+/g) || []).map(normalizeForSearch);
+  const hasModuleQueryContext = symbols.some((symbol) => GENERIC_MODULE_SYMBOLS.has(symbol)) || terms.some((term) => GENERIC_MODULE_TERMS.has(term));
+  const matches = [];
+  for (const entity of graph.entities || []) {
+    if (["document", "page"].includes(entity.type)) continue;
     const aliases = unique([entity.canonicalName, ...(entity.aliases || [])]).map(canonicalSymbol);
     const text = entityText(entity);
     let score = 0;
     const reasons = [];
     let symbolMatched = false;
+    let strictAliasMatched = false;
     for (const symbol of symbols) {
       const shortSymbol = symbol.length <= 3;
+      const shortSymbolContextMatched = !shortSymbol || !contextSymbols.length || contextSymbols.some((contextSymbol) => text.includes(normalizeForSearch(contextSymbol)));
       if (aliases.includes(symbol)) {
-        if (shortSymbol && !longContext) continue;
+        if ((shortSymbol && !longContext) || !shortSymbolContextMatched) continue;
         score += shortSymbol ? 30 : 120;
         symbolMatched = true;
+        if (strictSymbols.includes(symbol)) strictAliasMatched = true;
         reasons.push(shortSymbol ? `context-qualified short symbol ${symbol}` : `exact symbol ${symbol}`);
       } else if (aliases.some((alias) => symbolVariantMatches(alias, symbol, entity.type))) {
         score += 60;
         symbolMatched = true;
+        if (strictSymbols.includes(symbol)) strictAliasMatched = true;
         reasons.push(`qualified symbol variant ${symbol}`);
+      } else if (strictSymbols.includes(symbol) && preferredTypes.has(entity.type) && text.includes(normalizeForSearch(symbol))) {
+        score += 45;
+        symbolMatched = true;
+        reasons.push(`structured symbol reference ${symbol}`);
       }
     }
     let lexicalHits = 0;
     for (const term of terms) {
-      if (GENERIC_QUERY_TERMS.has(term)) continue;
       if (text.includes(term)) {
         lexicalHits += 1;
         score += term.length > 4 ? 12 : 4;
@@ -284,7 +398,9 @@ function exactGraphMatches(graph, query, options = {}) {
       }
     }
     const canonicalPhrase = normalizeForSearch(entity.canonicalName || "");
-    const exactPhraseMatched = canonicalPhrase.length >= 5 && normalizedQuery.includes(canonicalPhrase);
+    const canonicalPhraseHasDistinctiveTerm = canonicalPhrase.split(/\s+/).some((term) => !GENERIC_QUERY_TERMS.has(term));
+    const qualifiedSymbolFragment = qualifiedSymbolPhrases.some((phrase) => phrase !== canonicalPhrase && phrase.includes(canonicalPhrase));
+    const exactPhraseMatched = canonicalPhrase.length >= 5 && canonicalPhraseHasDistinctiveTerm && !qualifiedSymbolFragment && !GENERIC_ENTITY_PHRASES.has(canonicalPhrase) && ` ${normalizedQuery} `.includes(` ${canonicalPhrase} `);
     if (exactPhraseMatched) {
       score += 120;
       reasons.push("exact entity phrase");
@@ -292,41 +408,148 @@ function exactGraphMatches(graph, query, options = {}) {
     // A lone generic lexical hit is not an exact-entity signal. This prevents
     // every register/table section containing “offset” or “reset” from
     // competing with an exact hardware symbol.
-    if (!reasons.some((reason) => reason.includes("symbol")) && lexicalHits < 2) return { entity, score: 0, retrievalReasons: [] };
-    if (symbols.length && ["register", "bitfield"].includes(entity.type) && !symbolMatched && !exactPhraseMatched) return { entity, score: 0, retrievalReasons: [] };
-    if (preferredTypes.size === 1 && preferredTypes.has("section") && entity.type !== "section") return { entity, score: 0, retrievalReasons: [] };
-    if (score > 0 && preferredTypes.has(entity.type)) score += 60;
+    const locatorSection = entity.type === "section" && preferredTypes.has("section");
+    if (!reasons.some((reason) => reason.includes("symbol")) && !exactPhraseMatched && lexicalHits < (locatorSection ? 1 : 2)) continue;
+    if (strictSymbols.length && ["register", "bitfield"].includes(entity.type) && !symbolMatched && !exactPhraseMatched) continue;
+    if (preferredTypes.size === 1 && preferredTypes.has("section") && entity.type !== "section") continue;
+    const supportingSectionSeed = entity.type === "section" && (
+      (lexicalHits >= 2 && [...primaryEntityTypes(query)].some((type) => ["caution", "figure", "sequence", "sequence-step", "table"].includes(type)))
+      || (lexicalHits >= 1 && hasModuleQueryContext && preferredTypes.has("register"))
+    );
+    if (preferredTypes.size && !preferredTypes.has(entity.type) && !strictAliasMatched && !supportingSectionSeed) continue;
+    if (score > 0) score += entityTypeBoost(entity.type, query, options);
     if (score > 0 && entity.type === "register" && /\b(offset|reset|access|details|properties)\b/i.test(query)) {
       const properties = entity.properties || {};
       const known = [properties.offsets, properties.resetValues, properties.accessSizes].filter((values) => Array.isArray(values) && values.some((value) => value && value !== "unknown")).length;
       score += known * 20;
     }
-    return { entity, score, retrievalReasons: unique(reasons) };
-  }).filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence));
+    if (score > 0) {
+      matches.push({ entity, score, retrievalReasons: unique(reasons) });
+      if (matches.length >= MAX_TOP_K * 12) {
+        matches.sort((left, right) => right.score - left.score || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence));
+        matches.length = MAX_TOP_K * 3;
+      }
+    }
+  }
+  const ranked = matches.sort((left, right) => right.score - left.score || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence))
+    .slice(0, MAX_TOP_K * 3);
+  cache.set(cacheKey, ranked);
+  while (cache.size > EXACT_GRAPH_QUERY_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+  return ranked;
 }
 
-function graphNeighborhood(graph, entities, query) {
+function graphNeighborhood(graph, entities, query, options = {}) {
   const seeds = new Set(entities.map((entity) => entity.id));
   const relatedIds = new Set();
-  for (const relation of graph.relationships || []) {
-    if (seeds.has(relation.from)) relatedIds.add(relation.to);
-    if (seeds.has(relation.to)) relatedIds.add(relation.from);
+  const { entitiesById, relationshipsByEntityId } = getEvidenceGraphRuntimeIndex(graph);
+  for (const seedId of seeds) {
+    for (const relation of relationshipsByEntityId.get(seedId) || []) {
+      relatedIds.add(relation.from === seedId ? relation.to : relation.from);
+    }
   }
-  return (graph.entities || [])
-    .filter((entity) => relatedIds.has(entity.id) && !seeds.has(entity.id) && ["register", "bitfield", "sequence", "sequence-step", "caution", "table", "figure", "interrupt", "clock", "reset"].includes(entity.type))
-    .map((entity) => ({ entity, relevance: entityQueryRelevance(entity, query), retrievalReasons: ["one-hop evidence graph relationship"] }))
-    .sort((left, right) => right.relevance - left.relevance || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence));
+  return [...relatedIds]
+    .map((id) => entitiesById.get(id))
+    .filter((entity) => entity && !seeds.has(entity.id) && ["register", "bitfield", "sequence", "sequence-step", "caution", "table", "figure", "interrupt", "clock", "reset"].includes(entity.type))
+    .map((entity) => ({ entity, relevance: entityQueryRelevance(entity, query, options), retrievalReasons: ["one-hop evidence graph relationship"] }))
+    .sort((left, right) => right.relevance - left.relevance || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence))
+    .slice(0, MAX_TOP_K * 3);
 }
 
-function pageNeighborhood(graph, evidence, query) {
+function pageNeighborhood(graph, evidence, query, options = {}) {
   const pages = new Set(evidence.map((item) => Number(item.page)).filter(Number.isFinite));
-  return (graph.entities || []).filter((entity) => {
-    if (!["register", "bitfield", "sequence", "sequence-step", "caution", "table", "figure", "interrupt", "clock", "reset"].includes(entity.type)) return false;
-    return (entity.sourceLocations || []).some((location) => pages.has(Number(location.page)));
-  }).map((entity) => ({ entity, relevance: entityQueryRelevance(entity, query), retrievalReasons: ["same-page neighborhood of ranked evidence"] }))
+  const { entitiesById } = getEvidenceGraphRuntimeIndex(graph);
+  const entityIds = unique([...pages].flatMap((page) => graph.pageEntityIds?.[page] || []));
+  const preferredTypes = preferredEntityTypes(query, options);
+  return entityIds.map((id) => entitiesById.get(id)).filter((entity) => entity && ["register", "bitfield", "sequence", "sequence-step", "caution", "table", "figure", "interrupt", "clock", "reset"].includes(entity.type))
+    .map((entity) => ({ entity, relevance: entityQueryRelevance(entity, query, options) || (preferredTypes.has(entity.type) ? entityTypeBoost(entity.type, query, options) : 0), retrievalReasons: ["same-page neighborhood of ranked evidence"] }))
     .filter((item) => item.relevance > 0)
-    .sort((left, right) => right.relevance - left.relevance || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence));
+    .sort((left, right) => right.relevance - left.relevance || confidenceRank(right.entity.confidence) - confidenceRank(left.entity.confidence))
+    .slice(0, MAX_TOP_K * 3);
+}
+
+export function prioritizeRequestedEntityTypes(items, query, options = {}) {
+  const primaryTypes = primaryEntityTypes(query);
+  const preferredTypes = preferredEntityTypes(query, options);
+  if (!primaryTypes.size && !preferredTypes.size) return items;
+  const strictSymbols = strictHardwareSymbolTokens(query);
+  const isStrictAnchor = (item) => ["register", "bitfield"].includes(item.entity?.type || item.evidence?.kind)
+    && strictSymbols.some((symbol) => (item.retrievalReasons || []).some((reason) => reason.startsWith(`exact symbol ${symbol}`) || reason.startsWith(`qualified symbol ${symbol}`)));
+  const strictAnchors = items.filter(isStrictAnchor);
+  const primary = items.filter((item) => !isStrictAnchor(item) && primaryTypes.has(item.entity?.type || item.evidence?.kind));
+  if (primaryTypes.has("sequence") && !primaryTypes.has("caution")) {
+    const priority = (item) => {
+      const type = item.entity?.type || item.evidence?.kind;
+      const projected = Boolean(item.entity?.properties?.projectedFromEntityId);
+      if (type === "sequence" && !projected) return 0;
+      if (type === "figure") return 1;
+      if (type === "sequence" && projected) return 2;
+      if (type === "sequence-step") return 3;
+      return 4;
+    };
+    primary.sort((left, right) => priority(left) - priority(right));
+  }
+  const preferred = items.filter((item) => !isStrictAnchor(item) && !primaryTypes.has(item.entity?.type || item.evidence?.kind) && preferredTypes.has(item.entity?.type || item.evidence?.kind));
+  const remaining = items.filter((item) => !isStrictAnchor(item) && !primaryTypes.has(item.entity?.type || item.evidence?.kind) && !preferredTypes.has(item.entity?.type || item.evidence?.kind));
+  return [...strictAnchors, ...primary, ...preferred, ...remaining];
+}
+
+export function projectedCautionRows(exact, query) {
+  if (!primaryEntityTypes(query).has("caution")) return [];
+  return exact.filter((item) => item.entity?.type === "section" && CAUTION_SECTION_PATTERN.test(item.entity.canonicalName || ""))
+    .slice(0, MAX_TOP_K * 3)
+    .map((item) => {
+      const section = item.entity;
+      const projected = {
+        ...section,
+        id: `projection:caution:${section.id}`,
+        type: "caution",
+        confidence: "low",
+        verificationStatus: "candidate",
+        extractionMethod: "section-caution-semantic-projection",
+        properties: {
+          type: "section-derived-caution",
+          evidenceLines: [section.canonicalName],
+          projectedFromEntityId: section.id,
+        },
+      };
+      const evidence = entityEvidence(projected, { reason: "caution language projected from a ranked manual section", query });
+      evidence.extractionMethod = "section-caution-semantic-projection";
+      return {
+        entity: projected,
+        evidence,
+        retrievalReasons: unique([...item.retrievalReasons, "caution language projected from ranked section evidence"]),
+      };
+    });
+}
+
+export function projectedSequenceRows(exact, query) {
+  if (!primaryEntityTypes(query).has("sequence")) return [];
+  return exact.filter((item) => item.entity?.type === "section" && !/^\s*(?:figure|table)\b/i.test(item.entity.canonicalName || "") && SEQUENCE_SECTION_PATTERN.test(item.entity.canonicalName || ""))
+    .slice(0, MAX_TOP_K * 3)
+    .map((item) => {
+      const section = item.entity;
+      const projected = {
+        ...section,
+        id: `projection:sequence:${section.id}`,
+        type: "sequence",
+        confidence: "low",
+        verificationStatus: "candidate",
+        extractionMethod: "section-sequence-semantic-projection",
+        properties: {
+          kind: "section-derived-sequence",
+          steps: [],
+          stepSummaries: [],
+          projectedFromEntityId: section.id,
+        },
+      };
+      const evidence = entityEvidence(projected, { reason: "operation or procedure language projected from a ranked manual section", query });
+      evidence.extractionMethod = "section-sequence-semantic-projection";
+      return {
+        entity: projected,
+        evidence,
+        retrievalReasons: unique([...item.retrievalReasons, "operation or procedure language projected from ranked section evidence"]),
+      };
+    });
 }
 
 function cursorToken(inputIdentity = "") {
@@ -358,29 +581,43 @@ export async function retrieveManualEvidence(filename, query, options = {}) {
   const graph = await loadEvidenceGraph(filename, { buildIfMissing: options.buildGraphIfMissing !== false });
   const topK = clampTopK(options.topK);
   const exact = exactGraphMatches(graph, query, options);
+  const strictSymbols = strictHardwareSymbolTokens(query).filter((symbol) => symbol.includes("_") || /\d/.test(symbol));
+  const strictSymbolResolved = exact.some((item) => (item.retrievalReasons || []).some((reason) => reason.includes("symbol")));
   // Channel depth must not depend on the requested page size; otherwise the
   // same query receives a different fused order when topK or cursor changes.
   const exactEntities = exact.slice(0, MAX_TOP_K * 3).map((item) => item.entity);
   const includeOcr = Boolean(options.includeOcr) && /\b(figure|fig|diagram|timing|waveform|image|visual|table)\b/i.test(query);
   let lexicalRows = [];
   let lexicalWarning = "";
-  try {
-    const lexical = await hybridSearchPdf(filename, query, { register: options.register || "", intent: options.intent || "auto", topK: MAX_TOP_K });
-    lexicalRows = lexicalEntityRows(graph, (lexical.results || [])
-      .filter((item) => includeOcr || (item.sourceType !== "figure_ocr" && item.source_type !== "figure_ocr")), query);
-  } catch (error) {
-    lexicalWarning = `Lexical retrieval unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  const fusion = shouldUseInProcessLexicalFusion(graph);
+  if (strictSymbols.length && !strictSymbolResolved) {
+    lexicalWarning = `Qualified hardware symbol ${strictSymbols.join(", ")} did not resolve as an indexed entity or structured reference; partial-token lexical fallback was suppressed.`;
+  } else if (fusion.enabled) {
+    try {
+      const lexical = await hybridSearchPdf(filename, query, { register: options.register || "", intent: options.intent || "auto", topK: MAX_TOP_K, preserveEvidenceGraphCache: true });
+      lexicalRows = lexicalEntityRows(graph, (lexical.results || [])
+        .filter((item) => includeOcr || (item.sourceType !== "figure_ocr" && item.source_type !== "figure_ocr")), query);
+    } catch (error) {
+      lexicalWarning = `Lexical retrieval unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else {
+    lexicalWarning = `In-process lexical fusion was not loaded because this evidence graph has ${fusion.graphItems} entities plus relationships, above the memory-safe limit of ${fusion.limit}. Exact, graph, and neighborhood channels remain active; use hybrid_search_pdf as a separate request for chunk-level lexical corroboration.`;
   }
-  const exactRows = exact.map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons.join("; "), query }), retrievalReasons: item.retrievalReasons }));
-  const neighborhoodRows = graphNeighborhood(graph, exactEntities, query).map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons[0], query }), retrievalReasons: item.retrievalReasons }));
+  const exactRows = [
+    ...projectedCautionRows(exact, query),
+    ...projectedSequenceRows(exact, query),
+    ...exact.map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons.join("; "), query }), retrievalReasons: item.retrievalReasons })),
+  ];
+  const neighborhoodRows = graphNeighborhood(graph, exactEntities, query, options).map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons[0], query }), retrievalReasons: item.retrievalReasons }));
   const lexicalEvidence = lexicalRows.map((item) => item.evidence);
-  const pageRows = pageNeighborhood(graph, lexicalEvidence, query).map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons[0], query }), retrievalReasons: item.retrievalReasons }));
-  const fused = reciprocalRankFuse([
+  const exactEvidence = exactRows.slice(0, MAX_TOP_K).map((item) => item.evidence).filter(Boolean);
+  const pageRows = pageNeighborhood(graph, [...exactEvidence, ...lexicalEvidence], query, options).map((item) => ({ entity: item.entity, evidence: entityEvidence(item.entity, { reason: item.retrievalReasons[0], query }), retrievalReasons: item.retrievalReasons }));
+  const fused = prioritizeRequestedEntityTypes(reciprocalRankFuse([
     { name: "exact", results: exactRows },
     { name: "lexical", results: lexicalRows },
     { name: "graph", results: neighborhoodRows },
     { name: "neighborhood", results: pageRows },
-  ]);
+  ]), query, options);
   const normalized = fused.map((item, index) => {
     const evidence = item.evidence || entityEvidence(item.entity, { reason: item.retrievalReasons.join("; "), rank: index + 1, query });
     return {
@@ -402,7 +639,15 @@ export async function retrieveManualEvidence(filename, query, options = {}) {
     };
   });
   const paged = paginateEvidenceItems(normalized, topK, options.cursor, JSON.stringify({ filename, query, register: options.register || "", includeOcr: Boolean(options.includeOcr) }));
-  return { graph, query, topK, results: paged.rows, pagination: paged.pagination, warnings: lexicalWarning ? [lexicalWarning] : [] };
+  return {
+    graph,
+    query,
+    topK,
+    results: paged.rows,
+    pagination: paged.pagination,
+    retrievalChannels: fusion.enabled ? ["exact", "lexical", "graph", "neighborhood"] : ["exact", "graph", "neighborhood"],
+    warnings: lexicalWarning ? [lexicalWarning] : [],
+  };
 }
 
 export function evidenceFactFromResult(result) {
@@ -492,13 +737,6 @@ function contextRelationshipKey(relationship) {
   return String(relationship.id || `${relationship.type || ""}:${relationship.from || ""}:${relationship.to || ""}`);
 }
 
-function appendContextRelationship(index, entityId, relationship) {
-  if (!entityId) return;
-  const rows = index.get(entityId) || [];
-  rows.push(relationship);
-  index.set(entityId, rows);
-}
-
 function boundedContextLimit(value, fallback) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : fallback;
@@ -512,8 +750,11 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
   maxEntities = MAX_QUERY_CONTEXT_ENTITIES,
   maxRelationships = MAX_QUERY_CONTEXT_RELATIONSHIPS,
 } = {}) {
-  const entitiesById = new Map((graph.entities || []).map((entity) => [entity.id, entity]));
+  const { entitiesById, relationshipsByEntityId } = getEvidenceGraphRuntimeIndex(graph);
   const isIncludedEntity = (entity) => entity && !["document", "page"].includes(entity.type);
+  const isEligibleRelationship = (relationship) => QUERY_CONTEXT_RELATIONSHIP_TYPES.has(relationship.type)
+    && isIncludedEntity(entitiesById.get(relationship.from))
+    && isIncludedEntity(entitiesById.get(relationship.to));
   const seedIds = queryContextEntityIds(evidence).filter((id) => isIncludedEntity(entitiesById.get(id)));
   const entityLimit = boundedContextLimit(maxEntities, MAX_QUERY_CONTEXT_ENTITIES);
   const relationshipLimit = boundedContextLimit(maxRelationships, MAX_QUERY_CONTEXT_RELATIONSHIPS);
@@ -524,45 +765,6 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
   const selectedEntities = retainedSeedIds.map((id) => entitiesById.get(id));
   const selectedRelationshipIds = new Set();
   const selectedRelationships = [];
-  const relationshipById = new Map();
-  const relationshipsByEntityId = new Map();
-  const sequenceStepRelationshipsBySequenceId = new Map();
-  const parentSequenceIdsByStepId = new Map();
-  const orderingRelationshipsByStepId = new Map();
-  const eligibleRelationships = (graph.relationships || [])
-    .filter((relationship) => QUERY_CONTEXT_RELATIONSHIP_TYPES.has(relationship.type))
-    .filter((relationship) => isIncludedEntity(entitiesById.get(relationship.from)) && isIncludedEntity(entitiesById.get(relationship.to)))
-    .sort(contextRelationshipSort)
-    .filter((relationship) => {
-      const key = contextRelationshipKey(relationship);
-      if (relationshipById.has(key)) return false;
-      relationshipById.set(key, relationship);
-      return true;
-    });
-  for (const relationship of eligibleRelationships) {
-    appendContextRelationship(relationshipsByEntityId, relationship.from, relationship);
-    appendContextRelationship(relationshipsByEntityId, relationship.to, relationship);
-    if (relationship.type === "sequence-has-step") {
-      const from = entitiesById.get(relationship.from);
-      const to = entitiesById.get(relationship.to);
-      const sequenceId = from?.type === "sequence" && to?.type === "sequence-step"
-        ? relationship.from
-        : to?.type === "sequence" && from?.type === "sequence-step"
-          ? relationship.to
-          : "";
-      const stepId = sequenceId === relationship.from ? relationship.to : sequenceId === relationship.to ? relationship.from : "";
-      if (sequenceId && stepId) {
-        appendContextRelationship(sequenceStepRelationshipsBySequenceId, sequenceId, relationship);
-        const parents = parentSequenceIdsByStepId.get(stepId) || [];
-        parents.push(sequenceId);
-        parentSequenceIdsByStepId.set(stepId, parents);
-      }
-    }
-    if (relationship.type === "sequence-step-occurs-before") {
-      appendContextRelationship(orderingRelationshipsByStepId, relationship.from, relationship);
-      appendContextRelationship(orderingRelationshipsByStepId, relationship.to, relationship);
-    }
-  }
   const skippedSequenceIds = [];
   const skippedRelationshipIds = new Set();
   let optionalContextTruncated = false;
@@ -573,10 +775,9 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
     for (const relationship of relationships) {
       const key = contextRelationshipKey(relationship);
       if (seen.has(key) || selectedRelationshipIds.has(key)) continue;
-      const indexed = relationshipById.get(key);
-      if (!indexed) continue;
+      if (!isEligibleRelationship(relationship)) continue;
       seen.add(key);
-      rows.push(indexed);
+      rows.push(relationship);
     }
     if (!rows.length) return true;
     const newEntityIds = unique(rows.flatMap((relationship) => [relationship.from, relationship.to]))
@@ -607,7 +808,11 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
     const entity = entitiesById.get(seedId);
     if (entity?.type === "sequence") addSequenceId(seedId);
     if (entity?.type === "sequence-step") {
-      for (const parentId of parentSequenceIdsByStepId.get(seedId) || []) addSequenceId(parentId);
+      for (const relationship of relationshipsByEntityId.get(seedId) || []) {
+        if (relationship.type !== "sequence-has-step" || !isEligibleRelationship(relationship)) continue;
+        const otherId = relationship.from === seedId ? relationship.to : relationship.from;
+        if (entitiesById.get(otherId)?.type === "sequence") addSequenceId(otherId);
+      }
     }
   }
 
@@ -615,11 +820,12 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
   const expandedSequenceIds = new Set();
   const skippedSequenceMemberIds = new Set();
   for (const sequenceId of sequenceIds) {
-    const stepRelationships = sequenceStepRelationshipsBySequenceId.get(sequenceId) || [];
+    const stepRelationships = (relationshipsByEntityId.get(sequenceId) || [])
+      .filter((relationship) => relationship.type === "sequence-has-step" && isEligibleRelationship(relationship));
     const stepIds = new Set(stepRelationships.map((relationship) => relationship.from === sequenceId ? relationship.to : relationship.from));
     const orderingById = new Map();
     for (const stepId of stepIds) {
-      for (const relationship of orderingRelationshipsByStepId.get(stepId) || []) {
+      for (const relationship of relationshipsByEntityId.get(stepId) || []) {
         if (relationship.type === "sequence-step-occurs-before" && stepIds.has(relationship.from) && stepIds.has(relationship.to)) {
           orderingById.set(contextRelationshipKey(relationship), relationship);
         }
@@ -656,6 +862,7 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
     const optionalById = new Map();
     for (const memberId of sequenceMembersById.get(sequenceId) || []) {
       for (const relationship of relationshipsByEntityId.get(memberId) || []) {
+        if (!isEligibleRelationship(relationship)) continue;
         if (selectedRelationshipIds.has(contextRelationshipKey(relationship))) continue;
         if (["sequence-has-step", "sequence-step-occurs-before"].includes(relationship.type)) continue;
         optionalById.set(contextRelationshipKey(relationship), relationship);
@@ -672,6 +879,7 @@ export function buildBoundedQueryGraphContext(graph, evidence, {
   const directById = new Map();
   for (const seedId of retainedSeedIds) {
     for (const relationship of relationshipsByEntityId.get(seedId) || []) {
+      if (!isEligibleRelationship(relationship)) continue;
       if (["sequence-has-step", "sequence-step-occurs-before"].includes(relationship.type)) continue;
       if (skippedSequenceMemberIds.has(relationship.from) || skippedSequenceMemberIds.has(relationship.to)) continue;
       directById.set(contextRelationshipKey(relationship), relationship);
@@ -776,7 +984,33 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
   if (!String(query || "").trim()) throw new Error("query is required");
   const retrieval = await retrieveManualEvidence(filename, query, { topK, cursor, register, includeOcr, buildGraphIfMissing: true });
   const evidence = retrieval.results.map((result) => result.evidence);
-  const graphContext = buildBoundedQueryGraphContext(retrieval.graph, evidence);
+  const { entitiesById } = getEvidenceGraphRuntimeIndex(retrieval.graph);
+  const transientEntities = unique(retrieval.results
+    .map((result) => result.entity)
+    .filter((entity) => entity?.id && !entitiesById.has(entity.id))
+    .map((entity) => JSON.stringify(entity))).map((entity) => JSON.parse(entity));
+  const graphContext = buildBoundedQueryGraphContext(retrieval.graph, evidence, {
+    maxEntities: Math.max(0, MAX_QUERY_CONTEXT_ENTITIES - transientEntities.length),
+  });
+  graphContext.entities = [...transientEntities, ...graphContext.entities];
+  graphContext.maxEntities = MAX_QUERY_CONTEXT_ENTITIES;
+  const projectedCautions = transientEntities.filter((entity) => entity.type === "caution" && entity.properties?.projectedFromEntityId);
+  const exactRegisterAnchors = retrieval.results.filter((result) => result.entity?.type === "register"
+    && (result.retrievalReasons || []).some((reason) => reason.startsWith("exact symbol ") || reason.startsWith("qualified symbol "))).map((result) => result.entity);
+  for (const caution of projectedCautions) {
+    const cautionText = entityText(caution);
+    const registerEntity = exactRegisterAnchors.find((candidate) => unique([candidate.canonicalName, ...(candidate.aliases || [])])
+      .some((alias) => normalizeForSearch(alias).split(/\s+/).filter((part) => part.length >= 4).some((part) => cautionText.includes(part))))
+      || (exactRegisterAnchors.length === 1 ? exactRegisterAnchors[0] : null);
+    if (!registerEntity || graphContext.relationships.length >= MAX_QUERY_CONTEXT_RELATIONSHIPS) continue;
+    graphContext.relationships.push({
+      id: `query-context-register-has-caution:${registerEntity.id}->${caution.id}`,
+      from: registerEntity.id,
+      to: caution.id,
+      type: "register-has-caution",
+      properties: { resolutionStatus: "query-context-section-projection", verificationStatus: "candidate" },
+    });
+  }
   const graphContextWarning = graphContext.truncated
     ? `Bounded graph context was truncated at ${graphContext.maxEntities} entities and ${graphContext.maxRelationships} relationships${graphContext.optionalContextTruncated ? "; optional graph context was omitted after required context was retained" : ""}; use get_manual_entity for additional related evidence.`
     : "";
@@ -798,7 +1032,7 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
     sourceFingerprint: retrieval.graph.sourceFingerprint,
     input: { filename, query, top_k: clampTopK(topK), cursor, register, include_ocr: Boolean(includeOcr) },
     summary: {
-      retrievalChannels: ["exact", "lexical", "graph", "neighborhood"],
+      retrievalChannels: retrieval.retrievalChannels,
       graphEntities: retrieval.graph.entities.length,
       resultCountBeforePagination: retrieval.pagination.total,
       graphContext: {
@@ -814,7 +1048,7 @@ export async function queryManualEvidenceBundle({ filename, query, topK, cursor,
     inferences: [],
     conflicts: unique(retrieval.results.flatMap((result) => result.entity ? (retrieval.graph.conflicts || []).filter((conflict) => conflict.entityId === result.entity.id) : []).map((conflict) => JSON.stringify(conflict))).map((conflict) => JSON.parse(conflict)),
     gaps: [
-      ...(evidence.length ? [] : [{ item: query, reason: "No result matched the graph or lexical channels.", recommendedAction: "Try an exact register name or inspect manual_status/index health." }]),
+      ...(evidence.length ? [] : [{ item: query, reason: "No result matched the enabled retrieval channels.", recommendedAction: "Try an exact register name or inspect manual_status/index health." }]),
       ...graphContextGap,
     ],
     needsVerification: evidence.length ? [{ item: "Ranked evidence", reason: "Retrieval rank is not verification.", recommendedActions: ["read_manual_evidence", "read_pdf_pages"] }] : [],

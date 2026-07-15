@@ -5,8 +5,9 @@ import { BITFIELD_INDEX_SCHEMA_VERSION, DEFAULT_HYBRID_TOP_K, DEFAULT_PAGE_RANGE
 import { getPathResolver } from "../core/path-resolver.js";
 import { contentSourceFingerprint } from "../artifacts/manifest.js";
 import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
+import { clearEvidenceGraphCache } from "./evidence-graph.js";
 import fs from "node:fs/promises";
-import { isLikelyBitfieldName, parseBitfieldSemantics, resolveBitfieldRegisterMapping } from "../bitfields/semantics.js";
+import { isLikelyBitfieldName, parseBitfieldSemantics, parseCoordinateBitfieldRow, resolveBitfieldRegisterMapping } from "../bitfields/semantics.js";
 import { buildBitfieldConflicts, findBitfieldOverlaps, findRegisterEntry, validateBitfieldEntry } from "../bitfields/validation.js";
 
 
@@ -35,6 +36,8 @@ const q = createRuntimePort("q");
 const scoreSequenceEntry = createRuntimePort("scoreSequenceEntry");
 const scoreSimpleText = createRuntimePort("scoreSimpleText");
 const searchRegistersIndex = createRuntimePort("searchRegistersIndex");
+const nativeSearchResultCache = new WeakMap();
+const NATIVE_SEARCH_QUERY_CACHE_ENTRIES = 64;
 
 
 // -----------------------------------------------------------------------------
@@ -214,19 +217,7 @@ export async function searchFigureOcr(filename, query, topK = DEFAULT_TOP_K, opt
 export async function searchPdfIndex(filename, query, topK = DEFAULT_TOP_K) {
   const indexData = await loadPdfIndex(filename);
   const k = clampTopK(topK);
-
-  const nativeResults = indexData.chunks
-    .map((chunk) => ({
-      ...chunk,
-      score: scoreChunk(chunk, query),
-    }))
-    .filter((chunk) => chunk.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.page !== b.page) return a.page - b.page;
-      return a.chunkIndex - b.chunkIndex;
-    })
-    .slice(0, k);
+  const nativeResults = rankNativeSearchChunksCached(indexData, query, k);
   const ocrResults = await searchFigureOcr(filename, query, k, { boost: isFigureOcrQuery(query) });
   const results = [...nativeResults, ...ocrResults]
     .sort((a, b) => {
@@ -240,6 +231,46 @@ export async function searchPdfIndex(filename, query, topK = DEFAULT_TOP_K) {
     indexData,
     results,
   };
+}
+
+export function rankNativeSearchChunksCached(indexData, query, topK = DEFAULT_TOP_K) {
+  if (!indexData || typeof indexData !== "object") return [];
+  const k = clampTopK(topK);
+  const key = `${normalizeForSearch(query)}\u0000${canonicalSymbol(query)}\u0000${k}`;
+  let cache = nativeSearchResultCache.get(indexData);
+  if (!cache) {
+    cache = new Map();
+    nativeSearchResultCache.set(indexData, cache);
+  }
+  const cached = cache.get(key);
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+  const ranked = rankNativeSearchChunks(indexData.chunks, query, k);
+  cache.set(key, ranked);
+  while (cache.size > NATIVE_SEARCH_QUERY_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+  return ranked;
+}
+
+export function rankNativeSearchChunks(chunks, query, topK = DEFAULT_TOP_K) {
+  const k = clampTopK(topK);
+  const compare = (left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (left.chunk.page !== right.chunk.page) return left.chunk.page - right.chunk.page;
+    return left.chunk.chunkIndex - right.chunk.chunkIndex;
+  };
+  let ranked = [];
+  for (const chunk of chunks || []) {
+    const score = scoreChunk(chunk, query);
+    if (score <= 0) continue;
+    ranked.push({ chunk, score });
+    // Preserve the exact global top-k order while bounding temporary objects
+    // for broad terms that match most chunks in a multi-thousand-page manual.
+    if (ranked.length >= Math.max(k * 4, 64)) ranked = ranked.sort(compare).slice(0, k);
+  }
+  return ranked.sort(compare).slice(0, k).map(({ chunk, score }) => ({ ...chunk, score }));
 }
 
 export function clampHybridTopK(value) {
@@ -926,6 +957,7 @@ export function scoreHybridChunk(chunk, hybrid, context) {
 }
 
 export async function hybridSearchPdf(filename, query, options = {}) {
+  if (options.preserveEvidenceGraphCache !== true) clearEvidenceGraphCache();
   const indexData = await loadPdfIndex(filename);
   const topK = clampHybridTopK(options.topK);
   const hybrid = buildHybridQuery(query, {
@@ -938,11 +970,12 @@ export async function hybridSearchPdf(filename, query, options = {}) {
   const candidateChunks = await selectHybridCandidateChunks(filename, indexData, hybrid, context, topK);
   context.candidateCount = candidateChunks.length;
   context.fullChunkCount = (indexData.chunks || []).length;
-  context.bm25Stats = buildHybridCorpusStats(candidateChunks, hybrid);
+  const bm25Stats = buildHybridCorpusStats(candidateChunks, hybrid);
+  const scoringContext = { ...context, bm25Stats };
 
   const nativeResults = candidateChunks
     .map((chunk) => {
-      const scored = scoreHybridChunk(chunk, hybrid, context);
+      const scored = scoreHybridChunk(chunk, hybrid, scoringContext);
       return {
         ...chunk,
         score: scored.score,
@@ -979,7 +1012,6 @@ export async function hybridSearchPdf(filename, query, options = {}) {
 
 export async function selectHybridCandidateChunks(filename, indexData, hybrid, context, topK) {
   const chunks = indexData.chunks || [];
-  const byId = new Map(chunks.map((chunk) => [chunk.id, chunk]));
   const candidates = new Map();
   const add = (chunk) => {
     if (!chunk?.id || candidates.has(chunk.id)) return;
@@ -996,10 +1028,10 @@ export async function selectHybridCandidateChunks(filename, indexData, hybrid, c
     // Full fallback below keeps hybrid search usable if lexical search is unavailable.
   }
 
-  for (const id of context.relatedChunkIds || []) add(byId.get(id));
-  if (context.relatedPages?.size) {
+  if ((context.relatedChunkIds?.size || 0) || context.relatedPages?.size) {
     for (const chunk of chunks) {
-      if (context.relatedPages.has(Number(chunk.page))) add(chunk);
+      if (context.relatedChunkIds?.has(chunk.id)) add(chunk);
+      if (context.relatedPages?.has(Number(chunk.page))) add(chunk);
       if (candidates.size >= HYBRID_CANDIDATE_LIMIT) break;
     }
   }
@@ -1017,7 +1049,10 @@ export async function selectHybridCandidateChunks(filename, indexData, hybrid, c
   }
 
   const selected = [...candidates.values()].slice(0, HYBRID_CANDIDATE_LIMIT);
-  return selected.length ? selected : chunks;
+  // A no-hit query has no defensible fallback corpus. Returning every chunk
+  // made negative lookups tokenize and score an entire manual and could also
+  // surface unrelated context as if it matched the requested symbol.
+  return selected;
 }
 
 
@@ -1581,11 +1616,19 @@ export function findNearestRegisterForChunk(registerIndex, chunk) {
   const chunkRegisters = new Set((chunk.registers || []).map(normalizeRegisterName));
   const chunkId = chunk.id;
   const page = Number(chunk.page);
+  let entries = registerIndex.registers;
+  if (registerIndex.registersByName instanceof Map && registerIndex.registersByPage instanceof Map) {
+    const indexedCandidates = new Set(registerIndex.registersByPage.get(page) || []);
+    for (const name of chunkRegisters) {
+      for (const entry of registerIndex.registersByName.get(name) || []) indexedCandidates.add(entry);
+    }
+    entries = [...indexedCandidates];
+  }
 
   let best = null;
   let bestScore = 0;
 
-  for (const entry of registerIndex.registers) {
+  for (const entry of entries) {
     let score = 0;
     const names = [entry.name, entry.displayName, entry.canonicalName, ...(entry.aliases || [])]
       .map(normalizeRegisterName)
@@ -1642,7 +1685,7 @@ export function updateBitfieldCandidate(map, candidate, registerIndex = null) {
     : (knownBitfieldValue(candidate.reset) ? candidate.reset : knownBitfieldValue(evidenceSemantics.reset) ? evidenceSemantics.reset : "unknown");
   const bitPositionRange = existing?.bitPositionRange && existing.bitPositionRange !== "unknown"
     ? existing.bitPositionRange
-    : (knownBitfieldValue(candidate.bitPositionRange) ? candidate.bitPositionRange : knownBitfieldValue(evidenceSemantics.bitPositionRange) ? evidenceSemantics.bitPositionRange : bitRange || "unknown");
+    : (knownBitfieldValue(candidate.bitPositionRange) ? candidate.bitPositionRange : knownBitfieldValue(evidenceSemantics.bitPositionRange) ? evidenceSemantics.bitPositionRange : "unknown");
   const fieldBitRange = existing?.fieldBitRange && existing.fieldBitRange !== "unknown"
     ? existing.fieldBitRange
     : (knownBitfieldValue(candidate.fieldBitRange) ? candidate.fieldBitRange : knownBitfieldValue(evidenceSemantics.fieldBitRange) ? evidenceSemantics.fieldBitRange : "unknown");
@@ -1705,11 +1748,12 @@ export function collectBitfieldCandidatesFromTables(filename, tablesIndex, regis
         const value = row.cells?.[column.column];
         if (value) cells[column.role] = value;
       }
-      const fieldCell = String(cells.bitfield || "").trim();
-      const bitfield = fieldCell.replace(/\s*\[[0-9]+(?::[0-9]+)?\]\s*$/, "").trim();
+      const inferredRow = parseCoordinateBitfieldRow(row, cells);
+      const fieldCell = String(cells.bitfield || inferredRow?.fieldCell || "").trim();
+      const bitfield = String(inferredRow?.bitfield || fieldCell.replace(/\s*\[[0-9]+(?::[0-9]+)?\]\s*$/, "")).trim();
       if (!isLikelyBitfieldCandidate(bitfield, registerEntry)) continue;
-      const context = [cells.bit, fieldCell, cells.access, cells.reset, cells.description, row.text].filter(Boolean).join(" | ");
-      const semantics = parseBitfieldSemantics(context, bitfield);
+      const rowContext = [inferredRow?.bitCell || cells.bit, fieldCell, cells.access, cells.reset, cells.description, row.text].filter(Boolean).join(" | ");
+      const semantics = inferredRow?.semantics || parseBitfieldSemantics(rowContext, bitfield);
       const candidate = {
         filename,
         register: registerName,
@@ -1725,7 +1769,7 @@ export function collectBitfieldCandidatesFromTables(filename, tablesIndex, regis
         page: Number(row.sourcePage || table.pageStart || table.page || 0),
         tableId: table.tableId,
         rowId: row.rowId,
-        evidenceLines: [context.slice(0, 700)],
+        evidenceLines: [rowContext.slice(0, 700), String(table.headerText || "").slice(0, 700)].filter(Boolean),
         source: "tables-index",
         score: 150,
         confidence: Math.max(80, Number(table.confidence || 0)),
@@ -1835,7 +1879,7 @@ export function collectBitfieldCandidatesFromChunk(filename, chunk, registerEntr
   }
 }
 
-export async function buildBitfieldsIndex(filename, indexData = null, registersIndex = null, tablesIndex = null) {
+export async function buildBitfieldsIndex(filename, indexData = null, registersIndex = null, tablesIndex = null, options = {}) {
   await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
 
   const source = await getPdfSourceInfo(filename, { includeHash: true });
@@ -1845,10 +1889,15 @@ export async function buildBitfieldsIndex(filename, indexData = null, registersI
   const registerMappingIndex = {
     ...regIndex,
     registersByPage: new Map(),
+    registersByName: new Map(),
   };
 
   const directRegisterChunkIds = new Map();
   for (const entry of regIndex.registers || []) {
+    for (const name of [entry.name, entry.displayName, entry.canonicalName, ...(entry.aliases || [])].map(normalizeRegisterName).filter(Boolean)) {
+      if (!registerMappingIndex.registersByName.has(name)) registerMappingIndex.registersByName.set(name, []);
+      registerMappingIndex.registersByName.get(name).push(entry);
+    }
     for (const page of entry.pages || []) {
       const pageNumber = Number(page);
       if (!Number.isFinite(pageNumber)) continue;
@@ -1862,7 +1911,12 @@ export async function buildBitfieldsIndex(filename, indexData = null, registersI
 
   collectBitfieldCandidatesFromTables(filename, tablesIndex, registerMappingIndex, candidates);
 
-  for (const chunk of pdfIndex.chunks || []) {
+  const chunks = pdfIndex.chunks || [];
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    const chunk = chunks[chunkIndex];
+    if (typeof options.onProgress === "function" && (chunkIndex === 0 || chunkIndex + 1 === chunks.length || (chunkIndex + 1) % 250 === 0)) {
+      options.onProgress({ phase: "build-bitfields-index", current: chunkIndex + 1, total: chunks.length, unit: "chunks" });
+    }
     const registerEntry = directRegisterChunkIds.get(chunk.id) || findNearestRegisterForChunk(regIndex, chunk);
     collectBitfieldCandidatesFromChunk(filename, chunk, registerEntry, candidates, registerMappingIndex);
   }

@@ -84,6 +84,16 @@ test("EvidenceBundle v2 rejects duplicate IDs, dangling references, and invalid 
   assert.match(paginationErrors, /returned must equal|total must be|truncated must match/);
 });
 
+test("EvidenceBundle v2 accepts bounded sparse-alias resolution provenance", () => {
+  const bundle = validBundle();
+  bundle.entities = [{
+    id: "register:dctrl", type: "register", canonicalName: "DCTRL", displayName: "DCTRL", aliases: [], aliasVariants: ["DCTRL"],
+    sourceLocations: [{ page: 1, chunkIds: ["manual.pdf:p1:c0"], sectionPath: [], boundingBox: [], sourceArtifact: "registers", extractionMethod: "unit", verificationStatus: "candidate", sourceScore: 50, resolutionStatus: "merged-sparse-alias" }],
+    confidence: "medium", extractionMethod: "unit", verificationStatus: "candidate", properties: {},
+  }];
+  assert.deepEqual(validateEvidenceBundleV2(bundle), { ok: true, errors: [] });
+});
+
 test("EvidenceBundle v2 enforces figure, OCR, conflict, and action semantics", () => {
   const invalidFigure = structuredClone(validBundle());
   invalidFigure.evidence[0].kind = "figure";

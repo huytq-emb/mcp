@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
-import { ensureDirectPdfFilename, ensureInsideRoot, safeArtifactPath } from "../../src/core/path-safety.js";
+import { ensureDirectPdfFilename, ensureInsideRoot, ensureRegularFileInsideRoot, safeArtifactPath } from "../../src/core/path-safety.js";
+import { isIndexLockStale } from "../../src/core/runtime-helpers.js";
 
 test("ensureDirectPdfFilename accepts direct PDF filenames", () => {
   assert.equal(ensureDirectPdfFilename("r01uh1069ej0115-rzg3e.pdf"), "r01uh1069ej0115-rzg3e.pdf");
@@ -22,4 +23,23 @@ test("safeArtifactPath stays inside the artifact root", () => {
 test("ensureInsideRoot rejects paths outside root", () => {
   const root = path.resolve("indexes");
   assert.throws(() => ensureInsideRoot(path.resolve("documents/manual.pdf"), root, "test"), /Invalid test path/);
+});
+
+test("ensureRegularFileInsideRoot rejects PDF symlinks and reparse points before reads", async () => {
+  const root = path.resolve("C:/manual-root");
+  const candidate = path.join(root, "manual.pdf");
+  const fsOps = {
+    lstat: async () => ({ isSymbolicLink: () => true, isFile: () => true }),
+    realpath: async (value) => value,
+  };
+  await assert.rejects(
+    ensureRegularFileInsideRoot(candidate, root, "PDF", fsOps),
+    /symbolic links and reparse points are not allowed/,
+  );
+});
+
+test("index locks from absent PIDs are stale immediately while a live recent lock is preserved", () => {
+  const now = Date.now();
+  assert.equal(isIndexLockStale({ pid: 2_147_483_647, createdAtMs: now }, now), true);
+  assert.equal(isIndexLockStale({ pid: process.pid, createdAtMs: now }, now), false);
 });

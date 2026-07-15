@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
+import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
 import { createRuntimeConfig } from "../../src/core/runtime-config.js";
 import { appendEvidenceContract, textResult } from "../../src/core/runtime-helpers.js";
-import { chunkPageHierarchically } from "../../src/services/indexing.js";
+import { chunkPageHierarchically, nearestSectionForPage, scoreRegisterOccurrence } from "../../src/services/indexing.js";
+import { findNearestRegisterForChunk } from "../../src/services/search.js";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { createToolRegistry, validateToolRegistryContract } from "../../src/mcp/registry.js";
 
@@ -11,6 +13,67 @@ test("runtime config derives all writable paths from the supplied root", () => {
   const config = createRuntimeConfig({ rootDir: "C:/workspace/manual-server" });
   assert.match(config.paths.documentsDir, /manual-server[\\/]documents$/);
   assert.match(config.paths.driverProfileFragmentsDir, /driver_profiles[\\/]fragments$/);
+});
+
+test("nearest section lookup is logarithmic and preserves deepest same-page headings", () => {
+  const values = Array.from({ length: 10_000 }, (_, index) => ({
+    id: `s${index}`,
+    title: `Section ${index}`,
+    page: index + 1,
+    level: 1,
+    type: "section",
+  }));
+  values.splice(7_777, 0,
+    { id: "same-page-shallow", title: "Shallow", page: 7_778, level: 2, type: "section" },
+    { id: "same-page-deep", title: "Deep", page: 7_778, level: 4, type: "section" });
+  let numericReads = 0;
+  const sections = new Proxy(values, {
+    get(target, property, receiver) {
+      if (/^\d+$/.test(String(property))) numericReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const result = nearestSectionForPage({ sections }, 7_778);
+  assert.equal(result.id, "same-page-deep");
+  assert.equal(numericReads < 100, true, `expected logarithmic lookup, read ${numericReads} entries`);
+});
+
+test("register scoring caches normalized chunk context across symbols", () => {
+  let textReads = 0;
+  const chunk = {
+    get text() {
+      textReads += 1;
+      return "Register CTRL Address: 0x10 Description CTRL CTRL STAT";
+    },
+    headings: ["Register Description"],
+    registers: ["CTRL"],
+    symbols: ["CTRL", "STAT"],
+  };
+  const first = scoreRegisterOccurrence("CTRL", chunk);
+  const second = scoreRegisterOccurrence("STAT", chunk);
+  assert.equal(first > second, true);
+  assert.equal(textReads, 1);
+});
+
+test("bitfield register fallback uses prepared page and name indexes", () => {
+  wireRuntimePorts(createAppContext({ rootDir: "C:/workspace/bitfield-index-test" }));
+  const target = { name: "CTRL", displayName: "CTRL", aliases: [], pages: [77], chunks: [] };
+  const values = Array.from({ length: 10_000 }, (_, index) => ({ name: `REG${index}`, pages: [index], aliases: [], chunks: [] }));
+  values.push(target);
+  let numericReads = 0;
+  const registers = new Proxy(values, {
+    get(array, property, receiver) {
+      if (/^\d+$/.test(String(property))) numericReads += 1;
+      return Reflect.get(array, property, receiver);
+    },
+  });
+  const result = findNearestRegisterForChunk({
+    registers,
+    registersByPage: new Map([[77, [target]]]),
+    registersByName: new Map([["CTRL", [target]]]),
+  }, { id: "chunk-77", page: 77, registers: ["CTRL"] });
+  assert.equal(result, target);
+  assert.equal(numericReads, 0);
 });
 
 test("runtime config accepts MCP root environment aliases with clear precedence", () => {

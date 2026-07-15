@@ -10,6 +10,7 @@ import { formatChunkTypeStats, formatRegisterIndexResults, formatRegisterListRes
 import { loadPagesCache } from "../../services/pdf.js";
 import { buildRegisterQueries, clampHybridTopK, formatBitfieldListResults, formatExtractedBitfieldTable, formatHybridSearchResults, formatSearchResults, formatSectionResults, hybridSearchPdf, listBitfieldsFromIndex, searchPdfIndex, searchSectionsIndex } from "../../services/search.js";
 import { buildSectionQueries, multiQuerySearch } from "../../workflows/driver-pack.js";
+import { clearEvidenceGraphCache } from "../../services/evidence-graph.js";
 
 const extractPdfPages = createRuntimePort("extractPdfPages");
 const getPdfPageCount = createRuntimePort("getPdfPageCount");
@@ -21,7 +22,7 @@ async function handle_search_pdf(args = {}, meta = {}) {
     const topK = clampTopK(args.top_k);
   
     if (!query) throw new Error("query is required");
-  
+
     const { results } = await searchPdfIndex(filename, query, topK);
     return textResult(withVisualSemanticGuard(formatSearchResults(results, query), query, { filename, query, mode: "search" }));
 }
@@ -481,7 +482,7 @@ async function handle_find_section(args = {}, meta = {}) {
 }
 
 export function createManualEvidenceHandlers(_context = null) {
-  return Object.freeze({
+  const handlers = {
     "search_pdf": handle_search_pdf,
     "hybrid_search_pdf": handle_hybrid_search_pdf,
     "chunk_type_stats": handle_chunk_type_stats,
@@ -504,5 +505,13 @@ export function createManualEvidenceHandlers(_context = null) {
     "list_cautions": handle_list_cautions,
     "get_cautions_for_register": handle_get_cautions_for_register,
     "find_section": handle_find_section,
-  });
+  };
+  return Object.freeze(Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [name, withReleasedEvidenceGraph(handler)])));
+}
+
+export function withReleasedEvidenceGraph(handler, release = clearEvidenceGraphCache) {
+  return async (...args) => {
+    release();
+    return handler(...args);
+  };
 }

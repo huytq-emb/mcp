@@ -10,6 +10,7 @@ import { sanitizeDriverProfileName } from "../driver-profiles/catalog.js";
 import {
   ensureDirectPdfFilename,
   ensureInsideRoot as ensurePathInsideRoot,
+  ensureRegularFileInsideRoot,
 } from "./path-safety.js";
 
 // -----------------------------------------------------------------------------
@@ -345,6 +346,13 @@ export async function readIndexLock(filename) {
 
 export function isIndexLockStale(lockInfo, nowMs = Date.now()) {
   if (!lockInfo) return false;
+  const pid = Number(lockInfo.pid || 0);
+  if (Number.isInteger(pid) && pid > 0) {
+    try { process.kill(pid, 0); }
+    catch (error) {
+      if (error?.code !== "EPERM") return true;
+    }
+  }
   const createdMs = Number(lockInfo.createdAtMs || 0);
   if (!Number.isFinite(createdMs) || createdMs <= 0) return true;
   return nowMs - createdMs > INDEX_LOCK_STALE_MS;
@@ -432,12 +440,12 @@ export async function withIndexBuildLock(filename, options, callback) {
 }
 
 export async function getPdfSourceInfo(filename, options = {}) {
-  const filePath = safePdfPath(filename);
+  const filePath = await assertSafePdfPath(filename);
   return readSourceIdentity(filePath, { includeHash: options.includeHash === true, bypassCache: options.bypassCache === true });
 }
 
 export async function getStablePdfSourceInfo(filename) {
-  return readStableSourceIdentity(safePdfPath(filename));
+  return readStableSourceIdentity(await assertSafePdfPath(filename));
 }
 
 export function isSamePdfSource(cacheSource, currentSource) {
@@ -491,6 +499,12 @@ export function ensureInsideRoot(candidatePath, rootDir, what) {
 
 export function safePdfPath(filename) {
   return getPathResolver().pdf(filename);
+}
+
+export async function assertSafePdfPath(filename) {
+  const resolver = getPathResolver();
+  const filePath = resolver.pdf(filename);
+  return ensureRegularFileInsideRoot(filePath, resolver.documentsDir(), "PDF", fs);
 }
 
 export function safeIndexPath(filename) {

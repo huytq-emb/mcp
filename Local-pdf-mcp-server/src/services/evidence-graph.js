@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import {
   CORE_GENERATION_ARTIFACTS,
+  clearCommittedArtifactCache,
   createGenerationChangedError,
   createGenerationInvalidError,
   loadAndValidateCoreArtifactGenerations,
@@ -40,6 +41,94 @@ const GRAPH_ARTIFACTS = Object.freeze({
   figures: safeFiguresIndexPath,
 });
 const validatedGraphCache = new Map();
+const graphRuntimeIndexCache = new WeakMap();
+
+function graphCacheLimit(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+function graphCacheLimits() {
+  return {
+    // A parsed evidence graph is several times larger than its JSON file. Keep
+    // only the active manual by default so alternating between large manuals
+    // cannot retain multiple multi-hundred-megabyte object graphs.
+    maxEntries: graphCacheLimit("RENESAS_MCP_GRAPH_CACHE_MAX_ENTRIES", 1),
+    maxBytes: graphCacheLimit("RENESAS_MCP_GRAPH_CACHE_MAX_BYTES", 320 * 1024 * 1024),
+  };
+}
+
+function graphCacheBytes() {
+  let total = 0;
+  for (const entry of validatedGraphCache.values()) total += Number(entry.byteSize || 0);
+  return total;
+}
+
+function evictValidatedGraphCache(protectedKey = "") {
+  const limits = graphCacheLimits();
+  if (limits.maxEntries === 0 || limits.maxBytes === 0) {
+    validatedGraphCache.clear();
+    return;
+  }
+  let totalBytes = graphCacheBytes();
+  for (const [key, entry] of validatedGraphCache) {
+    if (validatedGraphCache.size <= limits.maxEntries && totalBytes <= limits.maxBytes) break;
+    // Retain one active graph even when its JSON representation alone exceeds
+    // the configured byte limit; otherwise every request would parse it again.
+    if (key === protectedKey && validatedGraphCache.size <= 1) break;
+    validatedGraphCache.delete(key);
+    totalBytes -= Number(entry.byteSize || 0);
+  }
+}
+
+function cacheValidatedGraph(key, signature, graph, byteSize = 0) {
+  validatedGraphCache.delete(key);
+  validatedGraphCache.set(key, { signature, graph, byteSize: Number(byteSize || 0) });
+  evictValidatedGraphCache(key);
+}
+
+function getCachedValidatedGraph(key, signature) {
+  const cached = validatedGraphCache.get(key);
+  if (!cached || cached.signature !== signature) return null;
+  // Refresh insertion order to make the bounded map a real LRU.
+  validatedGraphCache.delete(key);
+  validatedGraphCache.set(key, cached);
+  return cached.graph;
+}
+
+export function clearEvidenceGraphCache() {
+  validatedGraphCache.clear();
+}
+
+export function getEvidenceGraphCacheStats() {
+  const limits = graphCacheLimits();
+  return {
+    entries: validatedGraphCache.size,
+    bytes: graphCacheBytes(),
+    maxEntries: limits.maxEntries,
+    maxBytes: limits.maxBytes,
+  };
+}
+
+export function getEvidenceGraphRuntimeIndex(graph) {
+  if (!graph || typeof graph !== "object") return { entitiesById: new Map(), relationshipsByEntityId: new Map() };
+  const cached = graphRuntimeIndexCache.get(graph);
+  if (cached) return cached;
+  const entitiesById = new Map();
+  for (const entity of graph.entities || []) entitiesById.set(entity.id, entity);
+  const relationshipsByEntityId = new Map();
+  for (const relationship of graph.relationships || []) {
+    for (const entityId of [relationship.from, relationship.to]) {
+      if (!entityId) continue;
+      const rows = relationshipsByEntityId.get(entityId);
+      if (rows) rows.push(relationship);
+      else relationshipsByEntityId.set(entityId, [relationship]);
+    }
+  }
+  const index = { entitiesById, relationshipsByEntityId };
+  graphRuntimeIndexCache.set(graph, index);
+  return index;
+}
 
 const GRAPH_RESOLVER_METHODS = Object.freeze({
   pages: "pages",
@@ -478,7 +567,9 @@ export function validateEvidenceGraph(graph = {}) {
 
 export async function buildEvidenceGraph(filename) {
   const resolver = getPathResolver();
-  validatedGraphCache.delete(graphCacheKey(filename, resolver));
+  const cacheKey = graphCacheKey(filename, resolver);
+  if (validatedGraphCache.size && !validatedGraphCache.has(cacheKey)) clearCommittedArtifactCache();
+  validatedGraphCache.delete(cacheKey);
   const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
   const artifactValues = await loadAndValidateCoreArtifactGenerations(filename, {
@@ -806,7 +897,8 @@ export async function buildEvidenceGraph(filename) {
   await fs.mkdir(path.dirname(graphPath), { recursive: true });
   await atomicWriteJson(graphPath, graph);
   const cacheSignature = await evidenceGraphCacheSignature(filename, graphPath, currentSourceFingerprint, fs, resolver);
-  validatedGraphCache.set(graphCacheKey(filename, resolver), { signature: cacheSignature, graph });
+  const graphStat = await fs.stat(graphPath);
+  cacheValidatedGraph(graphCacheKey(filename, resolver), cacheSignature, graph, graphStat.size);
   return graph;
 }
 
@@ -818,6 +910,10 @@ export async function loadEvidenceGraph(filename, options = {}) {
   const source = await getPdfSourceInfo(filename, { includeHash: true });
   const currentSourceFingerprint = sourceFingerprint(source);
   const cacheKey = graphCacheKey(filename, resolver);
+  // A graph and lexical chunk index are the two dominant runtime objects.
+  // Release the previous manual's lexical cache before parsing a new graph so
+  // cross-manual iteration never overlaps both generations in memory.
+  if (validatedGraphCache.size && !validatedGraphCache.has(cacheKey)) clearCommittedArtifactCache();
   const maxAttempts = Math.max(1, Math.min(5, Number(options.maxAttempts || 2)));
   let previousStableMismatch = "";
 
@@ -840,8 +936,8 @@ export async function loadEvidenceGraph(filename, options = {}) {
         throw new Error(`Evidence graph not found for ${filename}. Run index_pdf first or rebuild the evidence graph.`);
       }
       const legacySignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint, fsOps, resolver);
-      const legacyCached = validatedGraphCache.get(cacheKey);
-      if (legacyCached?.signature === legacySignature) return legacyCached.graph;
+      const legacyCached = getCachedValidatedGraph(cacheKey, legacySignature);
+      if (legacyCached) return legacyCached;
       const graph = JSON.parse(await fsOps.readFile(filePath, "utf8"));
       if (graph.schemaVersion !== EVIDENCE_GRAPH_SCHEMA_VERSION || graph.filename !== filename || graph.sourceFingerprint !== currentSourceFingerprint) {
         if (buildIfMissing) return buildEvidenceGraph(filename);
@@ -860,10 +956,41 @@ export async function loadEvidenceGraph(filename, options = {}) {
           throw new Error(`Evidence graph has a stale ${key} dependency generation.`);
         }
       }
-      validatedGraphCache.set(cacheKey, { signature: legacySignature, graph });
+      const graphStat = await fsOps.stat(filePath);
+      cacheValidatedGraph(cacheKey, legacySignature, graph, graphStat.size);
       return graph;
     }
     await options.onReadStep?.({ step: "manifest-before", attempt, filename, key: "evidence-graph", manifest: structuredClone(manifestBefore) });
+
+    // Committed publications used to bypass the validated cache, causing each
+    // query to parse another 100-260 MB graph while callers still retained the
+    // previous one. Reuse is safe only when both the complete file signature
+    // and the ready-manifest generation agree.
+    const committedSignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint, fsOps, resolver);
+    const cachedGraph = getCachedValidatedGraph(cacheKey, committedSignature);
+    if (
+      cachedGraph?.artifactComplete === true
+      && cachedGraph.schemaVersion === EVIDENCE_GRAPH_SCHEMA_VERSION
+      && cachedGraph.filename === filename
+      && cachedGraph.sourceFingerprint === currentSourceFingerprint
+      && cachedGraph.generation?.generationId === manifestBefore.generation.evidenceGraphGeneration
+    ) {
+      const manifestAfter = await loadReadyCommittedManifest(filename, {
+        ...options,
+        fs: fsOps,
+        expectedSourceFingerprint: currentSourceFingerprint,
+        allowMissing: true,
+      });
+      await options.onReadStep?.({ step: "manifest-after", attempt, filename, key: "evidence-graph", manifest: manifestAfter ? structuredClone(manifestAfter) : null });
+      if (
+        manifestAfter
+        && manifestAfter.generation.buildId === manifestBefore.generation.buildId
+        && manifestAfter.generation.sourceFingerprint === manifestBefore.generation.sourceFingerprint
+        && manifestAfter.generation.evidenceGraphGeneration === cachedGraph.generation.generationId
+      ) return cachedGraph;
+      if (attempt >= maxAttempts) throw createGenerationChangedError(filename, "The ready manifest changed while reusing the evidence graph.");
+      continue;
+    }
 
     let graph = null;
     let artifacts = null;
@@ -931,6 +1058,9 @@ export async function loadEvidenceGraph(filename, options = {}) {
       if (attempt >= maxAttempts) throw createGenerationChangedError(filename, "The evidence graph did not remain bound to the ready manifest.");
       continue;
     }
+    const finalSignature = await evidenceGraphCacheSignature(filename, filePath, currentSourceFingerprint, fsOps, resolver);
+    const graphStat = await fsOps.stat(filePath);
+    cacheValidatedGraph(cacheKey, finalSignature, graph, graphStat.size);
     return graph;
   }
   throw createGenerationChangedError(filename);
@@ -939,7 +1069,8 @@ export async function loadEvidenceGraph(filename, options = {}) {
 export function getEvidenceGraphEntity(graph, entityId) {
   const requested = String(entityId || "").trim();
   const entities = graph?.entities || [];
-  const idMatch = entities.find((candidate) => candidate.id === requested);
+  const runtimeIndex = getEvidenceGraphRuntimeIndex(graph);
+  const idMatch = runtimeIndex.entitiesById.get(requested);
   const matches = idMatch ? [idMatch] : entities.filter((candidate) => {
     const values = [candidate.canonicalName, candidate.displayName, ...(candidate.aliases || []), ...(candidate.aliasVariants || [])];
     return values.some((value) => aliasLookupKeys(value).some((key) => aliasLookupKeys(requested).includes(key)));
@@ -955,12 +1086,12 @@ export function getEvidenceGraphEntity(graph, entityId) {
     };
   }
   const [entity] = matches;
-  const relationships = (graph.relationships || []).filter((relationship) => relationship.from === entity.id || relationship.to === entity.id);
+  const relationships = runtimeIndex.relationshipsByEntityId.get(entity.id) || [];
   const relatedIds = new Set(relationships.map((relationship) => relationship.from === entity.id ? relationship.to : relationship.from));
   return {
     entity,
     relationships,
-    relatedEntities: (graph.entities || []).filter((candidate) => relatedIds.has(candidate.id)),
+    relatedEntities: [...relatedIds].map((id) => runtimeIndex.entitiesById.get(id)).filter(Boolean),
     conflicts: (graph.conflicts || []).filter((conflict) => conflict.entityId === entity.id),
   };
 }

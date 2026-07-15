@@ -206,6 +206,28 @@ export function parseBitfieldSemantics(line, bitfield = "") {
   };
 }
 
+export function parseCoordinateBitfieldRow(row = {}, cellsByRole = {}) {
+  const rowCells = Array.isArray(row.cells) ? row.cells.map((value) => String(value || "").trim()) : [];
+  const bracketedField = [cellsByRole.bitfield, cellsByRole.bit, ...rowCells]
+    .map((value) => String(value || "").trim())
+    .find((value) => /\b[A-Z][A-Z0-9_]{1,31}\s*\[\s*[0-9]{1,2}(?:\s*:\s*[0-9]{1,2})?\s*\]/i.test(value));
+  const fieldMatch = String(bracketedField || row.text || "").match(/\b([A-Z][A-Z0-9_]{1,31})\s*\[\s*([0-9]{1,2})(?:\s*:\s*([0-9]{1,2}))?\s*\]/i);
+  if (!fieldMatch) return null;
+
+  const bitfield = fieldMatch[1];
+  const physicalCell = [cellsByRole.bit, ...rowCells]
+    .map((value) => String(value || "").trim())
+    .find((value) => /^(?:[0-9]{1,2}\s*(?:to|:|-)\s*[0-9]{1,2}|[0-9]{1,2})$/i.test(value)) || "";
+  const context = [physicalCell, bracketedField, row.text].filter(Boolean).join(" | ");
+  return {
+    bitfield,
+    fieldCell: bracketedField,
+    bitCell: physicalCell,
+    semantics: parseBitfieldSemantics(context, bitfield),
+    context,
+  };
+}
+
 function registerNames(entry = {}) {
   return [entry.name, entry.displayName, entry.canonicalName, ...(entry.aliases || [])]
     .map(String)

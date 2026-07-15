@@ -33,6 +33,24 @@ test("per-job files preserve concurrent writers for different jobs", async () =>
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("job reads survive the transient missing-target window of Windows atomic replacement", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-job-transient-read-"));
+  const paths = createPathResolver(createRuntimeConfig({ rootDir: root }));
+  const store = createJobStore({ paths, readRetries: 0 });
+  try {
+    await fs.mkdir(paths.jobsDir(), { recursive: true });
+    const previous = { ...job("swap", "running", 10), revision: 2 };
+    const current = { ...job("swap", "running", 11), revision: 3, message: "newest" };
+    await fs.writeFile(`${paths.job("swap")}.backup-test`, JSON.stringify(previous), "utf8");
+    await fs.writeFile(`${paths.job("swap")}.incoming-test`, JSON.stringify(current), "utf8");
+    const read = await store.readJob("swap");
+    assert.equal(read.message, "newest");
+    const listed = await store.listJobs();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].revision, 3);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test("cancelled terminal state rejects late running and done updates", async () => {
   const { root, store } = await fixture();
   try {
@@ -94,6 +112,19 @@ test("recovery applies queued grace and rechecks live PIDs for active jobs", asy
     assert.equal(recovered.find((entry) => entry.id === "queued-old").phase, "interrupted");
     assert.equal(recovered.find((entry) => entry.id === "running-live").status, "running");
     assert.equal(recovered.find((entry) => entry.id === "running-dead").phase, "interrupted");
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("polling a live job does not contend for its writer lock", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-job-live-poll-"));
+  const paths = createPathResolver(createRuntimeConfig({ rootDir: root }));
+  const store = createJobStore({ paths, lockRetries: 0 });
+  try {
+    await store.createJob({ ...job("live-poll", "running", 10, { workerPid: 77 }), createdMs: 1 });
+    await fs.writeFile(paths.jobLock("live-poll"), JSON.stringify({ pid: process.pid, createdMs: Date.now() }), "utf8");
+    const recovered = await store.recoverJob("live-poll", { isProcessAlive: (pid) => pid === 77 });
+    assert.equal(recovered.status, "running");
+    assert.equal(recovered.metadata.workerPid, 77);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

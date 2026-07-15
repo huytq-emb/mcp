@@ -1,5 +1,6 @@
 import { atomicWriteJson, canonicalSymbol, clampChunkOverlap, clampChunkSize, clampRegisterListTopK, clampTopK, escapeRegExp, getPdfSourceInfo, getStablePdfSourceInfo, isArtifactPublicationStateError, isSamePdfSource, normalizeForSearch, normalizeText, pathExists, readJsonCached, safeIndexPath, safeRegistersIndexPath, safeSectionsIndexPath, withIndexBuildLock } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
+import { throwIfAborted } from "../core/cancellation.js";
 import { contentSourceFingerprint } from "../artifacts/manifest.js";
 import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { DEFAULT_PAGE_RANGE, DEFAULT_TOP_K, INDEX_SCHEMA_VERSION, REGISTER_INDEX_SCHEMA_VERSION, SECTION_INDEX_SCHEMA_VERSION, SERVER_VERSION } from "../core/runtime-constants.js";
@@ -804,32 +805,45 @@ export function isNonRegisterSignal(symbol) {
   return !looksLikeRegisterSymbol(symbol);
 }
 
+const registerScoreContexts = new WeakMap();
+
+function registerScoreContext(chunk) {
+  if (chunk && typeof chunk === "object" && registerScoreContexts.has(chunk)) return registerScoreContexts.get(chunk);
+  const text = String(chunk?.text || "");
+  const headings = (chunk?.headings || []).join("\n");
+  const context = {
+    text,
+    searchText: chunk?.searchText || normalizeForSearch(text),
+    canonicalText: canonicalSymbol(text),
+    canonicalHeading: canonicalSymbol(headings),
+    registers: new Set((chunk?.registers || []).map(normalizeRegisterName)),
+    symbols: new Set((chunk?.symbols || []).map(normalizeRegisterName)),
+    structuralScore:
+      (/\b(Register|Registers|Register Description|Register Descriptions)\b/i.test(text) ? 18 : 0) +
+      (/\b(Address|Offset)\s*:?\b/i.test(text) ? 14 : 0) +
+      (/\bInitial\s+Value\s*:?\b/i.test(text) ? 12 : 0) +
+      (/\bAccess\s+Size\s*:?\b/i.test(text) ? 10 : 0) +
+      (/\bBit\s+Name\b/i.test(text) ? 12 : 0) +
+      (/\bDescription\b/i.test(text) ? 4 : 0),
+  };
+  if (chunk && typeof chunk === "object") registerScoreContexts.set(chunk, context);
+  return context;
+}
+
 export function scoreRegisterOccurrence(symbol, chunk) {
   const name = normalizeRegisterName(symbol);
-  const text = String(chunk.text || "");
-  const searchText = chunk.searchText || normalizeForSearch(text);
-  const headings = (chunk.headings || []).join("\n");
-  const headingSearch = normalizeForSearch(headings);
-  const canonicalHeading = canonicalSymbol(headings);
+  const context = registerScoreContext(chunk);
+  let score = 20 + context.structuralScore;
 
-  let score = 20;
-
-  if ((chunk.registers || []).map(normalizeRegisterName).includes(name)) score += 30;
-  if ((chunk.symbols || []).map(normalizeRegisterName).includes(name)) score += 15;
-  if (canonicalHeading.includes(name)) score += 35;
+  if (context.registers.has(name)) score += 30;
+  if (context.symbols.has(name)) score += 15;
+  if (context.canonicalHeading.includes(name)) score += 35;
 
   const registerWord = normalizeForSearch(symbol);
-  if (registerWord && searchText.includes(`${registerWord} register`)) score += 30;
-  if (registerWord && searchText.includes(`register ${registerWord}`)) score += 25;
+  if (registerWord && context.searchText.includes(`${registerWord} register`)) score += 30;
+  if (registerWord && context.searchText.includes(`register ${registerWord}`)) score += 25;
 
-  if (/\b(Register|Registers|Register Description|Register Descriptions)\b/i.test(text)) score += 18;
-  if (/\b(Address|Offset)\s*:?\b/i.test(text)) score += 14;
-  if (/\bInitial\s+Value\s*:?\b/i.test(text)) score += 12;
-  if (/\bAccess\s+Size\s*:?\b/i.test(text)) score += 10;
-  if (/\bBit\s+Name\b/i.test(text)) score += 12;
-  if (/\bDescription\b/i.test(text)) score += 4;
-
-  const occurrenceCount = (canonicalSymbol(text).match(new RegExp(escapeRegExp(name), "g")) || []).length;
+  const occurrenceCount = (context.canonicalText.match(new RegExp(escapeRegExp(name), "g")) || []).length;
   score += Math.min(occurrenceCount * 3, 24);
 
   return score;
@@ -838,12 +852,27 @@ export function scoreRegisterOccurrence(symbol, chunk) {
 export function nearestSectionForPage(sectionsIndex, pageNumber) {
   if (!sectionsIndex || !Array.isArray(sectionsIndex.sections)) return null;
 
-  let best = null;
-  for (const section of sectionsIndex.sections) {
-    if (Number(section.page) > Number(pageNumber)) continue;
-    if (!best || section.page > best.page || (section.page === best.page && section.level > best.level)) {
-      best = section;
+  const sections = sectionsIndex.sections;
+  const targetPage = Number(pageNumber);
+  let low = 0;
+  let high = sections.length - 1;
+  let upper = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Number(sections[middle]?.page) <= targetPage) {
+      upper = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
     }
+  }
+  if (upper < 0) return null;
+  const bestPage = Number(sections[upper]?.page);
+  let best = sections[upper];
+  for (let index = upper - 1; index >= 0 && Number(sections[index]?.page) === bestPage; index -= 1) {
+    const candidate = sections[index];
+    if (Number(candidate.level) > Number(best.level)) best = candidate;
+    else if (Number(candidate.level) === Number(best.level)) best = candidate;
   }
 
   return best
@@ -1456,9 +1485,11 @@ export function buildSearchText(chunk) {
 }
 
 export async function buildPdfIndex(filename, options = {}) {
+  throwIfAborted(options.signal);
   return withSourceIdentityCache(() => withIndexBuildLock(filename, {
     forceLock: Boolean(options.forceLock),
   }, async () => {
+    throwIfAborted(options.signal);
     await fs.mkdir(getPathResolver().indexDir(), { recursive: true });
     const strongSource = await getStablePdfSourceInfo(filename);
     await getFileStat(filename);
@@ -1468,6 +1499,7 @@ export async function buildPdfIndex(filename, options = {}) {
     try {
       if (options.reusePageCache !== false) await seedStagedPagesCache(build);
       completedIndex = await withPathResolver(build.resolver, async () => {
+    throwIfAborted(options.signal);
 
     const chunkSize = clampChunkSize(options.chunkSize);
     const chunkOverlap = clampChunkOverlap(options.chunkOverlap, chunkSize);
@@ -1479,11 +1511,12 @@ export async function buildPdfIndex(filename, options = {}) {
     if (options.reusePageCache !== false) pageCache = await loadPagesCache(filename);
     if (!pageCache) {
       if (onProgress) onProgress({ phase: "build-pages-cache", current: 0, total: 0, unit: "" });
-      pageCache = await buildPagesCache(filename, { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine });
+      pageCache = await buildPagesCache(filename, { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine, signal: options.signal });
     } else if (onProgress) {
       onProgress({ phase: "reuse-pages-cache", current: pageCache.pageCount, total: pageCache.pageCount, unit: "pages" });
     }
 
+  throwIfAborted(options.signal);
   const pdfData = {
     filename,
     pageCount: pageCache.pageCount,
@@ -1495,6 +1528,7 @@ export async function buildPdfIndex(filename, options = {}) {
   const chunks = [];
 
   for (const page of pdfData.pages) {
+    throwIfAborted(options.signal);
     if (onProgress && (page.page === 1 || page.page === pdfData.pageCount || page.page % 25 === 0)) {
       onProgress({ phase: "chunk-pages", current: page.page, total: pdfData.pageCount, unit: "pages" });
     }
@@ -1560,8 +1594,10 @@ export async function buildPdfIndex(filename, options = {}) {
     chunks,
   };
 
-  const workerOptions = { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine };
+  throwIfAborted(options.signal);
+  const workerOptions = { onProgress, onWorkerContext: options.onWorkerContext, onWorkerSpawn: options.onWorkerSpawn, onWorkerStderr: options.onWorkerStderr, extractionEngine: options.extractionEngine, signal: options.signal };
   const structured = await buildStructuredArtifacts(filename, indexData, pageCache, sectionsIndex, workerOptions);
+  throwIfAborted(options.signal);
   let tablesIndex;
   let registersIndex;
   let bitfieldsIndex;
@@ -1574,7 +1610,7 @@ export async function buildPdfIndex(filename, options = {}) {
     if (onProgress) onProgress({ phase: "build-registers-index", current: 0, total: 0, unit: "" });
     registersIndex = await buildRegistersIndex(filename, indexData, sectionsIndex, tablesIndex);
     if (onProgress) onProgress({ phase: "build-bitfields-index", current: 0, total: 0, unit: "" });
-    bitfieldsIndex = await buildBitfieldsIndex(filename, indexData, registersIndex, tablesIndex);
+    bitfieldsIndex = await buildBitfieldsIndex(filename, indexData, registersIndex, tablesIndex, workerOptions);
     if (onProgress) onProgress({ phase: "build-cautions-index", current: 0, total: 0, unit: "" });
     cautionsIndex = await buildCautionsIndex(filename, indexData, sectionsIndex, registersIndex);
   }
@@ -1585,10 +1621,12 @@ export async function buildPdfIndex(filename, options = {}) {
 
   if (onProgress) onProgress({ phase: "build-sequences-index", current: 0, total: 0, unit: "" });
   const sequencesIndex = await buildSequencesIndex(filename, indexData, sectionsIndex, registersIndex, { tablesIndex, bitfieldsIndex, cautionsIndex });
+  throwIfAborted(options.signal);
   indexData.sequenceCount = sequencesIndex.sequenceCount;
 
   if (onProgress) onProgress({ phase: "build-figures-index", current: 0, total: 0, unit: "" });
   const figuresIndex = await buildFiguresIndex(filename, pageCache);
+  throwIfAborted(options.signal);
   indexData.figureCount = figuresIndex.figureCount;
 
   // The graph intentionally reads the normalized on-disk artifacts, including
@@ -1601,6 +1639,7 @@ export async function buildPdfIndex(filename, options = {}) {
   });
   if (onProgress) onProgress({ phase: "build-evidence-graph", current: 0, total: 0, unit: "" });
   const linkingGraph = await buildEvidenceGraph(filename);
+  throwIfAborted(options.signal);
   for (const chunk of indexData.chunks) chunk.entityIds = linkingGraph.chunkEntityIds?.[chunk.id] || [];
   await atomicWriteJson(indexPath, indexData);
   await stampCoreArtifactGenerations(filename, {
@@ -1608,10 +1647,12 @@ export async function buildPdfIndex(filename, options = {}) {
     chunkingVersion: 2,
   });
   const evidenceGraph = await buildEvidenceGraph(filename);
+  throwIfAborted(options.signal);
   indexData.evidenceGraphEntityCount = evidenceGraph.entities.length;
 
     if (onProgress) onProgress({ phase: "verify-source-stability", current: 0, total: 0, unit: "" });
     const finalSource = await getStablePdfSourceInfo(filename);
+    throwIfAborted(options.signal);
     assertSameContentSource(strongSource, finalSource, filename);
     if (onProgress) onProgress({ phase: "write-index", current: 0, total: 0, unit: "" });
     await writeArtifactManifest(filename, { source: finalSource, buildStatus: "ready", notes: ["full index build completed", `evidence graph entities=${evidenceGraph.entities.length}`], clearStale: true, producer: tablesIndex.producer || pageCache.producer || { engine: "node" } });
@@ -1628,10 +1669,12 @@ export async function buildPdfIndex(filename, options = {}) {
       await promoteStagedGeneration(build, {
         ...publication,
         verifyBeforePublish: async () => {
+          throwIfAborted(options.signal);
           await publication.verifyBeforePublish?.();
           await verifyCurrentSource();
         },
         verifyBeforeCommit: async () => {
+          throwIfAborted(options.signal);
           await publication.verifyBeforeCommit?.();
           await verifyCurrentSource();
         },

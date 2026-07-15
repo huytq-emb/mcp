@@ -20,6 +20,11 @@ test("bitfield v3 reports conflicts and invalid widths", () => {
   assert.match(result.validationIssues.join("\n"), /differs from field-local width/);
 });
 
+test("register case variants are one provenance value, not a conflict", () => {
+  const conflicts = buildBitfieldConflicts({ register: [{ value: "DMACm_DCTRL" }, { value: "DMACM_DCTRL" }] });
+  assert.deepEqual(conflicts, []);
+});
+
 test("bitfield overlap detection flags different fields sharing physical bits", () => {
   const overlaps = findBitfieldOverlaps([
     { id: "a", register: "CTRL", bitfield: "A", bitPositionRange: "7:4" },

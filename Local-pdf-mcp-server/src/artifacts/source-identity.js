@@ -4,6 +4,22 @@ import fsp from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const identityCacheStorage = new AsyncLocalStorage();
+const sharedIdentityCache = new Map();
+const SHARED_IDENTITY_CACHE_ENTRIES = 64;
+
+function sharedIdentityHash(key) {
+  const cached = sharedIdentityCache.get(key);
+  if (!cached) return null;
+  sharedIdentityCache.delete(key);
+  sharedIdentityCache.set(key, cached);
+  return cached;
+}
+
+function cacheSharedIdentity(key, sha256) {
+  sharedIdentityCache.delete(key);
+  sharedIdentityCache.set(key, sha256);
+  while (sharedIdentityCache.size > SHARED_IDENTITY_CACHE_ENTRIES) sharedIdentityCache.delete(sharedIdentityCache.keys().next().value);
+}
 
 export class SourceChangedError extends Error {
   constructor(message = "PDF changed while source identity was being calculated") {
@@ -57,7 +73,9 @@ export async function readStableSourceIdentity(filePath, options = {}) {
   const before = identityFromStat(beforeStat);
   const cache = options.cache || identityCacheStorage.getStore();
   const key = cacheKey(filePath, before);
-  const cached = options.allowCache === true && options.bypassCache !== true ? cache?.get(key) : null;
+  const cached = options.allowCache === true && options.bypassCache !== true
+    ? cache?.get(key) || sharedIdentityHash(key)
+    : null;
   const hashFile = options.hashFile || sha256File;
   const sha256 = cached || await hashFile(filePath, options);
   const after = identityFromStat(await statFile(filePath));
@@ -66,6 +84,7 @@ export async function readStableSourceIdentity(filePath, options = {}) {
   }
   after.sha256 = sha256;
   cache?.set(cacheKey(filePath, after), sha256);
+  if (options.allowCache === true && options.bypassCache !== true) cacheSharedIdentity(cacheKey(filePath, after), sha256);
   return after;
 }
 
@@ -106,6 +125,7 @@ export function isCompatibleBuildCheckpoint(checkpoint, { filename, buildId, sou
 
 export function clearSourceIdentityCache() {
   identityCacheStorage.getStore()?.clear();
+  sharedIdentityCache.clear();
 }
 
 export function withSourceIdentityCache(callback) {

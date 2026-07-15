@@ -101,9 +101,12 @@ read_manual_evidence(filename="...", entity_id="register:...")
 collect_manual_evidence(filename="...", task="Review DMA driver IRQ clear handling", module_type="dmaengine", depth="deep")
 ```
 
-These tools use exact-symbol, lexical, graph, and page-neighborhood retrieval,
-then return provenance, conflicts, gaps, verification requirements, and
-pagination in `structuredContent`. See [EvidenceBundle v2 migration](docs/EVIDENCE_BUNDLE_V2.md).
+These tools use exact-symbol, graph, page-neighborhood, and—when the graph and
+lexical corpus fit safely in one Node heap—lexical retrieval, then return
+provenance, conflicts, gaps, verification requirements, and pagination in
+`structuredContent`. For very large graphs, the bundle explicitly warns that
+in-process lexical fusion was deferred; use `hybrid_search_pdf` as a separate
+request for chunk-level corroboration. See [EvidenceBundle v2 migration](docs/EVIDENCE_BUNDLE_V2.md).
 
 Public tools are grouped into primary evidence, advanced/manual inspection,
 compatibility, and control generations. Normal agent workflows should start
@@ -161,6 +164,21 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 
 - Run `doctor(filename="...")` or `mcp_control(action="index_status_lite", filename="...")` first.
 - Use `force_lock` only if no indexing worker is running.
+
+`index_status_lite` performs bounded artifact-header checks, validates the ready
+manifest against the current PDF SHA-256 identity, includes recent jobs, and
+reports stale/missing/broken state without parsing large artifacts in full.
+
+To exercise every PDF discovered recursively under `documents/` and write a
+machine-readable matrix under `indexes/`, run:
+
+```powershell
+npm.cmd run test:manuals -- --require-manuals --write
+```
+
+Large manuals use detached background indexing and bounded job polling. Nested
+paths and duplicate basenames are reported as failures because the public MCP
+contract accepts direct filenames only; they are never silently skipped.
 
 ### Missing figures manifest
 

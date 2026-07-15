@@ -1,11 +1,41 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { contentSourceFingerprint, metadataFingerprint, sourceFingerprint } from "../../src/artifacts/manifest.js";
 import { isSamePdfSource } from "../../src/core/runtime-helpers.js";
-import { assertSameContentSource, readSourceIdentity, readStableSourceIdentity, requireStrongSourceIdentity, SourceChangedError } from "../../src/artifacts/source-identity.js";
+import { assertSameContentSource, clearSourceIdentityCache, readSourceIdentity, readStableSourceIdentity, requireStrongSourceIdentity, SourceChangedError } from "../../src/artifacts/source-identity.js";
+
+test("cross-request source identity cache reuses stable metadata and invalidates on content writes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-source-shared-cache-"));
+  const filePath = path.join(root, "cached.pdf");
+  clearSourceIdentityCache();
+  try {
+    await fs.writeFile(filePath, "AAAA", "utf8");
+    const initialStat = await fs.stat(filePath);
+    let hashCalls = 0;
+    const hashFile = async () => {
+      hashCalls += 1;
+      return crypto.createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
+    };
+    const first = await readSourceIdentity(filePath, { includeHash: true, hashFile });
+    const second = await readSourceIdentity(filePath, { includeHash: true, hashFile });
+    assert.equal(second.sha256, first.sha256);
+    assert.equal(hashCalls, 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await fs.writeFile(filePath, "BBBB", "utf8");
+    await fs.utimes(filePath, initialStat.atime, initialStat.mtime);
+    const changed = await readSourceIdentity(filePath, { includeHash: true, hashFile });
+    assert.notEqual(changed.sha256, first.sha256);
+    assert.equal(hashCalls, 2);
+  } finally {
+    clearSourceIdentityCache();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("same size and mtime with different PDF content has different SHA-256 identity", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-source-identity-"));

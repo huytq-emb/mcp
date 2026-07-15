@@ -3,6 +3,9 @@ import { validateEvidenceBundleV2 } from "../evidence/contract.js";
 import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 import { withPathResolver } from "../core/path-resolver.js";
 import { withRuntimePortRegistry } from "../core/runtime-ports.js";
+import { awaitWithAbort, requestCancelledError, throwIfAborted } from "../core/cancellation.js";
+
+export { requestCancelledError } from "../core/cancellation.js";
 
 function validateDefinition(definition) {
   if (!definition || typeof definition !== "object") throw new Error("Tool definition must be an object");
@@ -84,7 +87,7 @@ export function createToolRegistry({
     has(name) {
       return allEntries.has(String(name || ""));
     },
-    async dispatchTool(name, args = {}) {
+    async dispatchTool(name, args = {}, options = {}) {
       const normalizedName = String(name || "");
       const normalizedArgs = args === undefined ? {} : args;
       const entry = allEntries.get(normalizedName);
@@ -92,13 +95,17 @@ export function createToolRegistry({
       if (entry.validateArgs && !entry.validateArgs(normalizedArgs)) {
         throw new Error(formatValidationErrors(normalizedName, entry.validateArgs.errors));
       }
-      const invoke = () => withSourceIdentityCache(() => entry.handler(normalizedArgs || {}, { name: normalizedName, context }));
+      const signal = options?.signal;
+      throwIfAborted(signal);
+      const invoke = () => withSourceIdentityCache(() => entry.handler(normalizedArgs || {}, { name: normalizedName, context, signal }));
       const withPorts = () => context?.runtimePorts
         ? withRuntimePortRegistry(context.runtimePorts, invoke)
         : invoke();
-      const result = await (context?.paths
+      const pending = context?.paths
         ? withPathResolver(context.paths, withPorts)
-        : withPorts());
+        : withPorts();
+      const result = await awaitWithAbort(pending, signal);
+      throwIfAborted(signal);
       if (result?.structuredContent?.schemaVersion === 2) {
         const validation = validateEvidenceBundleV2(result.structuredContent);
         if (!validation.ok) throw new Error(`Invalid EvidenceBundle v2 returned by ${normalizedName}: ${validation.errors.join("; ")}`);

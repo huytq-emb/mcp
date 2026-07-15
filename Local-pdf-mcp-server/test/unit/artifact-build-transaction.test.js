@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createAppContext } from "../../src/core/app-context.js";
 import { withPathResolver } from "../../src/core/path-resolver.js";
+import { ensureInsideRoot } from "../../src/core/path-safety.js";
 import { assertArtifactPublicationReadable } from "../../src/core/runtime-helpers.js";
 import { atomicWriteJson as writeArtifactJson } from "../../src/core/runtime-helpers.js";
 import { replaceFileAtomic } from "../../src/core/atomic-file.js";
@@ -13,6 +14,7 @@ import { stampCoreArtifactGenerations } from "../../src/artifacts/generation.js"
 import { buildEvidenceGraph } from "../../src/services/evidence-graph.js";
 import { writeArtifactManifest } from "../../src/services/jobs.js";
 import { FULL_BUILD_ARTIFACT_KEYS, createStagedArtifactBuild, discardStagedGeneration, finalizeStagedGeneration, promoteStagedGeneration, validateCompleteStagedGeneration } from "../../src/services/artifact-build-transaction.js";
+import { pythonWorkerAllowedRoots } from "../../src/app/hybrid-runtime.js";
 
 async function fixture({ active = true } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-artifact-transaction-"));
@@ -47,6 +49,17 @@ async function cleanup(value) {
   await discardStagedGeneration(value.build).catch(() => {});
   await fs.rm(value.root, { recursive: true, force: true });
 }
+
+test("staged builds allow the isolated Python worker output root", async () => {
+  const value = await fixture();
+  try {
+    const roots = await withPathResolver(value.build.resolver, () => pythonWorkerAllowedRoots());
+    const workerRoot = value.build.resolver.pythonWorkerTempDir();
+    assert.equal(roots.includes(path.resolve(workerRoot)), true);
+    assert.equal(roots.includes(path.resolve(value.build.stageDir)), true);
+    assert.doesNotThrow(() => ensureInsideRoot(path.join(workerRoot, "request", "pages.json"), workerRoot, "worker artifact"));
+  } finally { await cleanup(value); }
+});
 
 test("source-changed full-build staging discards failed bytes without publishing over the ready generation", async () => {
   const value = await fixture();
@@ -153,8 +166,15 @@ test("complete staged generation validates schemas, SHA identity, dependency gen
       for (const [key, artifact] of Object.entries(artifacts)) await writeArtifactJson(value.build.stagedPaths[key], artifact);
       await stampCoreArtifactGenerations(value.filename, { source: value.source, chunkingVersion: 2 });
       await buildEvidenceGraph(value.filename);
+      const preFinalizeGraph = JSON.parse(await fs.readFile(value.build.stagedPaths["evidence-graph"], "utf8"));
+      const historicalLocation = preFinalizeGraph.entities.flatMap((entry) => entry.sourceLocations || [])[0];
+      historicalLocation.sourceArtifact = path.join(path.dirname(value.build.stageDir), "previous-deleted-build", path.basename(value.build.stagedPaths.pages));
+      await writeArtifactJson(value.build.stagedPaths["evidence-graph"], preFinalizeGraph);
       await writeArtifactManifest(value.filename, { source: value.source, buildStatus: "ready", clearStale: true });
       await finalizeStagedGeneration(value.build, { source: value.source });
+      const finalizedGraph = JSON.parse(await fs.readFile(value.build.stagedPaths["evidence-graph"], "utf8"));
+      assert.equal(finalizedGraph.entities.every((entry) => (entry.sourceLocations || []).every((location) => !String(location.sourceArtifact || "").startsWith(value.build.stageDir))), true);
+      assert.equal(finalizedGraph.entities.flatMap((entry) => entry.sourceLocations || [])[0].sourceArtifact, value.build.activePaths.pages);
       const validated = await validateCompleteStagedGeneration(value.build, { source: { ...value.source, mtimeMs: value.source.mtimeMs + 10_000 } });
       assert.equal(validated.manifest.generation.buildId, value.build.id);
       assert.equal(validated.graph.generation.sourceFingerprint, validated.manifest.generation.sourceFingerprint);

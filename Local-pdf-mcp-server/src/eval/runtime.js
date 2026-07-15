@@ -1,4 +1,4 @@
-import { atomicWriteFile, clampTopK, pathExists, safeEvalCasesPath, safeEvalFixturePath, safeEvalProfilePath, safeEvalReportJsonPath, safeEvalReportMarkdownPath, safeEvalReportTextPath, safePdfPath } from "../core/runtime-helpers.js";
+import { assertSafePdfPath, atomicWriteFile, clampTopK, pathExists, safeEvalCasesPath, safeEvalFixturePath, safeEvalProfilePath, safeEvalReportJsonPath, safeEvalReportMarkdownPath, safeEvalReportTextPath } from "../core/runtime-helpers.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
 import { DEFAULT_DRIVER_TASK_BUDGET_MS, EVAL_CASES_SCHEMA_VERSION, EVAL_FIXTURE_SCHEMA_VERSION, EVAL_PROFILE_SCHEMA_VERSION, MAX_EVAL_CASES, SERVER_VERSION } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
@@ -1134,9 +1134,8 @@ export async function listPdfFiles() {
 }
 
 export async function getFileStat(filename) {
-  const filePath = safePdfPath(filename);
-
   try {
+    const filePath = await assertSafePdfPath(filename);
     return await fs.stat(filePath);
   } catch (error) {
     if (error && error.code === "ENOENT") {

@@ -19,3 +19,22 @@ for (const subsystem of ["ethernet", "dma", "gpio-pinctrl", "watchdog", "pwm-tim
     assert.equal(queries.filter((entry) => entry.expectation.type !== "runtime-only").every((entry) => Object.keys(entry.expectation).length > 1), true);
   });
 }
+
+test("coverage expectation classification treats clock as a register query, not a lock sequence", () => {
+  for (const subsystem of ["ethernet", "pwm-timer", "usb"]) {
+    const clock = coverageQueriesFor(subsystem).find((entry) => entry.id === "clock");
+    assert.equal(clock.expectation.type, "entity");
+    assert.deepEqual(clock.expectation.requiredEntityTypes, ["register"]);
+  }
+  assert.equal(coverageQueriesFor("gpio-pinctrl").find((entry) => entry.id === "lock").expectation.type, "sequence");
+});
+
+test("numbered sequence probes remain sequences and unsupported GBETH probes are explicit runtime-only checks", () => {
+  assert.equal(coverageQueriesFor("dma").find((entry) => entry.id === "sequence2").expectation.type, "sequence");
+  assert.equal(coverageQueriesFor("watchdog").find((entry) => entry.id === "sequence3").expectation.type, "sequence");
+  for (const id of ["short-symbol", "sequence", "sequence-stop"]) {
+    const query = coverageQueriesFor("ethernet").find((entry) => entry.id === id);
+    assert.equal(query.expectation.type, "runtime-only");
+    assert.match(query.expectation.reason, /does not declare a verified normalized entity/);
+  }
+});

@@ -29,6 +29,88 @@ import {
 } from "../core/runtime-helpers.js";
 
 const GENERATION_FILESYSTEM_ERROR_CODES = new Set(["EACCES", "EPERM", "EIO", "EMFILE", "ENFILE", "ENOSPC", "EROFS"]);
+const committedArtifactCache = new Map();
+
+function artifactCacheLimit(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+function committedArtifactCacheLimits() {
+  return {
+    maxEntries: artifactCacheLimit("RENESAS_MCP_ARTIFACT_CACHE_MAX_ENTRIES", 8),
+    // Raw JSON size substantially understates V8 object size. A 64 MB raw
+    // budget keeps small semantic indexes warm but causes a full chunk index
+    // to be evicted as soon as the next artifact is cached.
+    maxBytes: artifactCacheLimit("RENESAS_MCP_ARTIFACT_CACHE_MAX_BYTES", 64 * 1024 * 1024),
+  };
+}
+
+function committedArtifactCacheBytes() {
+  let total = 0;
+  for (const entry of committedArtifactCache.values()) total += Number(entry.byteSize || 0);
+  return total;
+}
+
+function evictCommittedArtifactCache(protectedKey = "") {
+  const limits = committedArtifactCacheLimits();
+  if (limits.maxEntries === 0 || limits.maxBytes === 0) {
+    committedArtifactCache.clear();
+    return;
+  }
+  let totalBytes = committedArtifactCacheBytes();
+  for (const [key, entry] of committedArtifactCache) {
+    if (committedArtifactCache.size <= limits.maxEntries && totalBytes <= limits.maxBytes) break;
+    if (key === protectedKey && committedArtifactCache.size <= 1) break;
+    committedArtifactCache.delete(key);
+    totalBytes -= Number(entry.byteSize || 0);
+  }
+}
+
+function committedArtifactCacheKey(filename, key, resolver) {
+  return `${resolver.indexDir()}::${filename}::${key}`;
+}
+
+function getCachedCommittedArtifact(cacheKey, signature) {
+  const cached = committedArtifactCache.get(cacheKey);
+  if (!cached || cached.signature !== signature) return null;
+  committedArtifactCache.delete(cacheKey);
+  committedArtifactCache.set(cacheKey, cached);
+  return cached.artifact;
+}
+
+function cacheCommittedArtifact(cacheKey, signature, artifact, byteSize, artifactKey) {
+  const limits = committedArtifactCacheLimits();
+  const activeChunkIndex = [...committedArtifactCache.entries()].find(([, entry]) => entry.artifactKey === "chunk-index");
+  if (
+    artifactKey !== "chunk-index"
+    && activeChunkIndex
+    && activeChunkIndex[0] !== cacheKey
+    && committedArtifactCacheBytes() + Number(byteSize || 0) > limits.maxBytes
+  ) {
+    // The chunk index is the expensive, repeatedly used lexical corpus. Do not
+    // evict it for a one-off small semantic artifact; that caused every warm
+    // query to parse and validate the full corpus again.
+    return;
+  }
+  committedArtifactCache.delete(cacheKey);
+  committedArtifactCache.set(cacheKey, { signature, artifact, byteSize: Number(byteSize || 0), artifactKey });
+  evictCommittedArtifactCache(cacheKey);
+}
+
+export function clearCommittedArtifactCache() {
+  committedArtifactCache.clear();
+}
+
+export function getCommittedArtifactCacheStats() {
+  const limits = committedArtifactCacheLimits();
+  return {
+    entries: committedArtifactCache.size,
+    bytes: committedArtifactCacheBytes(),
+    maxEntries: limits.maxEntries,
+    maxBytes: limits.maxBytes,
+  };
+}
 
 function generationFs(options = {}) {
   const resolver = options.resolver || getPathResolver();
@@ -97,13 +179,47 @@ function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
-function contentForFingerprint(value = {}) {
-  const copy = structuredClone(value);
-  delete copy.generation;
-  delete copy.generatedAt;
-  delete copy.createdAt;
-  delete copy.updatedAt;
-  return copy;
+function streamingStableDigest(value, ignoredRootKeys = new Set()) {
+  const hash = crypto.createHash("sha256");
+  let buffer = "";
+  const emit = (text) => {
+    buffer += text;
+    if (buffer.length >= 64 * 1024) {
+      hash.update(buffer);
+      buffer = "";
+    }
+  };
+  const visit = (current, depth = 0, arrayElement = false) => {
+    if (Array.isArray(current)) {
+      emit("[");
+      for (let index = 0; index < current.length; index += 1) {
+        if (index) emit(",");
+        visit(current[index], depth + 1, true);
+      }
+      emit("]");
+      return;
+    }
+    if (current && typeof current === "object") {
+      const keys = Object.keys(current)
+        .filter((key) => depth !== 0 || !ignoredRootKeys.has(key))
+        .filter((key) => !["undefined", "function", "symbol"].includes(typeof current[key]))
+        .sort();
+      emit("{");
+      keys.forEach((key, index) => {
+        if (index) emit(",");
+        emit(JSON.stringify(key));
+        emit(":");
+        visit(current[key], depth + 1, false);
+      });
+      emit("}");
+      return;
+    }
+    const encoded = JSON.stringify(current);
+    emit(encoded === undefined && arrayElement ? "null" : encoded || "null");
+  };
+  visit(value);
+  if (buffer) hash.update(buffer);
+  return hash.digest("hex");
 }
 
 export function artifactSourceFingerprint(value = {}) {
@@ -111,11 +227,44 @@ export function artifactSourceFingerprint(value = {}) {
 }
 
 export function artifactContentFingerprint(value = {}) {
-  return digest(contentForFingerprint(value));
+  // The previous structuredClone -> recursively stable copy -> stringify path
+  // held several full copies of 50-230 MB artifacts at once. Stream the exact
+  // same canonical JSON bytes into SHA-256 instead.
+  return streamingStableDigest(value, new Set(["generation", "generatedAt", "createdAt", "updatedAt"]));
 }
 
 function dependencyKeys(key) {
   return (ARTIFACT_DEPENDENCIES[key] || []).filter((dependency) => Object.hasOwn(CORE_GENERATION_ARTIFACTS, dependency));
+}
+
+function artifactDependencyClosure(keys) {
+  const requested = new Set(keys);
+  const queue = [...keys];
+  while (queue.length) {
+    for (const dependency of dependencyKeys(queue.shift())) {
+      if (requested.has(dependency)) continue;
+      requested.add(dependency);
+      queue.push(dependency);
+    }
+  }
+  return [...requested];
+}
+
+async function committedArtifactSignature(filename, key, manifest, options = {}) {
+  const resolver = options.resolver || getPathResolver();
+  const fsOps = generationFs(options);
+  const artifactKeys = artifactDependencyClosure([key]);
+  const stats = await Promise.all(artifactKeys.map(async (artifactKey) => {
+    const filePath = resolver[CORE_GENERATION_RESOLVER_METHODS[artifactKey]](filename);
+    const stat = await fsOps.stat(filePath);
+    return `${artifactKey}:${stat.size}:${stat.mtimeMs}:${manifest.generation.artifactGenerations?.[artifactKey] || "missing"}`;
+  }));
+  const mainPath = resolver[CORE_GENERATION_RESOLVER_METHODS[key]](filename);
+  const mainStat = await fsOps.stat(mainPath);
+  return {
+    signature: `${manifest.generation.buildId}:${manifest.generation.sourceFingerprint}:${stats.join("|")}`,
+    byteSize: mainStat.size,
+  };
 }
 
 function generationFor(key, value, currentSourceFingerprint, dependencies, chunkingVersion) {
@@ -228,18 +377,8 @@ export async function loadAndValidateCoreArtifactGenerations(filename, options =
     keys = Object.keys(CORE_GENERATION_ARTIFACTS),
   } = options;
   const fsOps = generationFs(options);
-  const requested = new Set(keys);
-  const dependencyQueue = [...keys];
-  while (dependencyQueue.length) {
-    const current = dependencyQueue.shift();
-    for (const dependency of dependencyKeys(current)) {
-      if (requested.has(dependency)) continue;
-      requested.add(dependency);
-      dependencyQueue.push(dependency);
-    }
-  }
   const loaded = {};
-  for (const key of requested) loaded[key] = await loadArtifact(filename, key, { ...options, fs: fsOps });
+  for (const key of artifactDependencyClosure(keys)) loaded[key] = await loadArtifact(filename, key, { ...options, fs: fsOps });
   for (const [key, artifact] of Object.entries(loaded)) {
     if (!expectedSourceFingerprint) throw new Error("A current PDF source fingerprint is required to validate index artifacts.");
     requireStrongSourceIdentity(artifact.value.source || artifact.value, `Artifact ${key}`);
@@ -332,16 +471,32 @@ async function loadCommittedCoreArtifactAttempt(filename, key, options, attempt)
   let artifact = null;
   let validatedArtifacts = null;
   let validationError = null;
-  try {
-    validatedArtifacts = await loadAndValidateCoreArtifactGenerations(filename, {
-      ...options,
-      sourceFingerprint: manifestBefore.generation.sourceFingerprint,
-      keys: [key],
-    });
-    artifact = validatedArtifacts[key];
-  } catch (error) {
-    if (isGenerationFilesystemError(error)) throw error;
-    validationError = error;
+  const resolver = options.resolver || getPathResolver();
+  const cacheAllowed = options.cache !== false && !options.onReadStep;
+  const cacheKey = committedArtifactCacheKey(filename, key, resolver);
+  let signatureBefore = null;
+  if (cacheAllowed) {
+    try {
+      signatureBefore = await committedArtifactSignature(filename, key, manifestBefore, options);
+      artifact = getCachedCommittedArtifact(cacheKey, signatureBefore.signature);
+    } catch (error) {
+      if (isGenerationFilesystemError(error)) throw error;
+      // The normal validated load below preserves the established missing or
+      // corrupt-artifact error classification.
+    }
+  }
+  if (!artifact) {
+    try {
+      validatedArtifacts = await loadAndValidateCoreArtifactGenerations(filename, {
+        ...options,
+        sourceFingerprint: manifestBefore.generation.sourceFingerprint,
+        keys: [key],
+      });
+      artifact = validatedArtifacts[key];
+    } catch (error) {
+      if (isGenerationFilesystemError(error)) throw error;
+      validationError = error;
+    }
   }
   await options.onReadStep?.({ step: "artifact", attempt, filename, key, artifact: artifact ? structuredClone(artifact) : null, error: validationError });
 
@@ -368,6 +523,13 @@ async function loadCommittedCoreArtifactAttempt(filename, key, options, attempt)
     error.stableMismatchSignature = `${manifestBefore.generation.buildId}:${key}:${expectedGenerationId || "missing"}`;
     error.validationError = validationError;
     throw error;
+  }
+  if (cacheAllowed && signatureBefore) {
+    const signatureAfter = await committedArtifactSignature(filename, key, manifestAfter, options);
+    if (signatureAfter.signature !== signatureBefore.signature) {
+      throw createGenerationChangedError(filename, `Artifact ${key} changed while populating the committed artifact cache.`);
+    }
+    cacheCommittedArtifact(cacheKey, signatureAfter.signature, artifact, signatureAfter.byteSize, key);
   }
   return { artifact, manifest: manifestAfter };
 }

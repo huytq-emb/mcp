@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { HIDDEN_COMPATIBILITY_TOOL_NAMES, HIDDEN_TOOL_DEFINITIONS, PUBLIC_TOOL_DEFINITIONS, PUBLIC_TOOL_NAMES } from "../../src/mcp/tool-definitions.js";
 import { createRuntimeToolRegistry } from "../../src/mcp/runtime-registry.js";
 import { createAppContext } from "../../src/core/app-context.js";
+import { atomicWriteJson } from "../../src/core/atomic-file.js";
+import { withPathResolver } from "../../src/core/path-resolver.js";
 import { wireRuntimePorts } from "../../src/app/runtime-wiring.js";
 import { buildManualWorkflowPlan, validateWorkflowCalls } from "../../src/workflows/manual-workflow.js";
+import { artifactPathsForStatus } from "../../src/services/jobs.js";
+import { ARTIFACT_MANIFEST_SCHEMA_VERSION } from "../../src/artifacts/manifest.js";
+import { withReleasedEvidenceGraph } from "../../src/mcp/handlers/manual-evidence.js";
 
 const execFileAsync = promisify(execFile);
 const REMOVED_PUBLIC_FIGURE_TOOLS = [
@@ -33,6 +40,16 @@ const PUBLIC_FIGURE_TOOLS = [
 ];
 
 const HIDDEN_DIRECT_CALL_RE = /\b(?:driver_completeness_checklist|prepare_driver_task|visual_review_handoff_pack|extract_layout_tables_from_pages|extract_pinmux_table|find_sequence|find_caution|start_index_pdf|validate_index|job_status|list_jobs|eval_health_check|run_eval|get_visual_evidence|visual_evidence_verification_queue|verify_visual_evidence)\s*\(/;
+
+test("advanced manual inspection releases the resident evidence graph before loading artifacts", async () => {
+  const events = [];
+  const wrapped = withReleasedEvidenceGraph(async (value) => {
+    events.push(`handler:${value}`);
+    return value.toUpperCase();
+  }, () => { events.push("release"); });
+  assert.equal(await wrapped("manual"), "MANUAL");
+  assert.deepEqual(events, ["release", "handler:manual"]);
+});
 
 test("public MCP catalog preserves names and schemas", () => {
   assert.equal(new Set(PUBLIC_TOOL_NAMES).size, PUBLIC_TOOL_DEFINITIONS.length);
@@ -205,15 +222,94 @@ test("job cancellation refreshes persisted job state before canceling", async ()
   assert.match(source, /async function handle_cancel_job[\s\S]*?await refreshJobsStateFromDisk\(\);[\s\S]*?cancelBackgroundJob/);
 });
 
-test("ultra-lite index status hints recommend mcp_control only", async () => {
-  const registry = createRuntimeToolRegistry();
-  const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf" });
-  const text = result.content[0].text;
-  assert.match(text, /mcp_control\(action="rebuild_artifact"/);
-  assert.match(text, /mcp_control\(action="index_status_lite"/);
-  assert.doesNotMatch(text, /eval_health_check\(step40_action/);
-  assert.doesNotMatch(text, /\bindex_status\(filename=/);
-  assert.doesNotMatch(text, /\brebuild_artifact\(\.\.\./);
+test("index_status_lite performs bounded artifact checks and returns actionable state", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-index-status-lite-"));
+  try {
+    const context = createAppContext({ rootDir: root });
+    wireRuntimePorts(context);
+    await fs.mkdir(context.paths.documentsDir(), { recursive: true });
+    await fs.writeFile(context.paths.pdf("manual.pdf"), "%PDF-1.4\nstatus fixture\n", "utf8");
+    const registry = createRuntimeToolRegistry({ context });
+    const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf", json: true });
+    const status = JSON.parse(result.content[0].text);
+    assert.equal(status.health, "WARN");
+    assert.equal(status.pdf.size > 0, true);
+    assert.equal(status.missing.includes("chunk-index"), true);
+    assert.equal(status.artifacts.some((artifact) => artifact.key === "pages" && artifact.exists === false), true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("index_status_lite JSON stays valid when persisted jobs contain large results and logs", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-index-status-bounded-"));
+  try {
+    const context = createAppContext({ rootDir: root });
+    wireRuntimePorts(context);
+    await fs.mkdir(context.paths.documentsDir(), { recursive: true });
+    await fs.mkdir(context.paths.jobsDir(), { recursive: true });
+    await fs.writeFile(context.paths.pdf("manual.pdf"), "%PDF-1.4\nbounded status fixture\n", "utf8");
+    for (let index = 0; index < 8; index += 1) {
+      const id = `large-job-${index}`;
+      await atomicWriteJson(context.paths.job(id), {
+        id,
+        type: "index-pdf",
+        filename: "manual.pdf",
+        status: "done",
+        phase: "complete",
+        createdMs: index + 1,
+        updatedMs: index + 1,
+        metadata: { artifact: "core", oversized: "m".repeat(10_000) },
+        result: { oversized: "r".repeat(10_000) },
+        log: Array.from({ length: 20 }, () => ({ message: "l".repeat(1_000) })),
+      });
+    }
+    const registry = createRuntimeToolRegistry({ context });
+    const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf", json: true });
+    const status = JSON.parse(result.content[0].text);
+    assert.equal(status.relatedJobs.length, 8);
+    assert.equal(status.relatedJobs.every((job) => job.result === undefined && job.log === undefined), true);
+    assert.deepEqual(result.structuredContent, status);
+    assert.equal(result.content[0].text.includes("Output truncated"), false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("index_status_lite rejects a ready manifest from a different PDF generation", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-index-status-stale-"));
+  try {
+    const context = createAppContext({ rootDir: root });
+    wireRuntimePorts(context);
+    await fs.mkdir(context.paths.documentsDir(), { recursive: true });
+    const pdfBytes = Buffer.from("%PDF-1.4\nstale status fixture\n");
+    await fs.writeFile(context.paths.pdf("manual.pdf"), pdfBytes);
+    const entries = await withPathResolver(context.paths, () => artifactPathsForStatus("manual.pdf"));
+    for (const entry of entries.filter((item) => !item.optional || item.key === "evidence-graph")) {
+      await atomicWriteJson(entry.path, {
+        schemaVersion: entry.schemaVersion,
+        filename: "manual.pdf",
+        ...(entry.countKey ? { [entry.countKey]: 1 } : {}),
+        ...(entry.rootKey ? { [entry.rootKey]: [] } : {}),
+      });
+    }
+    const staleFingerprint = `size=${pdfBytes.length};sha256=${"0".repeat(64)}`;
+    await atomicWriteJson(context.paths.manifest("manual.pdf"), {
+      schemaVersion: ARTIFACT_MANIFEST_SCHEMA_VERSION,
+      filename: "manual.pdf",
+      buildStatus: "ready",
+      health: "ok",
+      source: { size: pdfBytes.length, sha256: "0".repeat(64) },
+      generation: { buildId: "old-build", sourceFingerprint: staleFingerprint, evidenceGraphGeneration: "old-graph" },
+      artifacts: {},
+      missingRequired: [],
+      notes: [],
+    });
+    const registry = createRuntimeToolRegistry({ context });
+    const result = await registry.dispatchTool("mcp_control", { action: "index_status_lite", filename: "manual.pdf", json: true });
+    const status = JSON.parse(result.content[0].text);
+    assert.equal(status.health, "WARN");
+    assert.equal(status.stale.includes("manifest-source"), true);
+    assert.equal(status.stale.includes("manifest-generation-source"), true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test("removed legacy visual/render tools are absent from public and hidden runtime registries", async () => {

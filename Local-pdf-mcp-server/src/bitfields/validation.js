@@ -50,7 +50,10 @@ export function buildBitfieldConflicts(valueCandidates = {}) {
   const conflicts = [];
   for (const field of ["bitPositionRange", "fieldBitRange", "access", "reset", "register"]) {
     const candidates = valueCandidates[field] || [];
-    const values = distinctKnownValues(candidates.map((candidate) => candidate.value));
+    const rawValues = candidates.map((candidate) => candidate.value);
+    const values = field === "register"
+      ? distinctKnownValues(rawValues.map(canonicalSymbol))
+      : distinctKnownValues(rawValues);
     if (values.length > 1) conflicts.push({ field, values, candidates });
   }
   return conflicts;

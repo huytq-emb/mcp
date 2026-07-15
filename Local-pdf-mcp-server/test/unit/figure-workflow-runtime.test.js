@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
+import os from "node:os";
+import test, { after, before } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createRuntimeConfig } from "../../src/core/runtime-config.js";
+import { activatePathResolver, createPathResolver } from "../../src/core/path-resolver.js";
 import { activateRuntimePortRegistry, bindRuntimePorts, createRuntimePortRegistry } from "../../src/core/runtime-ports.js";
 import { atomicWriteJson, getPdfSourceInfo, safeFigureLookupIndexPath, safeFiguresIndexPath, safePdfPath } from "../../src/core/runtime-helpers.js";
 import { rebuildFigureManifest, listFigureManifest, searchFigures, getFigureImage, getFigureContextPack, findFigure, buildFigureEvidenceContract } from "../../src/domains/figures.js";
@@ -11,6 +14,21 @@ import { normalizeFigureImageTransport } from "../../src/mcp/runtime-handlers.js
 
 const filename = "unit-figure-workflow.pdf";
 const execFileAsync = promisify(execFile);
+let testRoot = "";
+let previousPythonPath;
+
+before(async () => {
+  testRoot = await fs.mkdtemp(path.join(os.tmpdir(), "renesas-figure-workflow-"));
+  activatePathResolver(createPathResolver(createRuntimeConfig({ rootDir: testRoot })));
+  previousPythonPath = process.env.PYTHONPATH;
+  process.env.PYTHONPATH = [process.cwd(), previousPythonPath].filter(Boolean).join(path.delimiter);
+});
+
+after(async () => {
+  if (previousPythonPath === undefined) delete process.env.PYTHONPATH;
+  else process.env.PYTHONPATH = previousPythonPath;
+  if (testRoot) await fs.rm(testRoot, { recursive: true, force: true });
+});
 
 function resolvePythonForTest() {
   return process.env.RENESAS_MCP_PYTHON || (process.platform === "win32" ? "python" : "python3");

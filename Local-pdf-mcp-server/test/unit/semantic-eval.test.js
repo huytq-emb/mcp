@@ -127,6 +127,8 @@ test("sequence, caution, figure, and negative checks stay bound to their entitie
   assert.equal(report.metrics.sequenceStepCoverage, 0);
   assert.equal(report.metrics.figureLocatorAccuracy, 0);
   assert.equal(evaluateCoverageExpectation({ expectation: { type: "negative", forbiddenCanonicalNames: ["NO_SUCH_REG"], maxAcceptedRrfScore: 0.01, allowGenericCandidateEvidence: false } }, { bundle: { facts: [], evidence: [{ id: "e", entityId: "register:wrong", kind: "register", canonicalName: "REAL_REG", verificationStatus: "high-confidence", retrieval: { rrfScore: 0.5 } }] } }).passed, false);
+  assert.equal(evaluateCoverageExpectation({ expectation: { type: "caution", requiredEntityTypes: ["caution"] } }, { bundle }).passed, true);
+  assert.equal(evaluateCoverageExpectation({ expectation: { type: "caution", relatedEntityId: "register:target", requiredEntityTypes: ["caution"] } }, { bundle }).passed, false);
 });
 
 test("semantic sequence ordering accepts complete explicit and relationship orders", () => {

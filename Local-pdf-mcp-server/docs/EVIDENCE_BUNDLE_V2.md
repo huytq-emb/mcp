@@ -8,8 +8,9 @@ The compatibility tools remain available and continue to return their existing
 human-readable reports. New evidence workflows should use these direct
 structured tools first:
 
-- `query_manual` — rank-fused retrieval over exact symbols, lexical search,
-  normalized graph links, and page neighborhoods.
+- `query_manual` — rank-fused retrieval over exact symbols, normalized graph
+  links, page neighborhoods, and lexical search when the graph and corpus can
+  coexist within the memory-safe in-process limit.
 - `get_manual_entity` — stable typed graph entity lookup, including direct
   relationships and related entities.
 - `read_manual_evidence` — exact provenance for an entity, chunk, or page.
@@ -37,6 +38,12 @@ human-readable summary; it is not parsed from Markdown.
   ID.
 - Conflicting offsets, reset values, access sizes, and aliases are preserved
   under `conflicts`; no value is silently selected.
+- When a large evidence graph exceeds the in-process fusion limit,
+  `query_manual` and `collect_manual_evidence` keep exact/graph/neighborhood
+  retrieval active and return an explicit warning. Run `hybrid_search_pdf` as
+  a separate request when chunk-level lexical corroboration is required. The
+  limit can be tuned with `RENESAS_MCP_MAX_FUSION_GRAPH_ITEMS`; increasing it
+  also increases peak Node heap usage.
 
 ## Artifacts and rebuilds
 

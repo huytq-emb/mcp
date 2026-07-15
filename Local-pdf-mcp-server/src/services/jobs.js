@@ -6,7 +6,7 @@ import { spawn } from "../core/process-runner.js";
 import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
+import { ARTIFACT_MANIFEST_SCHEMA_VERSION, artifactDescendants, contentSourceFingerprint, createArtifactManifest, formatManifestSummary } from "../artifacts/manifest.js";
 import { buildEvidenceGraph } from "./evidence-graph.js";
 import { createJobStore, DEFAULT_QUEUED_JOB_GRACE_MS, JobUpdateRejectedError, TERMINAL_JOB_STATES } from "./job-store.js";
 import { withSourceIdentityCache } from "../artifacts/source-identity.js";
@@ -43,6 +43,7 @@ const rebuildFigureSemanticsArtifact = createRuntimePort("rebuildFigureSemantics
 
 const jobRuntimeStates = new WeakMap();
 const jobStoresByResolver = new WeakMap();
+const JOB_PROGRESS_PERSIST_INTERVAL_MS = 250;
 
 export function createJobRuntimeState() {
   return {
@@ -51,6 +52,8 @@ export function createJobRuntimeState() {
     pendingWrites: new Set(),
     pendingFailures: [],
     writeChains: new Map(),
+    progressPersistedMs: new Map(),
+    progressPersistedPhase: new Map(),
     jobsStateWriteInProgress: false,
     jobsStateWritePending: false,
   };
@@ -245,7 +248,7 @@ export function activeJobCount() {
   return [...getJobsMap().values()].filter((job) => job.status === "running" || job.status === "queued").length;
 }
 
-export function updateJob(job, patch = {}) {
+export function updateJob(job, patch = {}, options = {}) {
   if (TERMINAL_JOB_STATES.has(job.status) && patch.status && patch.status !== job.status) {
     throw new JobUpdateRejectedError(job.id, `terminal state ${job.status} is monotonic and cannot become ${patch.status}`, job);
   }
@@ -258,7 +261,24 @@ export function updateJob(job, patch = {}) {
   }
   getJobsMap().set(job.id, job);
   trimJobHistory();
-  queueJobWrite(job);
+  const progressOnly = Boolean(patch.progress)
+    && Object.keys(patch).every((key) => ["phase", "progress", "message"].includes(key));
+  const progressComplete = progressOnly
+    && Number(patch.progress?.total || 0) > 0
+    && Number(patch.progress?.current || 0) >= Number(patch.progress.total);
+  const state = getJobRuntimeState();
+  const lastProgressPersistedMs = Number(state.progressPersistedMs.get(job.id) || 0);
+  const phaseChanged = progressOnly && String(patch.phase || "") !== String(state.progressPersistedPhase.get(job.id) || "");
+  const shouldPersist = options.persist !== undefined
+    ? Boolean(options.persist)
+    : !progressOnly || phaseChanged || progressComplete || updatedMs - lastProgressPersistedMs >= JOB_PROGRESS_PERSIST_INTERVAL_MS;
+  if (shouldPersist) {
+    if (progressOnly) {
+      state.progressPersistedMs.set(job.id, updatedMs);
+      state.progressPersistedPhase.set(job.id, String(patch.phase || ""));
+    }
+    queueJobWrite(job);
+  }
   return job;
 }
 
@@ -542,13 +562,20 @@ export async function startIndexPdfJob(filename, options = {}) {
 }
 
 export async function startExternalRebuildArtifactJob(filename, artifact, options = {}) {
+  await recoverJobs();
+  await refreshJobsStateFromDisk();
   const jobs = getJobsMap();
   trimJobHistory({ persist: true });
+  const normalized = normalizeArtifactName(artifact);
+  const duplicate = [...jobs.values()].find((job) =>
+    job.filename === filename
+    && job.metadata?.artifact === normalized
+    && (job.status === "queued" || job.status === "running"));
+  if (duplicate) return duplicate;
   if (activeJobCount() >= MAX_ACTIVE_JOBS) {
     throw new Error(`Too many active jobs (${MAX_ACTIVE_JOBS}). Wait for a running job to finish before starting another.`);
   }
 
-  const normalized = normalizeArtifactName(artifact);
   const job = {
     id: createJobId("rebuild-artifact"),
     type: options.jobType || "rebuild-artifact",
@@ -623,6 +650,92 @@ export async function startExternalRebuildArtifactJob(filename, artifact, option
   }
 
   return jobs.get(initialJob.id) || job;
+}
+
+function indexStatusJobSnapshot(job) {
+  const snapshot = jobSnapshot(job);
+  if (!snapshot) return null;
+  return {
+    id: snapshot.id,
+    type: snapshot.type,
+    status: snapshot.status,
+    filename: snapshot.filename,
+    phase: snapshot.phase,
+    progress: snapshot.progress,
+    message: String(snapshot.message || "").slice(0, 500),
+    createdAt: snapshot.createdAt,
+    startedAt: snapshot.startedAt,
+    updatedAt: snapshot.updatedAt,
+    finishedAt: snapshot.finishedAt,
+    durationMs: snapshot.durationMs,
+    error: snapshot.error ? String(snapshot.error).slice(0, 1_000) : null,
+    metadata: {
+      artifact: snapshot.metadata?.artifact || "",
+      engine: snapshot.metadata?.engine || "",
+      engineMode: snapshot.metadata?.engineMode || "",
+      orchestratorPid: Number(snapshot.metadata?.orchestratorPid || 0),
+      workerPid: Number(snapshot.metadata?.workerPid || 0),
+    },
+  };
+}
+
+function boundedStringArray(values, limit = 64) {
+  return (Array.isArray(values) ? values : []).slice(0, limit).map((value) => String(value).slice(0, 500));
+}
+
+export function compactIndexStatus(status = {}) {
+  const manifest = status.manifest;
+  return {
+    filename: status.filename,
+    pdf: status.pdf,
+    lock: status.lock,
+    health: status.health,
+    missing: boundedStringArray(status.missing),
+    broken: boundedStringArray(status.broken),
+    stale: boundedStringArray(status.stale),
+    manifestProblems: boundedStringArray(status.manifestProblems),
+    artifacts: (status.artifacts || []).map((artifact) => ({
+      key: artifact.key,
+      label: artifact.label,
+      optional: Boolean(artifact.optional),
+      exists: Boolean(artifact.exists),
+      ok: Boolean(artifact.ok),
+      schemaVersion: artifact.schemaVersion ?? null,
+      count: artifact.count ?? null,
+      sizeBytes: artifact.sizeBytes ?? null,
+      modifiedAt: artifact.modifiedAt || "",
+      createdAt: artifact.createdAt || "",
+      artifactComplete: artifact.artifactComplete ?? null,
+      error: String(artifact.error || "").slice(0, 500),
+    })),
+    manifest: manifest ? {
+      schemaVersion: manifest.schemaVersion,
+      serverVersion: manifest.serverVersion || "",
+      generatedAt: manifest.generatedAt || "",
+      filename: manifest.filename || "",
+      source: {
+        size: Number(manifest.source?.size || 0),
+        mtimeMs: Number(manifest.source?.mtimeMs || 0),
+        sha256: String(manifest.source?.sha256 || ""),
+        fingerprint: String(manifest.source?.fingerprint || ""),
+        contentFingerprint: String(manifest.source?.contentFingerprint || ""),
+      },
+      buildStatus: manifest.buildStatus || "",
+      health: manifest.health || "",
+      producer: manifest.producer ? {
+        engine: String(manifest.producer.engine || "").slice(0, 100),
+        operation: String(manifest.producer.operation || "").slice(0, 100),
+      } : null,
+      generation: manifest.generation ? {
+        buildId: String(manifest.generation.buildId || "").slice(0, 200),
+        sourceFingerprint: String(manifest.generation.sourceFingerprint || "").slice(0, 200),
+        evidenceGraphGeneration: String(manifest.generation.evidenceGraphGeneration || "").slice(0, 200),
+      } : null,
+      missingRequired: boundedStringArray(manifest.missingRequired),
+      staleArtifacts: boundedStringArray(manifest.staleArtifacts),
+    } : null,
+    relatedJobs: (status.relatedJobs || []).slice(0, 8).map(indexStatusJobSnapshot).filter(Boolean),
+  };
 }
 
 export function normalizeArtifactName(value) {
@@ -848,11 +961,45 @@ export async function getIndexStatus(filename, options = {}) {
   }
 
   const required = artifacts.filter((a) => !a.optional && a.key !== "visual-evidence");
+  const evidenceGraph = artifacts.find((artifact) => artifact.key === "evidence-graph");
+  if (evidenceGraph && !required.includes(evidenceGraph)) required.push(evidenceGraph);
   const missing = required.filter((a) => !a.exists).map((a) => a.key);
   const broken = required.filter((a) => a.exists && !a.ok).map((a) => a.key);
-  const relatedJobs = [...getJobsMap().values()].filter((job) => job.filename === filename).sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0)).slice(0, 8).map(jobSnapshot);
+  const relatedJobs = [...getJobsMap().values()].filter((job) => job.filename === filename).sort((a, b) => Number(b.createdMs || 0) - Number(a.createdMs || 0)).slice(0, 8).map(indexStatusJobSnapshot);
   const manifest = await loadArtifactManifest(filename);
-  return { filename, pdf: { size: stat.size, modifiedAt: stat.mtime.toISOString(), pageCount, pageCountSource }, lock: { exists: lockExists, path: lockPath }, health: missing.length || broken.length ? "WARN" : "OK", missing, broken, artifacts, manifest, relatedJobs };
+  const stale = [];
+  const manifestProblems = [];
+  let currentSourceFingerprint = "";
+  if (!manifest) {
+    manifestProblems.push("artifact manifest is missing or unreadable");
+  } else {
+    try {
+      const currentSource = await getPdfSourceInfo(filename, { includeHash: true });
+      currentSourceFingerprint = contentSourceFingerprint(currentSource);
+      const manifestSourceFingerprint = contentSourceFingerprint(manifest.source || {});
+      if (manifestSourceFingerprint !== currentSourceFingerprint) stale.push("manifest-source");
+      if (manifest.generation?.sourceFingerprint && manifest.generation.sourceFingerprint !== currentSourceFingerprint) stale.push("manifest-generation-source");
+    } catch (error) {
+      manifestProblems.push(`manifest source validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (manifest.buildStatus !== "ready") manifestProblems.push(`manifest build status is ${manifest.buildStatus || "missing"}`);
+    if (manifest.health === "fail") manifestProblems.push("manifest health is fail");
+    if (!manifest.generation?.buildId) manifestProblems.push("manifest generation build ID is missing");
+    if (!manifest.generation?.evidenceGraphGeneration) manifestProblems.push("manifest evidence graph generation is missing");
+  }
+  return {
+    filename,
+    pdf: { size: stat.size, modifiedAt: stat.mtime.toISOString(), pageCount, pageCountSource, sourceFingerprint: currentSourceFingerprint },
+    lock: { exists: lockExists, path: lockPath },
+    health: missing.length || broken.length || stale.length || manifestProblems.length ? "WARN" : "OK",
+    missing,
+    broken,
+    stale: [...new Set(stale)],
+    manifestProblems,
+    artifacts,
+    manifest,
+    relatedJobs,
+  };
 }
 
 export function getIndexStatusUltraLite(filename) {
@@ -923,6 +1070,8 @@ export function formatIndexStatus(status) {
     status.lock.exists ? `Lock path: ${status.lock.path}` : null,
     "",
     status.manifest ? formatManifestSummary(status.manifest) : `Artifact manifest: missing (${safeArtifactManifestPath(status.filename)})`,
+    status.stale?.length ? `Stale: ${status.stale.join(", ")}` : null,
+    status.manifestProblems?.length ? `Manifest problems: ${status.manifestProblems.join("; ")}` : null,
     "",
     "Artifacts:",
     ...status.artifacts.map((a) => `- ${a.key}: ${a.exists ? (a.ok ? "OK" : "BROKEN") : (a.optional ? "missing optional" : "MISSING")}${a.count !== null ? ` count=${a.count}` : ""}${a.sizeBytes !== null ? ` size=${a.sizeBytes}` : ""}${a.createdAt ? ` created=${a.createdAt}` : ""}${a.fastStatus && a.exists && !a.text ? " fast=1" : ""}${a.error ? ` (${a.error})` : ""}`),
