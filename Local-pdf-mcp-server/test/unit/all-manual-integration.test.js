@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  CANCELLATION_CONFIRMATION_DEFAULTS,
+  confirmJobCancellation,
+  createIndexTimeoutError,
   createManualMetrics,
   deterministicBundleSignature,
   discoverPdfManuals,
@@ -22,6 +25,7 @@ import {
   sanitizeIntegrationReport,
   selectPdfManuals,
   sharedProcessIsolationMetadata,
+  validateCancellationConfirmationOptions,
   validateBundleForManual,
   validateUnknownQueryBundle,
 } from "../../src/eval/all-manual-integration.js";
@@ -56,6 +60,162 @@ test("all-manual parsers handle embedded reports, job state, and percentiles", (
   assert.equal(isTerminalJobStatus("unknown"), false);
   for (const status of ["done", "failed", "cancelled"]) assert.equal(isTerminalJobStatus(status), true);
   assert.equal(percentile([5, 1, 4, 2, 3], 0.95), 5);
+});
+
+function cancellationHarness(statuses, {
+  cancelStatus = "running",
+  timeoutMs = 1_000,
+  pollMs = 500,
+  statusLatencyMs = 0,
+  cancellationLatencyMs = 0,
+} = {}) {
+  const state = { now: 0, cancellationCalls: 0, statusReads: 0, sleeps: [], activeSleeps: 0 };
+  const result = confirmJobCancellation({
+    cancellationAction: async () => {
+      state.cancellationCalls += 1;
+      state.now += cancellationLatencyMs;
+      return cancelStatus;
+    },
+    statusReader: async () => {
+      const index = Math.min(state.statusReads, statuses.length - 1);
+      state.statusReads += 1;
+      state.now += statusLatencyMs;
+      return statuses[index] ?? "unknown";
+    },
+    timeoutMs,
+    pollMs,
+    now: () => state.now,
+    sleep: async (delayMs) => {
+      state.activeSleeps += 1;
+      state.sleeps.push(delayMs);
+      state.now += delayMs;
+      state.activeSleeps -= 1;
+    },
+  });
+  return { result, state };
+}
+
+test("cancellation confirmation polls twice before a job becomes cancelled", async () => {
+  const { result, state } = cancellationHarness(["running", "cancelled"]);
+  assert.deepEqual(await result, {
+    confirmed: true,
+    cancelStatus: "running",
+    finalStatus: "cancelled",
+    confirmationDurationMs: 500,
+    polls: 2,
+  });
+  assert.equal(state.cancellationCalls, 1);
+  assert.equal(state.statusReads, 2);
+});
+
+test("cancellation confirmation stops when a running job becomes done", async () => {
+  const { result } = cancellationHarness(["running", "done"]);
+  const confirmation = await result;
+  assert.equal(confirmation.confirmed, true);
+  assert.equal(confirmation.finalStatus, "done");
+  assert.equal(confirmation.polls, 2);
+});
+
+test("cancellation confirmation expires while a job remains running", async () => {
+  const { result, state } = cancellationHarness(["running"], { pollMs: 400 });
+  assert.deepEqual(await result, {
+    confirmed: false,
+    cancelStatus: "running",
+    finalStatus: "running",
+    confirmationDurationMs: 1_000,
+    polls: 3,
+  });
+  assert.deepEqual(state.sleeps, [400, 400, 200]);
+});
+
+test("cancellation confirmation retries unknown status until its bound", async () => {
+  const { result, state } = cancellationHarness(["unknown"], { pollMs: 250 });
+  const confirmation = await result;
+  assert.equal(confirmation.confirmed, false);
+  assert.equal(confirmation.finalStatus, "unknown");
+  assert.equal(confirmation.confirmationDurationMs, 1_000);
+  assert.equal(state.statusReads, 4);
+});
+
+test("cancellation confirmation polling does not exceed the timeout bound", async () => {
+  const { result, state } = cancellationHarness(["queued"], { pollMs: 300 });
+  const confirmation = await result;
+  assert.equal(confirmation.confirmationDurationMs, 1_000);
+  assert.ok(state.sleeps.reduce((sum, delayMs) => sum + delayMs, 0) <= 1_000);
+  assert.equal(state.now, 1_000);
+});
+
+test("cancellation confirmation grace period starts after the cancel action", async () => {
+  const { result, state } = cancellationHarness(["running", "cancelled"], { cancellationLatencyMs: 2_000 });
+  const confirmation = await result;
+  assert.equal(confirmation.confirmationDurationMs, 500);
+  assert.equal(state.now, 2_500);
+});
+
+test("cancellation confirmation applies the configured polling interval", async () => {
+  const { result, state } = cancellationHarness(["running", "running", "cancelled"], { pollMs: 250 });
+  await result;
+  assert.deepEqual(state.sleeps, [250, 250]);
+});
+
+test("cancellation confirmation returns a terminal first status without sleeping", async () => {
+  const { result, state } = cancellationHarness(["failed"]);
+  const confirmation = await result;
+  assert.equal(confirmation.finalStatus, "failed");
+  assert.equal(confirmation.polls, 1);
+  assert.deepEqual(state.sleeps, []);
+});
+
+test("cancellation confirmation records the final status and measured duration", async () => {
+  const { result } = cancellationHarness(["running", "done"], { statusLatencyMs: 120 });
+  const confirmation = await result;
+  assert.equal(confirmation.finalStatus, "done");
+  assert.equal(confirmation.confirmationDurationMs, 740);
+});
+
+test("index timeout errors preserve timeout semantics and cancellation outcomes", () => {
+  const cancelled = createIndexTimeoutError({
+    jobId: "job-1",
+    indexingTimeoutMs: 7_200_000,
+    confirmationTimeoutMs: 30_000,
+    confirmation: { confirmed: true, finalStatus: "cancelled", confirmationDurationMs: 1_240 },
+  });
+  assert.equal(cancelled.code, "INDEX_TIMEOUT");
+  assert.match(cancelled.message, /exceeded 7200000 ms/);
+  assert.match(cancelled.message, /confirmed after 1240 ms with terminal status cancelled/);
+
+  const done = createIndexTimeoutError({
+    jobId: "job-2",
+    indexingTimeoutMs: 7_200_000,
+    confirmationTimeoutMs: 30_000,
+    confirmation: { confirmed: true, finalStatus: "done", confirmationDurationMs: 500 },
+  });
+  assert.equal(done.code, "INDEX_TIMEOUT");
+  assert.match(done.message, /terminal state was confirmed after 500 ms with status done/i);
+  assert.match(done.message, /did not finish as cancelled/i);
+
+  const unconfirmed = createIndexTimeoutError({
+    jobId: "job-3",
+    indexingTimeoutMs: 7_200_000,
+    confirmationTimeoutMs: 30_000,
+    confirmation: { confirmed: false, finalStatus: "running", confirmationDurationMs: 30_000 },
+  });
+  assert.equal(unconfirmed.code, "INDEX_TIMEOUT");
+  assert.match(unconfirmed.message, /not confirmed within 30000 ms; last status was running/i);
+});
+
+test("cancellation confirmation leaves no asynchronous sleep active", async () => {
+  const { result, state } = cancellationHarness(["running", "cancelled"]);
+  await result;
+  assert.equal(state.activeSleeps, 0);
+});
+
+test("cancellation confirmation defaults and bounds match the CLI contract", () => {
+  assert.deepEqual(CANCELLATION_CONFIRMATION_DEFAULTS, { timeoutMs: 30_000, pollMs: 500 });
+  assert.deepEqual(validateCancellationConfirmationOptions(), CANCELLATION_CONFIRMATION_DEFAULTS);
+  assert.throws(() => validateCancellationConfirmationOptions({ timeoutMs: 999, pollMs: 100 }), /at least 1000/);
+  assert.throws(() => validateCancellationConfirmationOptions({ timeoutMs: 1_000, pollMs: 99 }), /at least 100/);
+  assert.throws(() => validateCancellationConfirmationOptions({ timeoutMs: 1_000, pollMs: 1_001 }), /must not exceed/);
 });
 
 test("all-manual doctor summary validation fails clearly on malformed machine output", () => {
@@ -185,32 +345,119 @@ test("all-manual pass status requires every required stage to execute", () => {
   assert.deepEqual(requiredStagesExecuted(complete), { ok: false, missing: ["figure"] });
 });
 
-test("all-manual report sanitization removes local absolute paths and records external omissions", () => {
-  const projectRoot = "C:\\Users\\DELL\\repo\\Local-pdf-mcp-server";
-  const report = {
-    doctor: {
-      path: `${projectRoot}\\indexes\\manual.pdf.manifest.json`,
-      worker: `${projectRoot}\\.venv\\Scripts\\python.exe`,
-    },
-    figure: { canonicalImagePath: `${projectRoot}\\indexes\\cache\\figure-images\\page.png` },
-    cache: { root: `${projectRoot}\\indexes\\cache` },
-    external: "C:\\Users\\someone\\private\\worker.exe",
-    error: "worker failed at /home/alice/private/staging/output.json",
-    uncommonExternal: "worker config: /etc/renesas-mcp/worker.json",
-  };
-  const sanitized = sanitizeIntegrationReport(report, { projectRoot });
-  assert.equal(sanitized.doctor.path, "indexes/manual.pdf.manifest.json");
-  assert.equal(sanitized.doctor.worker, ".venv/Scripts/python.exe");
-  assert.equal(sanitized.figure.canonicalImagePath, "indexes/cache/figure-images/page.png");
-  assert.equal(sanitized.cache.root, "indexes/cache");
-  assert.equal(sanitized.external, "[external path unavailable]");
-  assert.match(sanitized.error, /omitted because it contained an external absolute path/i);
-  assert.match(sanitized.uncommonExternal, /omitted because it contained an external absolute path/i);
-  assert.equal(sanitized.reportWarnings.length, 3);
+const WINDOWS_PROJECT_ROOT = "C:\\repo\\mcp\\Local-pdf-mcp-server";
+
+test("report sanitization makes Windows project paths relative", () => {
+  const sanitized = sanitizeIntegrationReport({
+    reportPath: `${WINDOWS_PROJECT_ROOT}\\indexes\\manual.json`,
+    cacheDirectory: `${WINDOWS_PROJECT_ROOT}\\..cache\\manual`,
+    message: `Wrote ${WINDOWS_PROJECT_ROOT}\\indexes\\manual.md successfully`,
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.reportPath, "indexes/manual.json");
+  assert.equal(sanitized.cacheDirectory, "..cache/manual");
+  assert.equal(sanitized.message, "Wrote indexes/manual.md successfully");
+});
+
+test("report sanitization replaces an external Windows path field", () => {
+  const sanitized = sanitizeIntegrationReport({ workerPath: "C:\\Users\\alice\\worker.exe" }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.workerPath, "[external-path]");
+});
+
+test("report sanitization preserves a message around an external Windows path", () => {
+  const sanitized = sanitizeIntegrationReport({
+    error: "ENOENT while reading C:\\Users\\alice\\indexes\\manual.json",
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.error, "ENOENT while reading [external-path]");
+});
+
+test("report sanitization replaces two Windows paths in one message", () => {
+  const sanitized = sanitizeIntegrationReport({
+    error: "Copy C:\\temp\\a.json to D:\\cache\\b.json failed",
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.error, "Copy [external-path] to [external-path] failed");
+});
+
+test("report sanitization makes POSIX project paths relative", () => {
+  const projectRoot = "/repo/mcp/Local-pdf-mcp-server";
+  const sanitized = sanitizeIntegrationReport({
+    artifactPath: `${projectRoot}/indexes/manual.json`,
+    message: `Wrote ${projectRoot}/indexes/manual.md`,
+  }, { projectRoot });
+  assert.equal(sanitized.artifactPath, "indexes/manual.json");
+  assert.equal(sanitized.message, "Wrote indexes/manual.md");
+});
+
+test("report sanitization replaces known external POSIX roots token by token", () => {
+  const sanitized = sanitizeIntegrationReport({
+    errors: [
+      "ENOENT at /home/alice/cache/a.json",
+      "EACCES at /tmp/worker.json",
+      "EPERM at /var/tmp/staging/file.json",
+      "Failed to read /etc/renesas/worker.json",
+    ],
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.deepEqual(sanitized.errors, [
+    "ENOENT at [external-path]",
+    "EACCES at [external-path]",
+    "EPERM at [external-path]",
+    "Failed to read [external-path]",
+  ]);
+});
+
+test("report sanitization replaces UNC paths", () => {
+  const sanitized = sanitizeIntegrationReport({
+    error: "EACCES while reading \\\\server\\share\\private\\worker.json",
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.error, "EACCES while reading [external-path]");
+});
+
+test("report sanitization preserves hardware signals and error codes", () => {
+  const sanitized = sanitizeIntegrationReport({
+    message: "/RESET /CS /IRQ /RD /WR remain hardware signals",
+    errors: [
+      "ENOENT at C:\\private\\a.json",
+      "EACCES at /tmp/b.json",
+      "EPERM at \\\\server\\share\\c.json",
+    ],
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.message, "/RESET /CS /IRQ /RD /WR remain hardware signals");
+  assert.match(sanitized.errors.join(" "), /ENOENT/);
+  assert.match(sanitized.errors.join(" "), /EACCES/);
+  assert.match(sanitized.errors.join(" "), /EPERM/);
+});
+
+test("report sanitization traverses nested arrays and objects without leaking usernames", () => {
+  const sanitized = sanitizeIntegrationReport({
+    nested: [{ detail: { error: "Failed C:\\Users\\private-user\\cache\\x.json and /home/secret-user/y.json" } }],
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.nested[0].detail.error, "Failed [external-path] and [external-path]");
   const serialized = JSON.stringify(sanitized);
-  for (const forbidden of [/C:\\/i, /C:\//i, /Users\//i, /\\Users\\/i, /\/home\//i]) {
-    assert.equal(forbidden.test(serialized), false, `report leaked ${forbidden}`);
-  }
+  assert.doesNotMatch(serialized, /private-user|secret-user|C:\\Users|\/home\//i);
+});
+
+test("report sanitization is idempotent and preserves project-relative paths", () => {
+  const once = sanitizeIntegrationReport({
+    artifactPath: "indexes/manual.json",
+    error: "ENOENT at C:\\Users\\alice\\manual.json",
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  const twice = sanitizeIntegrationReport(once, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.deepEqual(twice, once);
+  assert.equal(twice.artifactPath, "indexes/manual.json");
+});
+
+test("report sanitization preserves web URLs and explicitly sanitizes local file URLs", () => {
+  const sanitized = sanitizeIntegrationReport({
+    message: "See https://example.com/tmp/manual and file:///C:/Users/alice/manual.json",
+    projectFileUrl: "file:///C:/repo/mcp/Local-pdf-mcp-server/indexes/manual.json",
+  }, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.message, "See https://example.com/tmp/manual and [external-path]");
+  assert.equal(sanitized.projectFileUrl, "indexes/manual.json");
+});
+
+test("report sanitization does not alter extracted manual evidence text", () => {
+  const report = { evidence: [{ statement: "The /RESET signal is unrelated to /home/user/example." }] };
+  const sanitized = sanitizeIntegrationReport(report, { projectRoot: WINDOWS_PROJECT_ROOT });
+  assert.equal(sanitized.evidence[0].statement, report.evidence[0].statement);
 });
 
 test("unknown-query validation permits marked context but rejects resolved claims", () => {

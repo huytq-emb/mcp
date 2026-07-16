@@ -78,10 +78,10 @@ at `indexes/cache/paddlex` when you want offline OCR operation. Run
     "local-pdf-mcp-server": {
       "command": "node",
       "args": [
-        "C:\\path\\to\\mcp\\Local-pdf-mcp-server\\index.js"
+        "<PROJECT_ROOT>\\index.js"
       ],
       "env": {
-        "RENESAS_MCP_ROOT": "C:\\path\\to\\mcp\\Local-pdf-mcp-server"
+        "RENESAS_MCP_ROOT": "<PROJECT_ROOT>"
       }
     }
   }
@@ -169,8 +169,10 @@ OCR is optional and should not be required for normal figure retrieval. OCR/VL/s
 manifest against the current PDF SHA-256 identity, includes recent jobs, and
 reports stale/missing/broken state without parsing large artifacts in full.
 
-To exercise every PDF discovered recursively under `documents/` and write a
-machine-readable matrix under `indexes/`, run:
+## Manual acceptance runner
+
+To exercise every PDF discovered recursively under `documents/` and write the
+JSON and Markdown reports under `indexes/`, run:
 
 ```powershell
 npm.cmd run test:manuals -- --require-manuals --write
@@ -179,6 +181,140 @@ npm.cmd run test:manuals -- --require-manuals --write
 Large manuals use detached background indexing and bounded job polling. Nested
 paths and duplicate basenames are reported as failures because the public MCP
 contract accepts direct filenames only; they are never silently skipped.
+
+### Single-manual acceptance
+
+Use `--filename` with a PDF basename to run only one manual:
+
+```powershell
+npm.cmd run test:manuals -- `
+  --require-manuals `
+  --filename=r01uh1069ej0115-rzg3e.pdf `
+  --write `
+  --trace-memory
+```
+
+`--filename` accepts a basename such as `manual.pdf`, not a relative or absolute
+path. The runner executes only that exact, case-insensitive basename. It fails
+if the manual does not exist or if recursive discovery finds the basename in
+more than one directory. It never falls back to running every manual. A selected
+large manual still uses background indexing.
+
+### Forced rebuild
+
+Add `--force` to rebuild the selected manual's index and artifacts instead of
+reusing a valid ready generation:
+
+```powershell
+npm.cmd run test:manuals -- `
+  --require-manuals `
+  --filename=r01uh1069ej0115-rzg3e.pdf `
+  --force `
+  --write `
+  --trace-memory
+```
+
+A forced large-manual rebuild still uses background mode. The runner obtains the
+job ID from `index_pdf`, then polls `mcp_control(action="job_status")`. If the
+indexing timeout expires, it sends `mcp_control(action="cancel_job")` and starts
+a separate, bounded cancellation-confirmation poll. The manual remains an
+`INDEX_TIMEOUT` result even if the post-cancellation terminal state is `done`,
+`failed`, or `cancelled`; only `cancelled` represents successful cancellation in
+the business sense.
+
+### Polling and cancellation options
+
+- `--timeout-ms`: indexing timeout. Default `7200000` ms (two hours); the runner
+  enforces a minimum of `60000` ms.
+- `--poll-ms`: normal background-job polling interval. Default `2000` ms; the
+  runner enforces a minimum of `250` ms.
+- `--cancel-confirm-timeout-ms`: separate grace period for observing a terminal
+  state after cancellation is requested. Default `30000` ms and minimum `1000`
+  ms.
+- `--cancel-confirm-poll-ms`: polling interval during the cancellation grace
+  period. Default `500` ms and minimum `100` ms; it must not exceed
+  `--cancel-confirm-timeout-ms`.
+
+Cancellation confirmation retries `queued`, `running`, and `unknown`, and stops
+on `done`, `failed`, or `cancelled`. It never reuses the two-hour indexing timeout
+as its grace period and never polls indefinitely. The JSON report records both
+cancellation option values and, when cancellation is attempted, the cancel
+response status, final observed status, confirmation duration, and poll count.
+
+### Report schema version 2
+
+The JSON report uses `schemaVersion: 2`. Each manual records these latency
+arrays:
+
+```text
+evidenceQueryLatenciesMs
+controlLatenciesMs
+advancedToolLatenciesMs
+figureLatenciesMs
+allToolLatenciesMs
+```
+
+Evidence-query latency contains only calls to `query_manual`,
+`get_manual_entity`, `read_manual_evidence`, and `collect_manual_evidence`.
+All-tool latency contains every tool call made by the runner, including control,
+indexing, advanced-inspection, and figure calls. The report summarizes the two
+relevant populations with:
+
+```text
+evidenceQueryP50Ms
+evidenceQueryP95Ms
+allToolP50Ms
+allToolP95Ms
+```
+
+Cold/warm evidence timing is recorded separately as:
+
+```text
+coldEvidenceQueryMs
+warmEvidenceQueryLatenciesMs
+```
+
+The cold measurement and every warm measurement execute `query_manual` with the
+same exact filename, query, `top_k`, and other arguments; only cache warmth is
+intended to differ.
+
+### Shared-process memory semantics
+
+The report declares:
+
+```text
+processIsolation.model = shared-process-sequential
+```
+
+Each manual has these process measurements:
+
+```text
+processRssBeforeManualMb
+processRssAfterManualMb
+processPeakRssThroughManualMb
+processRssDeltaMb
+
+processHeapBeforeManualMb
+processHeapAfterManualMb
+processPeakHeapThroughManualMb
+processHeapDeltaMb
+```
+
+This is one shared runner process, not an isolated process per manual. Retained
+cache or other state from a previous manual can affect later manuals. With
+`--filename`, the fields describe one manual within that shared process, but
+they are still not an OS-level isolated benchmark.
+
+### Report path privacy
+
+Before either output format is written, project-local absolute paths are
+converted to forward-slash project-relative paths. External absolute paths are
+replaced token by token with `[external-path]`, so runtime messages retain error
+codes and other non-sensitive context. Local `file://` URLs follow the same
+underlying-path policy; web URLs are preserved. Generated reports are
+`indexes/all-manual-integration-report.json` and
+`indexes/all-manual-integration-report.md`. The parent `.gitignore` excludes the
+entire `indexes/` directory from Git.
 
 ### Missing figures manifest
 

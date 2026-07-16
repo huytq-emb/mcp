@@ -33,6 +33,10 @@ export const REQUIRED_MANUAL_STAGES = Object.freeze([
   "figure",
   "cacheAfter",
 ]);
+export const CANCELLATION_CONFIRMATION_DEFAULTS = Object.freeze({
+  timeoutMs: 30_000,
+  pollMs: 500,
+});
 
 function mb(bytes) {
   return Math.round((Number(bytes) || 0) / 1048576);
@@ -186,6 +190,100 @@ export function isTerminalJobStatus(status) {
   return ["done", "failed", "cancelled"].includes(String(status || "").toLowerCase());
 }
 
+export function validateCancellationConfirmationOptions({
+  timeoutMs = CANCELLATION_CONFIRMATION_DEFAULTS.timeoutMs,
+  pollMs = CANCELLATION_CONFIRMATION_DEFAULTS.pollMs,
+} = {}) {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  const normalizedPollMs = Number(pollMs);
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs < 1_000) {
+    throw new Error("--cancel-confirm-timeout-ms must be at least 1000");
+  }
+  if (!Number.isFinite(normalizedPollMs) || normalizedPollMs < 100) {
+    throw new Error("--cancel-confirm-poll-ms must be at least 100");
+  }
+  if (normalizedPollMs > normalizedTimeoutMs) {
+    throw new Error("--cancel-confirm-poll-ms must not exceed --cancel-confirm-timeout-ms");
+  }
+  return { timeoutMs: normalizedTimeoutMs, pollMs: normalizedPollMs };
+}
+
+export async function confirmJobCancellation({
+  cancellationAction,
+  statusReader,
+  timeoutMs = CANCELLATION_CONFIRMATION_DEFAULTS.timeoutMs,
+  pollMs = CANCELLATION_CONFIRMATION_DEFAULTS.pollMs,
+  now = Date.now,
+  sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+} = {}) {
+  if (typeof cancellationAction !== "function") throw new Error("confirmJobCancellation requires cancellationAction");
+  if (typeof statusReader !== "function") throw new Error("confirmJobCancellation requires statusReader");
+  if (typeof now !== "function") throw new Error("confirmJobCancellation requires a clock function");
+  if (typeof sleep !== "function") throw new Error("confirmJobCancellation requires a sleep function");
+  const options = validateCancellationConfirmationOptions({ timeoutMs, pollMs });
+  const cancelStatus = normalizeJobStatus(await cancellationAction());
+  const startedAt = Number(now());
+  if (!Number.isFinite(startedAt)) throw new Error("cancellation confirmation clock returned a non-finite value");
+  const elapsedMs = () => Math.max(0, Number(now()) - startedAt);
+  let finalStatus = cancelStatus;
+  let polls = 0;
+  while (true) {
+    const elapsedBeforePoll = elapsedMs();
+    if (polls > 0 && elapsedBeforePoll >= options.timeoutMs) {
+      return {
+        confirmed: false,
+        cancelStatus,
+        finalStatus,
+        confirmationDurationMs: Math.round(elapsedBeforePoll),
+        polls,
+      };
+    }
+
+    finalStatus = normalizeJobStatus(await statusReader());
+    polls += 1;
+    const elapsedAfterPoll = elapsedMs();
+    if (isTerminalJobStatus(finalStatus)) {
+      return {
+        confirmed: true,
+        cancelStatus,
+        finalStatus,
+        confirmationDurationMs: Math.round(elapsedAfterPoll),
+        polls,
+      };
+    }
+    if (elapsedAfterPoll >= options.timeoutMs) {
+      return {
+        confirmed: false,
+        cancelStatus,
+        finalStatus,
+        confirmationDurationMs: Math.round(elapsedAfterPoll),
+        polls,
+      };
+    }
+    await sleep(Math.min(options.pollMs, options.timeoutMs - elapsedAfterPoll));
+  }
+}
+
+function normalizeJobStatus(status) {
+  const normalized = String(status || "").toLowerCase();
+  return ["queued", "running", "done", "failed", "cancelled"].includes(normalized) ? normalized : "unknown";
+}
+
+export function createIndexTimeoutError({ jobId, indexingTimeoutMs, confirmationTimeoutMs, confirmation } = {}) {
+  const finalStatus = String(confirmation?.finalStatus || "unknown");
+  let confirmationMessage;
+  if (!confirmation?.confirmed) {
+    confirmationMessage = `Cancellation was not confirmed within ${confirmationTimeoutMs} ms; last status was ${finalStatus}.`;
+  } else if (finalStatus === "cancelled") {
+    confirmationMessage = `Cancellation was confirmed after ${confirmation.confirmationDurationMs} ms with terminal status cancelled.`;
+  } else {
+    confirmationMessage = `A terminal state was confirmed after ${confirmation.confirmationDurationMs} ms with status ${finalStatus}; cancellation did not finish as cancelled.`;
+  }
+  const error = new Error(`Background index job ${jobId} exceeded ${indexingTimeoutMs} ms. ${confirmationMessage}`);
+  error.code = "INDEX_TIMEOUT";
+  return error;
+}
+
 export function deterministicBundleSignature(bundle = {}) {
   return JSON.stringify({
     facts: (bundle.facts || []).map((item) => item.id),
@@ -243,6 +341,52 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const STRUCTURED_PATH_FIELDS = new Set([
+  "absolutepath",
+  "artifactpath",
+  "cachepath",
+  "canonicalimagepath",
+  "documentsdir",
+  "imagepath",
+  "indexdir",
+  "localpath",
+  "outputpath",
+  "path",
+  "reportpath",
+  "root",
+  "rootdir",
+  "stagingpath",
+  "worker",
+  "workerpath",
+]);
+const MANUAL_EVIDENCE_TEXT_FIELDS = new Set([
+  "caption",
+  "excerpt",
+  "manualtext",
+  "ocrtext",
+  "pagetext",
+  "quote",
+  "statement",
+]);
+
+function normalizedFieldName(fieldName) {
+  return String(fieldName || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function isStructuredPathField(fieldName) {
+  const normalized = normalizedFieldName(fieldName);
+  return STRUCTURED_PATH_FIELDS.has(normalized)
+    || normalized.endsWith("path")
+    || normalized.endsWith("dir")
+    || normalized.endsWith("directory");
+}
+
+function isManualEvidenceTextField(fieldName, location) {
+  const normalized = normalizedFieldName(fieldName);
+  if (MANUAL_EVIDENCE_TEXT_FIELDS.has(normalized)) return true;
+  return ["content", "text", "value"].includes(normalized) && /(?:^|\.)(?:evidence|facts?)(?:\.|\[)/i.test(location);
+}
+
 function absolutePathKind(value) {
   if (path.win32.isAbsolute(value)) return path.win32;
   if (path.posix.isAbsolute(value)) return path.posix;
@@ -256,41 +400,88 @@ function projectRelativePath(value, projectRoot) {
   if (implementation !== rootImplementation) return null;
   const relative = implementation.relative(projectRoot, value);
   if (relative === "") return ".";
-  if (relative.startsWith("..") || implementation.isAbsolute(relative)) return null;
+  if (relative === ".." || relative.startsWith(`..${implementation.sep}`) || implementation.isAbsolute(relative)) return null;
   return relative.split(implementation.sep).join("/");
 }
 
-function sanitizeReportString(value, projectRoot, location, warnings) {
-  const relative = projectRelativePath(value, projectRoot);
-  if (relative !== null) return relative;
-  if (absolutePathKind(value)) {
-    warnings.push(`External absolute path omitted at ${location}.`);
-    return "[external path unavailable]";
-  }
+function splitTrailingPathPunctuation(value) {
+  const match = String(value).match(/^(.*?)([),;:!?]+)$/);
+  return match ? { pathValue: match[1], suffix: match[2] } : { pathValue: String(value), suffix: "" };
+}
 
-  const slashValue = value.replaceAll("\\", "/");
-  const slashRoot = String(projectRoot || "").replaceAll("\\", "/").replace(/\/$/, "");
-  const rooted = slashRoot
-    ? slashValue.replace(new RegExp(`${escapeRegExp(slashRoot)}(?:/|$)`, "ig"), "")
-    : slashValue;
-  const externalPath = /[A-Za-z]:\//.test(rooted)
-    || /(^|[\s'"(=:])\/(?![\/\s])[^\s'"<>|]*/.test(rooted)
-    || /(^|[\s'"(])\/\//.test(rooted);
-  if (externalPath) {
-    warnings.push(`Runtime message with an external absolute path omitted at ${location}.`);
-    return "[runtime message omitted because it contained an external absolute path]";
+function sanitizeAbsolutePathValue(value, projectRoot, location, warnings) {
+  const { pathValue, suffix } = splitTrailingPathPunctuation(value);
+  const relative = projectRelativePath(pathValue, projectRoot);
+  if (relative !== null) return `${relative}${suffix}`;
+  if (!absolutePathKind(pathValue)) return null;
+  warnings.push(`External absolute path redacted at ${location}.`);
+  return `[external-path]${suffix}`;
+}
+
+function sanitizeFileUrl(value, projectRoot, location, warnings) {
+  const { pathValue: url, suffix } = splitTrailingPathPunctuation(value);
+  if (!/^file:\/\//i.test(url)) return null;
+  let filePath = url.slice("file://".length);
+  if (/^\/[A-Za-z]:\//.test(filePath)) filePath = filePath.slice(1);
+  else if (!filePath.startsWith("/")) filePath = `\\\\${filePath.replaceAll("/", "\\")}`;
+  const sanitized = sanitizeAbsolutePathValue(filePath, projectRoot, location, warnings);
+  return sanitized === null ? value : `${sanitized}${suffix}`;
+}
+
+function sanitizePathTokens(value, projectRoot, location, warnings) {
+  const preservedUrls = [];
+  const preserveUrl = (url) => {
+    const marker = `\uE000URL${preservedUrls.length}\uE001`;
+    preservedUrls.push(url);
+    return marker;
+  };
+  let output = value.replace(/\bfile:\/\/[^\s"'<>]+/gi, (url) => sanitizeFileUrl(url, projectRoot, location, warnings) || url);
+  output = output.replace(/\bhttps?:\/\/[^\s"'<>]+/gi, preserveUrl);
+
+  output = output.replace(/(["'])((?:[A-Za-z]:[\\/]|\\\\)[^"']+)\1/g, (match, quote, candidate) => {
+    const sanitized = sanitizeAbsolutePathValue(candidate, projectRoot, location, warnings);
+    return sanitized === null ? match : `${quote}${sanitized}${quote}`;
+  });
+  output = output.replace(/(?:[A-Za-z]:[\\/][^\s"'<>|]+|\\\\[^\\/\s"'<>|]+[\\/][^\\/\s"'<>|]+(?:[\\/][^\s"'<>|]+)*)/g, (candidate) => {
+    return sanitizeAbsolutePathValue(candidate, projectRoot, location, warnings) || candidate;
+  });
+
+  const normalizedRoot = String(projectRoot || "").replaceAll("\\", "/").replace(/\/$/, "");
+  if (path.posix.isAbsolute(normalizedRoot)) {
+    const projectPathPattern = new RegExp(`(^|[\\s'"(=:\\[])(${escapeRegExp(normalizedRoot)}(?:/[^\\s'"<>|]+)*)`, "g");
+    output = output.replace(projectPathPattern, (match, prefix, candidate) => {
+      const sanitized = sanitizeAbsolutePathValue(candidate, normalizedRoot, location, warnings);
+      return `${prefix}${sanitized || candidate}`;
+    });
   }
-  return rooted === slashValue ? value : rooted;
+  output = output.replace(/(^|[\s'"(=:\[])(\/(?:home\/[^\s'"<>|]+|tmp\/[^\s'"<>|]+|var\/tmp\/[^\s'"<>|]+|etc\/[^\s'"<>|]+))/g, (match, prefix, candidate) => {
+    const sanitized = sanitizeAbsolutePathValue(candidate, projectRoot, location, warnings);
+    return `${prefix}${sanitized || candidate}`;
+  });
+
+  return output.replace(/\uE000URL(\d+)\uE001/g, (match, index) => preservedUrls[Number(index)] ?? match);
+}
+
+function sanitizeReportString(value, projectRoot, location, fieldName, warnings) {
+  if (isStructuredPathField(fieldName)) {
+    const fileUrl = sanitizeFileUrl(value, projectRoot, location, warnings);
+    if (fileUrl !== null) return fileUrl;
+    const relative = projectRelativePath(value, projectRoot);
+    if (relative !== null) return relative;
+    if (absolutePathKind(value)) return sanitizeAbsolutePathValue(value, projectRoot, location, warnings);
+  }
+  if (isManualEvidenceTextField(fieldName, location)) return value;
+  return sanitizePathTokens(value, projectRoot, location, warnings);
 }
 
 export function sanitizeIntegrationReport(report, { projectRoot } = {}) {
   if (!projectRoot) throw new Error("sanitizeIntegrationReport requires projectRoot");
   const warnings = [];
-  const visit = (value, location) => {
-    if (typeof value === "string") return sanitizeReportString(value, projectRoot, location, warnings);
-    if (Array.isArray(value)) return value.map((item, index) => visit(item, `${location}[${index}]`));
+  const visit = (value, location, fieldName = "") => {
+    if (typeof value === "string") return sanitizeReportString(value, projectRoot, location, fieldName, warnings);
+    if (Array.isArray(value)) return value.map((item, index) => visit(item, `${location}[${index}]`, fieldName));
     if (!value || typeof value !== "object") return value;
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, location ? `${location}.${key}` : key)]));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, location ? `${location}.${key}` : key, key)]));
   };
   const sanitized = visit(report, "report");
   sanitized.reportWarnings = [...(Array.isArray(sanitized.reportWarnings) ? sanitized.reportWarnings : []), ...warnings];

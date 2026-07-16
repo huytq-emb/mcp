@@ -8,13 +8,15 @@ import { createRuntimeToolRegistry } from "../src/mcp/runtime-registry.js";
 import { clearEvidenceGraphCache, loadEvidenceGraph } from "../src/services/evidence-graph.js";
 import { loadFiguresIndex } from "../src/domains/figures.js";
 import {
+  CANCELLATION_CONFIRMATION_DEFAULTS,
+  confirmJobCancellation,
+  createIndexTimeoutError,
   createManualMetrics,
   deterministicBundleSignature,
   discoverPdfManuals,
   finalizeManualMetrics,
   figureSearchArguments,
   isPdfListed,
-  isTerminalJobStatus,
   paginationDuplicateIds,
   parseDoctorSummary,
   parseJobId,
@@ -25,6 +27,7 @@ import {
   sanitizeIntegrationReport,
   selectPdfManuals,
   sharedProcessIsolationMetadata,
+  validateCancellationConfirmationOptions,
   validateBundleForManual,
   validateUnknownQueryBundle,
 } from "../src/eval/all-manual-integration.js";
@@ -42,6 +45,12 @@ const argument = (name, fallback) => {
 };
 const pollMs = Math.max(250, Number(argument("poll-ms", 2_000)) || 2_000);
 const timeoutMs = Math.max(60_000, Number(argument("timeout-ms", 7_200_000)) || 7_200_000);
+const cancellationConfirmationOptions = validateCancellationConfirmationOptions({
+  timeoutMs: Number(argument("cancel-confirm-timeout-ms", CANCELLATION_CONFIRMATION_DEFAULTS.timeoutMs)),
+  pollMs: Number(argument("cancel-confirm-poll-ms", CANCELLATION_CONFIRMATION_DEFAULTS.pollMs)),
+});
+const cancelConfirmTimeoutMs = cancellationConfirmationOptions.timeoutMs;
+const cancelConfirmPollMs = cancellationConfirmationOptions.pollMs;
 const largePageThreshold = Math.max(1, Number(argument("large-pages", 350)) || 350);
 const filenameFilter = String(argument("filename", "") || "").trim();
 const startedAt = new Date().toISOString();
@@ -159,16 +168,32 @@ async function waitForJob(row, jobId) {
     }
     await sleep(pollMs);
   }
-  const cancel = await requiredTool(row, "mcp_control", { action: "cancel_job", job_id: jobId, reason: `All-manual integration timeout after ${timeoutMs} ms` });
-  const cancelStatus = parseJobStatus(cancel.text);
-  const confirmation = await requiredTool(row, "mcp_control", { action: "job_status", job_id: jobId });
-  const confirmedStatus = parseJobStatus(confirmation.text);
-  if (!isTerminalJobStatus(confirmedStatus)) {
-    throw new Error(`background index job ${jobId} exceeded ${timeoutMs} ms and cancellation was not confirmed (cancel=${cancelStatus}, status=${confirmedStatus})`);
-  }
-  const error = new Error(`background index job ${jobId} exceeded ${timeoutMs} ms and reached terminal state ${confirmedStatus} after cancellation`);
-  error.code = "INDEX_TIMEOUT";
-  throw error;
+  const confirmation = await confirmJobCancellation({
+    cancellationAction: async () => {
+      const call = await requiredTool(row, "mcp_control", {
+        action: "cancel_job",
+        job_id: jobId,
+        reason: `All-manual integration timeout after ${timeoutMs} ms`,
+      });
+      return parseJobStatus(call.text);
+    },
+    statusReader: async () => {
+      const call = await requiredTool(row, "mcp_control", { action: "job_status", job_id: jobId });
+      return parseJobStatus(call.text);
+    },
+    timeoutMs: cancelConfirmTimeoutMs,
+    pollMs: cancelConfirmPollMs,
+    now: performance.now,
+    sleep,
+  });
+  row.indexing.cancellation = confirmation;
+  row.indexing.lastJobStatus = confirmation.finalStatus;
+  throw createIndexTimeoutError({
+    jobId,
+    indexingTimeoutMs: timeoutMs,
+    confirmationTimeoutMs: cancelConfirmTimeoutMs,
+    confirmation,
+  });
 }
 
 function sourcePage(entity) {
@@ -409,7 +434,18 @@ const report = {
   schemaVersion: 2,
   startedAt,
   finishedAt: "",
-  options: { requireManuals, writeReport, forceAll, traceMemory, filenameFilter: filenameFilter || null, pollMs, timeoutMs, largePageThreshold },
+  options: {
+    requireManuals,
+    writeReport,
+    forceAll,
+    traceMemory,
+    filenameFilter: filenameFilter || null,
+    pollMs,
+    timeoutMs,
+    cancelConfirmTimeoutMs,
+    cancelConfirmPollMs,
+    largePageThreshold,
+  },
   processIsolation: sharedProcessIsolationMetadata(),
   listPdfs: { ok: listed.ok, latencyMs: listed.latencyMs, error: listed.error || "" },
   errors: selectionError ? [selectionError] : [],
@@ -432,7 +468,7 @@ for (const manual of selectedManuals) {
     classification: "unknown",
     sourceFingerprint: "",
     listedByPublicTool: listed.ok && isPdfListed(listed.text, manual.filename),
-    indexing: { mode: "", reused: false, durationMs: 0, jobId: "", lastJobStatus: "" },
+    indexing: { mode: "", reused: false, durationMs: 0, jobId: "", lastJobStatus: "", cancellation: null },
     doctor: {},
     evidence: {},
     advanced: {},
