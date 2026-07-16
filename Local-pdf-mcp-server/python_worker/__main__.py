@@ -11,7 +11,7 @@ from . import PROTOCOL_VERSION, WORKER_VERSION
 from .extractors import build_structured, extract_pinmux_rows, extract_tables
 from .figure_ocr import build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, prewarm_ocr_models, render_figure_crop
 from .pdf_engine import build_pages_cache, extract_pages, inspect_pdf, library_versions, peak_rss_bytes, source_fingerprint, source_info
-from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit, ensure_inside, log
+from .protocol import WorkerError, artifact_descriptor, atomic_write_json, emit, ensure_inside, ensure_regular_file_inside, log
 
 
 OPERATIONS = {
@@ -57,7 +57,7 @@ def main() -> int:
         inputs = request.get("inputs") or {}
         outputs = request.get("outputs") or {}
         options = request.get("options") or {}
-        pdf_path = ensure_inside(inputs.get("pdfPath", ""), roots, "PDF path")
+        pdf_path = ensure_regular_file_inside(inputs.get("pdfPath", ""), roots, "PDF path")
         cancel_path = outputs.get("cancelPath")
 
         def progress(current: int, total: int, phase: str = operation) -> None:

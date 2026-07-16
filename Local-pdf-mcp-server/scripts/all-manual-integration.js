@@ -8,13 +8,23 @@ import { createRuntimeToolRegistry } from "../src/mcp/runtime-registry.js";
 import { clearEvidenceGraphCache, loadEvidenceGraph } from "../src/services/evidence-graph.js";
 import { loadFiguresIndex } from "../src/domains/figures.js";
 import {
+  createManualMetrics,
   deterministicBundleSignature,
   discoverPdfManuals,
+  finalizeManualMetrics,
   figureSearchArguments,
-  parseEmbeddedJson,
+  isPdfListed,
+  isTerminalJobStatus,
+  paginationDuplicateIds,
+  parseDoctorSummary,
   parseJobId,
   parseJobStatus,
-  percentile,
+  recordProcessMemorySample,
+  recordToolLatency,
+  requiredStagesExecuted,
+  sanitizeIntegrationReport,
+  selectPdfManuals,
+  sharedProcessIsolationMetadata,
   validateBundleForManual,
   validateUnknownQueryBundle,
 } from "../src/eval/all-manual-integration.js";
@@ -33,6 +43,7 @@ const argument = (name, fallback) => {
 const pollMs = Math.max(250, Number(argument("poll-ms", 2_000)) || 2_000);
 const timeoutMs = Math.max(60_000, Number(argument("timeout-ms", 7_200_000)) || 7_200_000);
 const largePageThreshold = Math.max(1, Number(argument("large-pages", 350)) || 350);
+const filenameFilter = String(argument("filename", "") || "").trim();
 const startedAt = new Date().toISOString();
 
 function resultText(result) {
@@ -101,21 +112,14 @@ async function measuredTool(tool, args) {
 async function requiredTool(row, tool, args) {
   const call = await measuredTool(tool, args);
   row.calls.push({ tool, args, ok: call.ok, latencyMs: call.latencyMs, error: call.error || "" });
-  row.metrics.queryLatenciesMs.push(call.latencyMs);
-  row.metrics.rssBeforeMb = row.metrics.rssBeforeMb ?? call.rssBeforeMb;
-  row.metrics.rssAfterMb = call.rssAfterMb;
-  row.metrics.peakRssMb = Math.max(row.metrics.peakRssMb || 0, call.peakRssMb || 0);
-  row.metrics.heapAfterMb = call.heapAfterMb;
-  row.metrics.peakHeapMb = Math.max(row.metrics.peakHeapMb || 0, call.peakHeapMb || 0);
+  recordToolLatency(row.metrics, tool, call.latencyMs);
   if (traceMemory) console.log(`TOOL ${tool}: ${call.ok ? "ok" : "fail"}; ${call.latencyMs} ms; heap ${call.heapBeforeMb}->${call.heapAfterMb} MB (peak ${call.peakHeapMb}); RSS ${call.rssBeforeMb}->${call.rssAfterMb} MB (peak ${call.peakRssMb})`);
   if (!call.ok) throw new Error(`${tool} failed: ${call.error}`);
   return call;
 }
 
-function compactDoctor(call) {
-  const summary = parseEmbeddedJson(call.text);
-  if (!summary) throw new Error("doctor response omitted its machine summary JSON");
-  return summary;
+function compactDoctor(call, filename) {
+  return parseDoctorSummary(call.text, filename);
 }
 
 async function statusFor(row, filename) {
@@ -137,7 +141,7 @@ function indexReady(status) {
 }
 
 function staleLockFromDoctor(doctor, filename) {
-  const report = doctor?.reports?.find((item) => item.filename === filename) || doctor?.reports?.[0];
+  const report = doctor?.reports?.find((item) => item.filename === filename);
   return report?.checks?.find((item) => item.name === "index build lock")?.status === "stale";
 }
 
@@ -155,8 +159,14 @@ async function waitForJob(row, jobId) {
     }
     await sleep(pollMs);
   }
-  await measuredTool("mcp_control", { action: "cancel_job", job_id: jobId, reason: `All-manual integration timeout after ${timeoutMs} ms` });
-  const error = new Error(`background index job ${jobId} exceeded ${timeoutMs} ms and was cancelled`);
+  const cancel = await requiredTool(row, "mcp_control", { action: "cancel_job", job_id: jobId, reason: `All-manual integration timeout after ${timeoutMs} ms` });
+  const cancelStatus = parseJobStatus(cancel.text);
+  const confirmation = await requiredTool(row, "mcp_control", { action: "job_status", job_id: jobId });
+  const confirmedStatus = parseJobStatus(confirmation.text);
+  if (!isTerminalJobStatus(confirmedStatus)) {
+    throw new Error(`background index job ${jobId} exceeded ${timeoutMs} ms and cancellation was not confirmed (cancel=${cancelStatus}, status=${confirmedStatus})`);
+  }
+  const error = new Error(`background index job ${jobId} exceeded ${timeoutMs} ms and reached terminal state ${confirmedStatus} after cancellation`);
   error.code = "INDEX_TIMEOUT";
   throw error;
 }
@@ -221,8 +231,9 @@ async function runEvidenceMatrix(row, graph) {
   if (!(broad.evidence || []).length) throw new Error(`broad query returned no evidence: ${broadQuery}`);
 
   const exactCalls = [];
+  const exactQueryArguments = { filename: row.filename, query: exactSymbol, top_k: 10 };
   for (let index = 0; index < 5; index += 1) {
-    const call = await requiredTool(row, "query_manual", { filename: row.filename, query: exactSymbol, top_k: 10 });
+    const call = await requiredTool(row, "query_manual", { ...exactQueryArguments });
     const bundle = call.result.structuredContent;
     validateAndRecordBundle(row, index === 0 ? "exact" : `exactRepeat${index}`, bundle);
     exactCalls.push({ call, bundle });
@@ -238,8 +249,14 @@ async function runEvidenceMatrix(row, graph) {
   row.evidence.exact.expectedEntityId = exactEntity.id;
   row.evidence.exact.hardwareExact = hardwareExact;
   row.evidence.exact.symbol = exactSymbol;
-  row.metrics.coldQueryMs = exactCalls[0].call.latencyMs;
-  row.metrics.warmQueryMs = exactCalls.slice(1).map(({ call }) => call.latencyMs);
+  row.metrics.coldEvidenceQueryMs = exactCalls[0].call.latencyMs;
+  row.metrics.warmEvidenceQueryLatenciesMs = exactCalls.slice(1).map(({ call }) => call.latencyMs);
+  row.metrics.coldWarmEvidenceQuery = {
+    tool: "query_manual",
+    arguments: exactQueryArguments,
+    coldLatencyMs: row.metrics.coldEvidenceQueryMs,
+    warmLatenciesMs: row.metrics.warmEvidenceQueryLatenciesMs,
+  };
 
   const nonexistent = `ZZQV${Buffer.from(row.filename).toString("hex").slice(0, 20).toUpperCase()}X`;
   const negativeCall = await requiredTool(row, "query_manual", { filename: row.filename, query: nonexistent, top_k: 10 });
@@ -266,8 +283,10 @@ async function runEvidenceMatrix(row, graph) {
     const nextPage = await requiredTool(row, "query_manual", { filename: row.filename, query: exactSymbol, top_k: 2, cursor: firstBundle.pagination.nextCursor });
     const nextBundle = nextPage.result.structuredContent;
     validateAndRecordBundle(row, "paginationNext", nextBundle);
-    const firstIds = new Set(firstBundle.evidence.map((item) => item.id));
-    if (nextBundle.evidence.some((item) => firstIds.has(item.id))) throw new Error("pagination returned duplicate evidence across pages");
+    const duplicates = paginationDuplicateIds(firstBundle, nextBundle);
+    if (duplicates.evidence.length || duplicates.entities.length) {
+      throw new Error(`pagination returned stable duplicates across pages: evidence=${duplicates.evidence.join(",") || "none"}; entities=${duplicates.entities.join(",") || "none"}`);
+    }
   }
 
   return exactEntity;
@@ -355,9 +374,7 @@ async function smokeFigures(row, status) {
 }
 
 function finalMetrics(row) {
-  const latencies = row.metrics.queryLatenciesMs;
-  row.metrics.p50QueryMs = percentile(latencies, 0.5);
-  row.metrics.p95QueryMs = percentile(latencies, 0.95);
+  finalizeManualMetrics(row.metrics, process.memoryUsage());
   row.metrics.cacheReused = Boolean(row.indexing.reused);
 }
 
@@ -368,23 +385,34 @@ function markdownReport(report) {
     `Generated: ${report.finishedAt}`,
     `Manuals: ${report.summary.total}; pass=${report.summary.pass}; fail=${report.summary.fail}; blocked=${report.summary.blocked}`,
     "",
-    "| Manual | Pages | Mode | Doctor | Evidence | Register | Bitfield | Sequence | Table | Figure | Semantic | Index ms | p50 ms | p95 ms | Peak RSS MB | Status |",
-    "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    "| Manual | Pages | Mode | Doctor | Evidence | Register | Bitfield | Sequence | Table | Figure | Semantic correctness | Runtime coverage | Index ms | Evidence p50 ms | Evidence p95 ms | All-tool p50 ms | All-tool p95 ms | Process peak-through RSS MB | Status |",
+    "| --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   ];
   for (const row of report.manuals) {
-    lines.push(`| ${row.relativePath} | ${row.pageCount || 0} | ${row.indexing.mode || "n/a"} | ${row.doctor?.after?.coreHealth || row.doctor?.before?.coreHealth || "n/a"} | ${row.evidence?.exact?.ok ? "pass" : "fail"} | ${row.advanced?.register?.status || "n/a"} | ${row.advanced?.bitfield?.status || "n/a"} | ${row.advanced?.sequence?.status || "n/a"} | ${row.advanced?.table?.status || "n/a"} | ${row.figure?.status || "n/a"} | ${row.semanticResult || "n/a"} | ${row.indexing.durationMs || 0} | ${row.metrics?.p50QueryMs || 0} | ${row.metrics?.p95QueryMs || 0} | ${row.metrics?.peakRssMb || 0} | ${row.status} |`);
+    lines.push(`| ${row.relativePath} | ${row.pageCount || 0} | ${row.indexing.mode || "n/a"} | ${row.doctor?.after?.coreHealth || row.doctor?.before?.coreHealth || "n/a"} | ${row.evidence?.exact?.ok ? "pass" : "fail"} | ${row.advanced?.register?.status || "n/a"} | ${row.advanced?.bitfield?.status || "n/a"} | ${row.advanced?.sequence?.status || "n/a"} | ${row.advanced?.table?.status || "n/a"} | ${row.figure?.status || "n/a"} | ${row.semanticCorrectness || "n/a"} | ${row.runtimeCoverageResult || "n/a"} | ${row.indexing.durationMs || 0} | ${row.metrics?.evidenceQueryP50Ms || 0} | ${row.metrics?.evidenceQueryP95Ms || 0} | ${row.metrics?.allToolP50Ms || 0} | ${row.metrics?.allToolP95Ms || 0} | ${row.metrics?.processPeakRssThroughManualMb || 0} | ${row.status} |`);
   }
   return `${lines.join("\n")}\n`;
 }
 
 const discovered = await discoverPdfManuals(context.paths.documentsDir());
+let selectedManuals = [];
+let selectionError = "";
+try {
+  selectedManuals = selectPdfManuals(discovered, filenameFilter);
+} catch (error) {
+  selectionError = errorMessage(error);
+  console.error(`FAIL: ${selectionError}`);
+  process.exitCode = 1;
+}
 const listed = await measuredTool("list_pdfs", {});
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   startedAt,
   finishedAt: "",
-  options: { requireManuals, writeReport, forceAll, pollMs, timeoutMs, largePageThreshold },
+  options: { requireManuals, writeReport, forceAll, traceMemory, filenameFilter: filenameFilter || null, pollMs, timeoutMs, largePageThreshold },
+  processIsolation: sharedProcessIsolationMetadata(),
   listPdfs: { ok: listed.ok, latencyMs: listed.latencyMs, error: listed.error || "" },
+  errors: selectionError ? [selectionError] : [],
   manuals: [],
   summary: {},
 };
@@ -394,7 +422,8 @@ if (!discovered.length && requireManuals) {
   process.exitCode = 1;
 }
 
-for (const manual of discovered) {
+for (const manual of selectedManuals) {
+  const memoryAtStart = process.memoryUsage();
   const row = {
     filename: manual.filename,
     relativePath: manual.relativePath,
@@ -402,19 +431,25 @@ for (const manual of discovered) {
     pageCount: 0,
     classification: "unknown",
     sourceFingerprint: "",
-    listedByPublicTool: listed.ok && listed.text.includes(`- ${manual.filename}`),
+    listedByPublicTool: listed.ok && isPdfListed(listed.text, manual.filename),
     indexing: { mode: "", reused: false, durationMs: 0, jobId: "", lastJobStatus: "" },
     doctor: {},
     evidence: {},
     advanced: {},
     figure: {},
-    semanticResult: "not_run",
-    metrics: { queryLatenciesMs: [], peakRssMb: 0 },
+    semanticCorrectness: "not_evaluated_by_runtime_runner",
+    runtimeCoverageResult: "not_run",
+    stages: Object.fromEntries([
+      "manualValidation", "doctorBefore", "indexing", "doctorAfter", "cacheBefore",
+      "evidence", "advanced", "figure", "cacheAfter",
+    ].map((stage) => [stage, "not_run"])),
+    metrics: createManualMetrics(memoryAtStart),
     calls: [],
     warnings: [],
     errors: [],
     status: "fail",
   };
+  const memoryTimer = setInterval(() => recordProcessMemorySample(row.metrics, process.memoryUsage()), 25);
   report.manuals.push(row);
   console.log(`MANUAL START: ${manual.relativePath}`);
   try {
@@ -426,12 +461,14 @@ for (const manual of discovered) {
     row.sourceFingerprint = `size=${source.size};sha256=${source.sha256}`;
     const info = await requiredTool(row, "pdf_info", { filename: row.filename });
     if (!info.text.includes(`PDF: ${row.filename}`)) throw new Error("pdf_info returned mismatched filename");
+    row.stages.manualValidation = "pass";
     const doctorBeforeCall = await requiredTool(row, "doctor", { filename: row.filename, write_report: false });
-    const doctorBefore = compactDoctor(doctorBeforeCall);
+    const doctorBefore = compactDoctor(doctorBeforeCall, row.filename);
     row.doctor.before = doctorBefore;
-    const doctorReport = doctorBefore.reports?.find((item) => item.filename === row.filename) || doctorBefore.reports?.[0];
+    const doctorReport = doctorBefore.reports.find((item) => item.filename === row.filename);
     row.pageCount = Number(doctorReport?.checks?.find((item) => item.name === "pdf readability")?.pageCount || 0);
     if (!Number.isInteger(row.pageCount) || row.pageCount < 1) throw new Error("doctor did not report a valid page count");
+    row.stages.doctorBefore = "pass";
     row.classification = row.pageCount > largePageThreshold ? "large" : row.pageCount > 100 ? "medium" : "small";
     const statusBefore = await statusFor(row, row.filename);
     row.indexing.statusBefore = { health: statusBefore.health, manifestStatus: statusBefore.manifest?.buildStatus || "missing" };
@@ -458,32 +495,42 @@ for (const manual of discovered) {
     const statusAfter = await statusFor(row, row.filename);
     row.indexing.statusAfter = { health: statusAfter.health, manifestStatus: statusAfter.manifest?.buildStatus || "missing" };
     if (!indexReady(statusAfter)) throw new Error(`index is not ready after build/reuse: health=${statusAfter.health}, manifest=${statusAfter.manifest?.buildStatus || "missing"}`);
+    row.stages.indexing = "pass";
     const doctorAfterCall = await requiredTool(row, "doctor", { filename: row.filename, write_report: false });
-    const doctorAfter = compactDoctor(doctorAfterCall);
+    const doctorAfter = compactDoctor(doctorAfterCall, row.filename);
     row.doctor.after = doctorAfter;
-    const finalDoctorReport = doctorAfter.reports?.find((item) => item.filename === row.filename) || doctorAfter.reports?.[0];
+    const finalDoctorReport = doctorAfter.reports.find((item) => item.filename === row.filename);
     if (finalDoctorReport?.coreHealth !== "ok") throw new Error(`doctor core health is ${finalDoctorReport?.coreHealth || "missing"} after indexing`);
+    row.stages.doctorAfter = "pass";
 
     const cacheBefore = await requiredTool(row, "mcp_control", { action: "cache_status", filename: row.filename });
     row.cacheBefore = cacheBefore.result.structuredContent || null;
+    row.stages.cacheBefore = "pass";
     let targets;
     {
       const graph = await loadEvidenceGraph(row.filename);
       const exactEntity = await runEvidenceMatrix(row, graph);
       targets = advancedSmokeTargets(graph, exactEntity);
     }
+    row.stages.evidence = "pass";
     clearEvidenceGraphCache();
     await smokeAdvanced(row, targets);
+    row.stages.advanced = "pass";
     await smokeFigures(row, statusAfter);
+    row.stages.figure = "pass";
     const cacheAfter = await requiredTool(row, "mcp_control", { action: "cache_status", filename: row.filename });
     row.cacheAfter = cacheAfter.result.structuredContent || null;
-    row.semanticResult = "evidence-bundle-v2-runtime-pass";
+    row.stages.cacheAfter = "pass";
+    const stageValidation = requiredStagesExecuted(row.stages);
+    if (!stageValidation.ok) throw new Error(`required manual stages were not executed: ${stageValidation.missing.join(", ")}`);
+    row.runtimeCoverageResult = "evidence-bundle-v2-runtime-pass";
     row.status = "pass";
   } catch (error) {
     row.errors.push(errorMessage(error));
     row.status = error?.code === "INDEX_TIMEOUT" || /permission|EACCES|EPERM|ENOSPC/i.test(errorMessage(error)) ? "blocked" : "fail";
     console.error(`MANUAL ${row.status.toUpperCase()}: ${manual.relativePath}: ${errorMessage(error)}`);
   } finally {
+    clearInterval(memoryTimer);
     finalMetrics(row);
     console.log(`MANUAL END: ${manual.relativePath}: ${row.status}`);
   }
@@ -501,11 +548,12 @@ report.summary = {
 if (writeReport) {
   const jsonPath = path.join(context.paths.indexDir(), "all-manual-integration-report.json");
   const markdownPath = path.join(context.paths.indexDir(), "all-manual-integration-report.md");
-  await atomicWriteJson(jsonPath, report);
-  await atomicWriteFile(markdownPath, markdownReport(report), "utf8");
+  const sanitizedReport = sanitizeIntegrationReport(report, { projectRoot: context.config.rootDir });
+  await atomicWriteJson(jsonPath, sanitizedReport);
+  await atomicWriteFile(markdownPath, markdownReport(sanitizedReport), "utf8");
   console.log(`REPORT JSON: ${jsonPath}`);
   console.log(`REPORT MARKDOWN: ${markdownPath}`);
 }
 
 console.log(`ALL MANUALS: total=${report.summary.total}, pass=${report.summary.pass}, fail=${report.summary.fail}, blocked=${report.summary.blocked}, skipped=0`);
-if (report.summary.fail || report.summary.blocked || (requireManuals && !report.summary.total)) process.exitCode = 1;
+if (selectionError || report.summary.fail || report.summary.blocked || (requireManuals && !report.summary.total)) process.exitCode = 1;

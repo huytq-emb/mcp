@@ -9,9 +9,19 @@ import fitz
 from python_worker.extractors import build_bitfields, build_cautions, build_registers, extract_pinmux_rows, infer_kind, table_from_rows
 from python_worker.figure_ocr import _ocr_image, build_figure_ocr, extract_figures, inspect_figure_basic, ocr_health, ocr_image_file, parse_figure_image, prewarm_ocr_models, render_figure_crop
 from python_worker.pdf_engine import peak_rss_bytes, words_to_rows
+from python_worker.protocol import WorkerError, ensure_regular_file_inside
 
 
 class ExtractorTests(unittest.TestCase):
+    def test_pdf_worker_rejects_symlink_before_opening(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pdf_path = root / "manual.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4")
+            with patch.object(Path, "is_symlink", return_value=True):
+                with self.assertRaisesRegex(WorkerError, "symbolic links and reparse points"):
+                    ensure_regular_file_inside(str(pdf_path), [str(root)], "PDF path")
+
     def test_words_to_rows_keeps_coordinates(self):
         rows = words_to_rows([
             {"text": "Bit", "x0": 10, "y0": 20, "x1": 25, "y1": 30},
@@ -246,9 +256,6 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(result["engine"], "none")
 
     def test_figure_ocr_missing_dependency_returns_structured_status(self):
-        health = ocr_health()
-        if health["ocr"]["available"]:
-            self.skipTest("PaddleOCR is installed in this environment")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pdf_path = root / "empty.pdf"
@@ -260,7 +267,9 @@ class ExtractorTests(unittest.TestCase):
             doc.save(pdf_path)
             doc.close()
             figures_path.write_text('{"schemaVersion":1,"filename":"empty.pdf","figures":[]}', encoding="utf-8")
-            result = build_figure_ocr(pdf_path, "empty.pdf", figures_path, output_path, renders_root)
+            health = {"ok": True, "ocr": {"available": False, "missing": ["paddleocr"]}}
+            with patch("python_worker.figure_ocr.ocr_health", return_value=health):
+                result = build_figure_ocr(pdf_path, "empty.pdf", figures_path, output_path, renders_root)
             self.assertFalse(result["ok"])
             self.assertEqual(result["error"], "OCR dependency missing")
             self.assertIn("requirements-ocr.txt", result["hint"])
@@ -297,9 +306,6 @@ class ExtractorTests(unittest.TestCase):
         self.assertIn("modelCache", result)
 
     def test_structure_parser_unavailable_writes_structured_artifact(self):
-        health = ocr_health()
-        if health["ocr"]["structure"]["available"]:
-            self.skipTest("PP-StructureV3 is installed in this environment")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pdf_path = root / "synthetic-structure.pdf"
@@ -312,7 +318,15 @@ class ExtractorTests(unittest.TestCase):
             doc.save(pdf_path)
             doc.close()
             render_figure_crop(pdf_path, pdf_path.name, image_path, 1, [30, 30, 190, 145], 2.0, False)
-            artifact = parse_figure_image(image_path, pdf_path, pdf_path.name, output_path, "structure", {"page": 1, "bbox": [30, 30, 190, 145], "scale": 2.0})
+            health = {
+                "ok": True,
+                "ocr": {
+                    "available": True,
+                    "structure": {"available": False, "reason": "parser unavailable", "hint": "install structure dependencies"},
+                },
+            }
+            with patch("python_worker.figure_ocr.ocr_health", return_value=health):
+                artifact = parse_figure_image(image_path, pdf_path, pdf_path.name, output_path, "structure", {"page": 1, "bbox": [30, 30, 190, 145], "scale": 2.0})
             self.assertFalse(artifact["ok"])
             self.assertEqual(artifact["schemaVersion"], 1)
             self.assertEqual(artifact["itemCount"], 0)

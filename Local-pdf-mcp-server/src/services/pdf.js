@@ -1,4 +1,4 @@
-import { atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath, safePdfPath } from "../core/runtime-helpers.js";
+import { assertSafePdfPath, atomicWriteJson, clampInteger, getPdfSourceInfo, isSamePdfSource, normalizeText, pathExists, readJsonCached, safePagesCachePath, safePagesPartialCachePath } from "../core/runtime-helpers.js";
 import { contentSourceFingerprint } from "../artifacts/manifest.js";
 import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import { createRuntimePort } from "../core/runtime-ports.js";
@@ -15,8 +15,7 @@ import { throwIfAborted } from "../core/cancellation.js";
 // -----------------------------------------------------------------------------
 
 export async function loadPdfDocument(filename) {
-  const filePath = safePdfPath(filename);
-  await getPdfSourceInfo(filename);
+  const filePath = await assertSafePdfPath(filename);
   const data = await fs.readFile(filePath);
 
   const loadingTask = pdfjsLib.getDocument({

@@ -4,13 +4,13 @@ import crypto from "node:crypto";
 import { PYTHON_WORKER_DEFAULT_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getArtifactBuildId, getPathResolver } from "../core/path-resolver.js";
 import {
+  assertSafePdfPath,
   atomicWriteJson,
   getStablePdfSourceInfo,
   safeBitfieldsIndexPath,
   safeCautionsIndexPath,
   safePagesCachePath,
   safePagesPartialCachePath,
-  safePdfPath,
   safeRegistersIndexPath,
   safeTablesIndexPath,
   safeTablesPartialIndexPath,
@@ -96,7 +96,7 @@ async function runArtifactBuild({ filename, operation, kind, targetPath, options
       requestId,
       operation,
       allowedRoots: pythonWorkerAllowedRoots(),
-      inputs: { filename, pdfPath: safePdfPath(filename), ...(requestOptions.inputs || {}) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename), ...(requestOptions.inputs || {}) },
       outputs: { artifactPath: tempPath, [`${kind}Path`]: tempPath, cancelPath, ...(requestOptions.outputs || {}) },
       options: { ...(requestOptions.options || {}), buildId },
     }, {
@@ -125,7 +125,7 @@ export async function getPdfPageCountHybrid(filename, options = {}) {
   return runWithNodeFallback("pdf.inspect", options, async () => {
     const worker = await runPythonWorker({
       operation: "pdf.inspect", allowedRoots: pythonWorkerAllowedRoots(),
-      inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: {},
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) }, outputs: {}, options: {},
     }, { timeoutMs: 30_000, signal: options.signal });
     return { value: Number(worker.result?.pageCount || 0), worker };
   }, () => nodePdf.getPdfPageCount(filename));
@@ -135,7 +135,7 @@ export async function extractPdfPagesHybrid(filename, options = {}) {
   return runWithNodeFallback("pages.extract", options, async () => {
     const worker = await runPythonWorker({
       operation: "pages.extract", allowedRoots: pythonWorkerAllowedRoots(),
-      inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {},
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) }, outputs: {},
       options: { startPage: options.startPage, endPage: options.endPage },
     }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress, signal: options.signal });
     return { value: { filename, ...worker.result }, worker };
@@ -174,7 +174,7 @@ export async function extractTablesFromPagesHybrid(filename, options = {}) {
     const candidatePages = Array.from({ length: Math.max(0, endPage - startPage + 1) }, (_, index) => startPage + index);
     const worker = await runPythonWorker({
       operation: "tables.extract", allowedRoots: pythonWorkerAllowedRoots(),
-      inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: { candidatePages },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) }, outputs: {}, options: { candidatePages },
     }, { timeoutMs: options.timeoutMs || 120_000, onProgress: options.onProgress, signal: options.signal });
     return { value: { filename, pageCount: worker.result.pageCount, startPage, endPage, tables: worker.result.tables || [], source: "python-pymupdf-coordinate" }, worker };
   }, () => nodeManual.extractTablesFromPagesNode(filename, options));
@@ -194,7 +194,7 @@ export async function runStructuredBuildHybrid(filename, options = {}) {
   try {
     const worker = await runPythonWorker({
       requestId, operation: "structured.build", allowedRoots: pythonWorkerAllowedRoots(),
-      inputs: { filename, pdfPath: safePdfPath(filename), pagesPath: safePagesCachePath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename), pagesPath: safePagesCachePath(filename) },
       outputs: { ...outputs, tablesCheckpointPath: safeTablesPartialIndexPath(filename), cancelPath }, options: { candidatePages: options.candidatePages || [], buildId },
     }, { timeoutMs: options.timeoutMs || PYTHON_WORKER_DEFAULT_TIMEOUT_MS, onProgress: options.onProgress, onSpawn: options.onWorkerSpawn, onStderr: options.onWorkerStderr, signal: options.signal });
     assertSameContentSource(source, await getStablePdfSourceInfo(filename), filename);

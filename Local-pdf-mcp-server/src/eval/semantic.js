@@ -272,7 +272,7 @@ export function evaluateSemanticThresholds(metrics = {}, thresholds = {}) {
 export function evaluateCoverageExpectation(queryCase = {}, result = {}) {
   const expectation = queryCase.expectation || { type: "runtime-only" };
   const type = typeof expectation === "string" ? expectation : expectation.type;
-  if (type === "runtime-only") return { type, evaluated: false, passed: true, reason: "runtime-only" };
+  if (type === "runtime-only") return { type, evaluated: false, passed: true, reason: expectation.reason || "runtime-only" };
   const bundle = result.bundle || result || {};
   const actuals = actualsFromBundle(bundle);
   const entities = [...entityMap(bundle).values()];
@@ -297,7 +297,7 @@ export function evaluateCoverageExpectation(queryCase = {}, result = {}) {
   } else if (type === "property") {
     passed = hasEntity() && (!expectation.property || actuals.some((item) => matchingTypes(item) && propertyMatches(expectation.property.value, item.properties?.[expectation.property.name])));
   } else if (type === "text") {
-    passed = Boolean(expectation.requiredText) && hasExpectedText(actuals, expectation.requiredText);
+    passed = Boolean(expectation.requiredText) && hasExpectedText(actuals.filter((item) => matchingTypes(item) && pageAllowed(item.page)), expectation.requiredText);
   } else if (type === "figure-locator") {
     passed = entities.some((entity) => entity.type === "figure") && figureMatches(bundle, { figureLocator: expectation }, null);
   } else if (type === "sequence") {

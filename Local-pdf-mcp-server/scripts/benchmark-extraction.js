@@ -1,10 +1,9 @@
 import { performance } from "node:perf_hooks";
-import fs from "node:fs";
 import { extractPdfPages, getPdfPageCount, loadPdfDocument } from "../src/services/pdf.js";
 import { extractTablesFromPagesNode } from "../src/domains/manual-intelligence.js";
 import { runPythonWorker, getHybridRuntimeStatus } from "../src/services/python-worker.js";
 import { DOCUMENTS_DIR, INDEX_DIR } from "../src/core/runtime-constants.js";
-import { safePdfPath } from "../src/core/runtime-helpers.js";
+import { assertSafePdfPath } from "../src/core/runtime-helpers.js";
 import { createRuntimePortRegistry, activateRuntimePortRegistry, bindRuntimePorts } from "../src/core/runtime-ports.js";
 
 const runtimePorts = createRuntimePortRegistry();
@@ -17,7 +16,7 @@ const filename = filenameArg?.split("=").slice(1).join("=") || "r01uh1069ej0115-
 const pageLimit = Math.max(10, Math.min(1000, Number(pagesArg?.split("=")[1] || 200)));
 const tableStart = 843;
 const tableEnd = 850;
-if (!fs.existsSync(safePdfPath(filename))) throw new Error(`PDF not found: ${filename}`);
+const pdfPath = await assertSafePdfPath(filename);
 const health = await getHybridRuntimeStatus({ force: true });
 if (!health.pythonReady) {
   console.log("Hybrid benchmark: SKIP (Python worker unavailable)");
@@ -33,11 +32,11 @@ const nodePeakRssBytes = process.memoryUsage().rss;
 const pythonStart = performance.now();
 const pythonResult = await runPythonWorker({
   operation: "pages.extract", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
-  inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: { startPage: 1, endPage: pageLimit },
+  inputs: { filename, pdfPath }, outputs: {}, options: { startPage: 1, endPage: pageLimit },
 });
 const pythonTables = await runPythonWorker({
   operation: "tables.extract", allowedRoots: [DOCUMENTS_DIR, INDEX_DIR],
-  inputs: { filename, pdfPath: safePdfPath(filename) }, outputs: {}, options: { candidatePages: Array.from({ length: tableEnd - tableStart + 1 }, (_, index) => tableStart + index) },
+  inputs: { filename, pdfPath }, outputs: {}, options: { candidatePages: Array.from({ length: tableEnd - tableStart + 1 }, (_, index) => tableStart + index) },
 });
 const pythonMs = performance.now() - pythonStart;
 const report = {

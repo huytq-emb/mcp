@@ -9,11 +9,13 @@ export async function ensureSemanticManualReady({
   loadGraph,
   buildIndex,
   onIndexing = () => {},
+  validateManual,
   access = fs.access,
   now = () => performance.now(),
 } = {}) {
   try {
-    await access(manualPath);
+    if (validateManual) await validateManual(filename);
+    else await access(manualPath);
   } catch {
     if (requireManuals) throw new Error(`Required manual unavailable: ${filename}`);
     return { status: "skipped", reason: "manual unavailable", indexingDurationMs: 0 };

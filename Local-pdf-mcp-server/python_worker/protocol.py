@@ -45,6 +45,20 @@ def ensure_inside(path_value: str, roots: list[str], label: str) -> Path:
     raise WorkerError("PATH_OUTSIDE_ROOT", f"{label} is outside allowed roots")
 
 
+def ensure_regular_file_inside(path_value: str, roots: list[str], label: str) -> Path:
+    """Reject symlinks/junctions and non-files before a worker reads input bytes."""
+    lexical = Path(os.path.abspath(os.fspath(path_value)))
+    is_junction = getattr(lexical, "is_junction", lambda: False)
+    if lexical.is_symlink() or is_junction():
+        raise WorkerError(
+            "UNSAFE_INPUT_PATH",
+            f"{label}: symbolic links and reparse points are not allowed",
+        )
+    if not lexical.is_file():
+        raise WorkerError("INVALID_INPUT_FILE", f"{label}: expected a regular file")
+    return ensure_inside(str(lexical), roots, label)
+
+
 def check_cancel(cancel_path: str | None) -> None:
     if cancel_path and Path(cancel_path).exists():
         raise WorkerError("WORKER_CANCELLED", "Worker cancellation requested")

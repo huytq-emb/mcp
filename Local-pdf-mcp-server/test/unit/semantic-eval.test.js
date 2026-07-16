@@ -131,6 +131,18 @@ test("sequence, caution, figure, and negative checks stay bound to their entitie
   assert.equal(evaluateCoverageExpectation({ expectation: { type: "caution", relatedEntityId: "register:target", requiredEntityTypes: ["caution"] } }, { bundle }).passed, false);
 });
 
+test("semantic text coverage requires the verified evidence page and preserves runtime-only reasons", () => {
+  const query = { expectation: { type: "text", requiredText: "write 0b", allowedPages: [819], requiredEntityTypes: ["caution"] } };
+  const matching = { bundle: { evidence: [{ id: "e1", kind: "caution", statement: "When writing to it, write 0b.", page: 819 }] } };
+  const wrongPage = { bundle: { evidence: [{ id: "e1", kind: "caution", statement: "When writing to it, write 0b.", page: 900 }] } };
+  assert.equal(evaluateCoverageExpectation(query, matching).passed, true);
+  assert.equal(evaluateCoverageExpectation(query, wrongPage).passed, false);
+  assert.deepEqual(
+    evaluateCoverageExpectation({ expectation: { type: "runtime-only", reason: "manual-specific reason" } }, {}),
+    { type: "runtime-only", evaluated: false, passed: true, reason: "manual-specific reason" },
+  );
+});
+
 test("semantic sequence ordering accepts complete explicit and relationship orders", () => {
   assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orders: [1, 2, 3] })).metrics.sequenceStepCoverage, 1);
   assert.equal(sequenceCoverageReport(sequenceEvaluationBundle({ orderingRelationships: [

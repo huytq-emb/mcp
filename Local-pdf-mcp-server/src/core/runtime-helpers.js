@@ -4,7 +4,7 @@ import path from "node:path";
 import { sourceFingerprint } from "../artifacts/manifest.js";
 import { readSourceIdentity, readStableSourceIdentity } from "../artifacts/source-identity.js";
 import { atomicWriteFile as writeFileAtomically } from "./atomic-file.js";
-import { getPathResolver } from "./path-resolver.js";
+import { getPathResolver, getPathResolverDependencies } from "./path-resolver.js";
 import { normalizeEvidenceContract } from "../evidence/contract.js";
 import { sanitizeDriverProfileName } from "../driver-profiles/catalog.js";
 import {
@@ -497,14 +497,20 @@ export function ensureInsideRoot(candidatePath, rootDir, what) {
   return ensurePathInsideRoot(candidatePath, rootDir, what);
 }
 
+/**
+ * Resolve a direct PDF filename lexically. This does not touch the filesystem
+ * and must not be used as authorization to read PDF bytes or metadata.
+ */
 export function safePdfPath(filename) {
   return getPathResolver().pdf(filename);
 }
 
+/** Resolve and validate a regular, non-symlink PDF immediately before access. */
 export async function assertSafePdfPath(filename) {
   const resolver = getPathResolver();
   const filePath = resolver.pdf(filename);
-  return ensureRegularFileInsideRoot(filePath, resolver.documentsDir(), "PDF", fs);
+  const fsOps = getPathResolverDependencies(resolver).fs || fs;
+  return ensureRegularFileInsideRoot(filePath, resolver.documentsDir(), "PDF", fsOps);
 }
 
 export function safeIndexPath(filename) {

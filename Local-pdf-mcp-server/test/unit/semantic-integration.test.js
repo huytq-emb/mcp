@@ -26,6 +26,22 @@ test("semantic integration builds stale artifacts and measures indexing duration
   assert.equal(builds, 1);
 });
 
+test("semantic integration uses the supplied strict manual validator before metadata access", async () => {
+  let validations = 0;
+  let legacyAccesses = 0;
+  const result = await ensureSemanticManualReady({
+    filename: "manual.pdf",
+    manualPath: "manual.pdf",
+    validateManual: async (filename) => { validations += 1; assert.equal(filename, "manual.pdf"); },
+    access: async () => { legacyAccesses += 1; },
+    loadGraph: async () => {},
+    buildIndex: async () => {},
+  });
+  assert.equal(result.status, "ready");
+  assert.equal(validations, 1);
+  assert.equal(legacyAccesses, 0);
+});
+
 test("semantic integration executes the real query dependency and records latency and RSS", async () => {
   let received;
   const times = [10, 25];

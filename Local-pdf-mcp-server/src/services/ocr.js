@@ -6,6 +6,7 @@ import { getPathResolver } from "../core/path-resolver.js";
 import { contentSourceFingerprint, sourceFingerprint } from "../artifacts/manifest.js";
 import { loadCommittedCoreArtifact } from "../artifacts/generation.js";
 import {
+  assertSafePdfPath,
   atomicWriteJson,
   compactText,
   ensureInsideRoot,
@@ -286,7 +287,7 @@ export async function buildFiguresWithPython(filename, options = {}) {
       requestId,
       operation: "figures.extract",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir(), getPathResolver().rendersDir()],
-      inputs: { filename, pdfPath: safePdfPath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) },
       outputs: { artifactPath: tempPath, rendersRoot: getPathResolver().rendersDir(), cancelPath },
       options: { ...optionsForWorker(options), manifestOnly: Boolean(options.manifestOnly), renderImages: options.renderImages === true, runOcr: options.runOcr === true, runVl: options.runVl === true, runSemantic: options.runSemantic === true },
     }, {
@@ -332,7 +333,7 @@ export async function buildFigureOcrWithPython(filename, options = {}) {
       requestId,
       operation: "figure_ocr.build",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir(), getPathResolver().rendersDir()],
-      inputs: { filename, pdfPath: safePdfPath(filename), figuresPath: safeFiguresIndexPath(filename), existingArtifactPath: safeFigureOcrIndexPath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename), figuresPath: safeFiguresIndexPath(filename), existingArtifactPath: safeFigureOcrIndexPath(filename) },
       outputs: { artifactPath: tempPath, checkpointPath, rendersRoot: getPathResolver().rendersDir(), cancelPath },
       options: optionsForWorker(options),
     }, {
@@ -1214,7 +1215,7 @@ export async function renderFigureOnDemand(args = {}) {
       requestId,
       operation: "figure.render",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
-      inputs: { filename, pdfPath: safePdfPath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) },
       outputs: { imagePath: paths.imagePath, cancelPath },
       options: { page: target.page, bbox: target.bbox, scale, force },
     }, {
@@ -1447,7 +1448,7 @@ async function figureParserOnDemand(args = {}, parser = "structure", existingRen
       requestId,
       operation: parser === "vl" ? "figure.vl" : "figure.structure",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
-      inputs: { filename: render.filename, pdfPath: safePdfPath(render.filename), imagePath: render.image_path },
+      inputs: { filename: render.filename, pdfPath: await assertSafePdfPath(render.filename), imagePath: render.image_path },
       outputs: { artifactPath: tempPath, cancelPath },
       options: { page: render.page, bbox: render.bbox, scale: render.scale, engine, force },
     }, {
@@ -1680,7 +1681,7 @@ export async function ocrFigureOnDemand(args = {}) {
       requestId,
       operation: "ocr.image",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
-      inputs: { filename: render.filename, pdfPath: safePdfPath(render.filename), imagePath: render.image_path },
+      inputs: { filename: render.filename, pdfPath: await assertSafePdfPath(render.filename), imagePath: render.image_path },
       outputs: { cancelPath },
       options: { engine, bbox: render.bbox, scale: render.scale },
     }, {
@@ -1845,7 +1846,7 @@ async function ocrFigureForInspect(args = {}) {
       requestId,
       operation: "figure.inspect_basic",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
-      inputs: { filename, pdfPath: safePdfPath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) },
       outputs: { imagePath: renderPaths.imagePath, cancelPath },
       options: { page: target.page, bbox: target.bbox, scale, engine, force },
     }, {
@@ -2074,7 +2075,7 @@ async function surroundingContext(filename, page, pageCount, contextPages = 0) {
       requestId,
       operation: "pages.extract",
       allowedRoots: [getPathResolver().documentsDir(), getPathResolver().indexDir()],
-      inputs: { filename, pdfPath: safePdfPath(filename) },
+      inputs: { filename, pdfPath: await assertSafePdfPath(filename) },
       outputs: { cancelPath },
       options: { startPage: extractStart, endPage: extractEnd },
     }, { timeoutMs: 120_000 });

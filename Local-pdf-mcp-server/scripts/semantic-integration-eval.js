@@ -8,7 +8,8 @@ import { buildPdfIndex } from "../src/services/indexing.js";
 import { loadEvidenceGraph } from "../src/services/evidence-graph.js";
 import { queryManualEvidenceBundle } from "../src/workflows/evidence-orchestrator.js";
 import { coverageQueriesFor } from "../eval/semantic/coverage-queries.js";
-import { atomicWriteJson, getPdfSourceInfo } from "../src/core/runtime-helpers.js";
+import { assertSafePdfPath, atomicWriteJson, getPdfSourceInfo } from "../src/core/runtime-helpers.js";
+import { sanitizeIntegrationReport } from "../src/eval/all-manual-integration.js";
 
 const context = createAppContext();
 wireRuntimePorts(context);
@@ -34,6 +35,7 @@ for (const dataset of resolvedDatasets) {
       filename,
       manualPath,
       requireManuals,
+      validateManual: assertSafePdfPath,
       loadGraph: loadEvidenceGraph,
       buildIndex: (name, options) => buildPdfIndex(name, {
         ...options,
@@ -81,7 +83,8 @@ for (const dataset of resolvedDatasets) {
 }
 
 if (writeReport) {
-  await atomicWriteJson(path.join(context.paths.indexDir(), "semantic-integration-report.json"), { generatedAt: new Date().toISOString(), reports });
+  const report = sanitizeIntegrationReport({ generatedAt: new Date().toISOString(), reports }, { projectRoot: context.config.rootDir });
+  await atomicWriteJson(path.join(context.paths.indexDir(), "semantic-integration-report.json"), report);
 }
 
 let failed = false;

@@ -1,6 +1,6 @@
 import { DEFAULT_RENDER_DPI, MAX_RENDER_DPI, MIN_RENDER_DPI, RENDER_COMMAND_TIMEOUT_MS } from "../core/runtime-constants.js";
 import { getPathResolver } from "../core/path-resolver.js";
-import { appendEvidenceContract, atomicWriteFile, clampInteger, compactText, ensureInsideRoot, ensurePdfFilename, normalizeForSearch, pathExists, safePdfPath, safeRenderOutputPath, sanitizeRenderStem } from "../core/runtime-helpers.js";
+import { appendEvidenceContract, assertSafePdfPath, atomicWriteFile, clampInteger, compactText, ensureInsideRoot, ensurePdfFilename, normalizeForSearch, pathExists, safeRenderOutputPath, sanitizeRenderStem } from "../core/runtime-helpers.js";
 import { getPdfPageCount, loadPdfDocument } from "../services/pdf.js";
 import { buildFigureEvidenceContract, getFigureContext } from "./figures.js";
 import { execFileAsync } from "../core/process-runner.js";
@@ -305,7 +305,7 @@ export async function renderPdfPage(filename, options = {}) {
   let format = requestedFormat;
   const renderer = normalizeRenderer(options.renderer);
   const fallbackTextSvg = options.fallbackTextSvg !== false;
-  const pdfPath = safePdfPath(filename);
+  const pdfPath = await assertSafePdfPath(filename);
   const suffix = `${requestedFormat}-dpi${dpi}`;
   let outPath = safeRenderOutputPath(filename, page, requestedFormat, suffix);
   const availability = await detectPdfRenderers();

@@ -29,12 +29,38 @@ test("coverage expectation classification treats clock as a register query, not 
   assert.equal(coverageQueriesFor("gpio-pinctrl").find((entry) => entry.id === "lock").expectation.type, "sequence");
 });
 
-test("numbered sequence probes remain sequences and unsupported GBETH probes are explicit runtime-only checks", () => {
+test("numbered sequence probes remain sequences and unsupported GBETH probes have individual manual-backed reasons", () => {
   assert.equal(coverageQueriesFor("dma").find((entry) => entry.id === "sequence2").expectation.type, "sequence");
   assert.equal(coverageQueriesFor("watchdog").find((entry) => entry.id === "sequence3").expectation.type, "sequence");
-  for (const id of ["short-symbol", "sequence", "sequence-stop"]) {
-    const query = coverageQueriesFor("ethernet").find((entry) => entry.id === id);
-    assert.equal(query.expectation.type, "runtime-only");
-    assert.match(query.expectation.reason, /does not declare a verified normalized entity/);
-  }
+  const ethernet = coverageQueriesFor("ethernet");
+  const shortSymbol = ethernet.find((entry) => entry.id === "short-symbol");
+  const sequence = ethernet.find((entry) => entry.id === "sequence");
+  const sequenceStop = ethernet.find((entry) => entry.id === "sequence-stop");
+  assert.equal(shortSymbol.expectation.type, "runtime-only");
+  assert.match(shortSymbol.expectation.reason, /page 1420.*TXEN.*pin name/i);
+  assert.equal(sequence.expectation.type, "runtime-only");
+  assert.match(sequence.expectation.reason, /pages 1417-1420/i);
+  assert.match(sequence.expectation.reason, /no initialization procedure/i);
+  assert.equal(sequenceStop.expectation.type, "runtime-only");
+  assert.match(sequenceStop.expectation.reason, /pages 1417-1420/i);
+  assert.match(sequenceStop.expectation.reason, /no transmitter-stop procedure/i);
+  assert.equal(new Set([shortSymbol.expectation.reason, sequence.expectation.reason, sequenceStop.expectation.reason]).size, 3);
+});
+
+test("DMA reserved-area runtime coverage and active-transfer semantics remain separate", () => {
+  const dma = coverageQueriesFor("dma");
+  const reserved = dma.find((entry) => entry.id === "caution-reserved-area");
+  const active = dma.find((entry) => entry.id === "caution-active-transfer");
+  assert.equal(reserved.query, "What DMA reserved-bit cautions apply?");
+  assert.equal(reserved.expectation.type, "runtime-only");
+  assert.match(reserved.expectation.reason, /page 819/i);
+  assert.match(reserved.expectation.reason, /no dedicated entity for caution 1/i);
+  assert.equal(active.query, "What DMA write restrictions apply while a transfer is in progress?");
+  assert.equal(active.topK, 20);
+  assert.deepEqual(active.expectation, {
+    type: "text",
+    requiredText: "Do not modify the registers by software while DMA transfer is in progress",
+    allowedPages: [819],
+    requiredEntityTypes: ["caution"],
+  });
 });
