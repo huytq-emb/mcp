@@ -4,6 +4,7 @@ import { withSourceIdentityCache } from "../artifacts/source-identity.js";
 import { withPathResolver } from "../core/path-resolver.js";
 import { withRuntimePortRegistry } from "../core/runtime-ports.js";
 import { awaitWithAbort, requestCancelledError, throwIfAborted } from "../core/cancellation.js";
+import { validateAdvertisedToolSchemaCompatibility } from "./schema-compatibility.js";
 
 export { requestCancelledError } from "../core/cancellation.js";
 
@@ -39,6 +40,7 @@ export function createToolRegistry({
   expectedAdvertisedCount,
   context = null,
 } = {}) {
+  validateAdvertisedToolSchemaCompatibility(definitions, { classification: "public" });
   const ajv = new Ajv({ allErrors: true, strict: false });
   const publicEntries = new Map();
   const allEntries = new Map();
