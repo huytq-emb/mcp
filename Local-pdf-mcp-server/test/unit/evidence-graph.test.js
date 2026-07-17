@@ -301,6 +301,34 @@ test("evidence graphs reject old chunking and mixed dependency generations", asy
   }
 });
 
+
+test("read_manual_evidence requires at least one valid selector", async () => {
+  await setup();
+  try {
+    await assert.rejects(() => readManualEvidenceBundle({ filename }), /At least one of entity_id, chunk_id, or page is required/);
+    await assert.rejects(() => readManualEvidenceBundle({ filename, entityId: "", chunkId: "", page: null }), /At least one of entity_id, chunk_id, or page is required/);
+    await assert.rejects(() => readManualEvidenceBundle({ filename, entityId: "  ", chunkId: "  ", page: undefined }), /At least one of entity_id, chunk_id, or page is required/);
+    await assert.rejects(() => readManualEvidenceBundle({ filename, page: 0 }), /page must be a one-based integer/);
+    await assert.rejects(() => readManualEvidenceBundle({ filename, page: 1.5 }), /page must be a one-based integer/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("read_manual_evidence accepts individual and combined selectors", async () => {
+  await setup();
+  try {
+    const graph = await buildEvidenceGraph(filename);
+    const register = graph.entities.find((entity) => entity.type === "register");
+    assert.ok((await readManualEvidenceBundle({ filename, entityId: register.id })).evidence.length >= 1);
+    assert.ok((await readManualEvidenceBundle({ filename, chunkId: `${filename}:p1:c0` })).evidence.length >= 1);
+    assert.ok((await readManualEvidenceBundle({ filename, page: 1 })).evidence.length >= 1);
+    assert.ok((await readManualEvidenceBundle({ filename, entityId: register.id, chunkId: `${filename}:p1:c0`, page: 1 })).evidence.length >= 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("loadEvidenceGraph rebuilds compatible legacy graph metadata but rejects an invalid commit manifest", async () => {
   await setup();
   try {

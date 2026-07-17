@@ -1099,6 +1099,11 @@ export async function getManualEntityBundle({ filename, entityId, relatedEntityT
 }
 
 export async function readManualEvidenceBundle({ filename, entityId = "", chunkId = "", page = null } = {}) {
+  entityId = typeof entityId === "string" ? entityId.trim() : "";
+  chunkId = typeof chunkId === "string" ? chunkId.trim() : "";
+  const requestedPage = page === null || page === undefined ? null : Number(page);
+  if (requestedPage !== null && (!Number.isInteger(requestedPage) || requestedPage < 1)) throw new Error("page must be a one-based integer");
+  if (!entityId && !chunkId && requestedPage === null) throw new Error("At least one of entity_id, chunk_id, or page is required");
   const graph = await loadEvidenceGraph(filename, { buildIfMissing: true });
   let entities = graph.entities || [];
   if (entityId) {
@@ -1107,8 +1112,6 @@ export async function readManualEvidenceBundle({ filename, entityId = "", chunkI
     if (result.ambiguity) throw new Error(`Manual entity alias is ambiguous: ${entityId}. Use one of: ${result.ambiguity.candidateEntityIds.join(", ")}`);
     entities = [result.entity, ...result.relatedEntities];
   }
-  const requestedPage = page === null || page === undefined ? null : Number(page);
-  if (requestedPage !== null && (!Number.isInteger(requestedPage) || requestedPage < 1)) throw new Error("page must be a one-based integer");
   const evidence = dedupeEvidence(entities.flatMap((entity) => {
     const locations = matchingLocations(entity, { requestedPage, requestedChunkId: chunkId });
     if ((requestedPage !== null || chunkId) && !locations.length) return [];

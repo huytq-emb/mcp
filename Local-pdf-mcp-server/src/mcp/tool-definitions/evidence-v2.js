@@ -46,11 +46,6 @@ export const EVIDENCE_V2_TOOL_DEFINITIONS = Object.freeze([
         page: { type: "number", description: "Optional one-based page number." },
       },
       required: ["filename"],
-      anyOf: [
-        { required: ["entity_id"] },
-        { required: ["chunk_id"] },
-        { required: ["page"] },
-      ],
       additionalProperties: false,
     },
   },
